@@ -1,0 +1,41 @@
+# ===== Dependencies =====
+node_modules/
+.pnp/
+.pnp.js
+
+# ===== Build output =====
+dist/
+dist-ssr/
+release/
+*.local
+
+# ===== Agent / local memory (never commit) =====
+.workbuddy/
+
+# ===== Candidate materials pending license review =====
+# Formally tracked in E:\projects\素材库\办公系统\01-待确认\ — not for public template core
+references/待审核项/
+
+# ===== Env / secrets =====
+.env
+.env.*
+!.env.example
+
+# ===== Logs =====
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== Editor / OS =====
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ===== Java / Maven (when backend added) =====
+target/
+*.class
