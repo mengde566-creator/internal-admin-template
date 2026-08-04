@@ -39,3 +39,7 @@ Thumbs.db
 # ===== Java / Maven (when backend added) =====
 target/
 *.class
+
+# ===== Local data (SQLite 文件库，不提交版本库) =====
+data/
+.reasonix/
