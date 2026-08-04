@@ -110,12 +110,7 @@ public class AdminInitializer implements ApplicationRunner {
         userRole.setRoleId(systemAdminRole.getId());
         userRoleMapper.insert(userRole);
 
-        for (String permissionCode : PermissionCodes.SYSTEM_ADMIN_PERMISSIONS) {
-            RolePermissionDO rolePermission = new RolePermissionDO();
-            rolePermission.setRoleId(systemAdminRole.getId());
-            rolePermission.setPermissionCode(permissionCode);
-            rolePermissionMapper.insert(rolePermission);
-        }
+        // 注意：角色权限由 ensureSystemAdminPermissions() 统一补齐（run 开头已执行），此处不重复写入，避免主键冲突
 
         if (useConfiguredPassword) {
             // 使用显式配置的初始密码：不打印密码到日志（避免明文泄露）

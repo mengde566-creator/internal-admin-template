@@ -1,0 +1,70 @@
+# module-iam AI 提示词
+
+> 开发/修改 module-iam 时 AI 必须加载本文件（AGENTS.md §2.3 装配规则）。
+> 最后核对：2026-08-04（与当前代码一致）
+
+## 模块定位
+
+身份与权限模块：内部用户的统一登录（Session）、用户/角色管理、权限校验、系统参数。0.1 内提供登录/改密、用户 CRUD（软删除）、角色 CRUD（引用校验删除）、权限编码注册、系统参数（强制改密开关）。
+
+## 硬性约束（必须遵守）
+
+### 结构
+
+```
+controller/  service/  mapper/  model/entity/  model/dto/  api/  bootstrap/
+```
+- **数据对象包名 `model.entity`（禁止 `model.do`——`do` 是 Java 关键字）**；
+- 跨模块契约放 `api/`（接口），实现放 service；DTO 放 `model/dto`。
+
+### 依赖方向
+
+- 可依赖：platform-kernel/web/data/security、module-audit（审计）；
+- **禁止依赖其他业务模块**（module-file/site 等）；module-audit 是唯一例外（管理操作审计）。
+
+### 数据对象
+
+- DO 用 `DO` 后缀、`@TableName`；DTO 按场景命名（Create/Update/Query/List）；
+- **ID 一律字符串传输**：DTO 的 ID getter 加 `@JsonSerialize(using = ToStringSerializer.class)`——注意是 **tools.jackson** 包（Boot 4 默认 Jackson 3，`com.fasterxml` 注解不生效）；注解必须标在 **getter**（Jackson 用 getter 序列化，字段注解不生效）；
+- 更新 DTO 中 `null` 表示"不修改"（AGENTS §6）。
+
+### 权限与审计
+
+- 权限编码集中在 `api/PermissionCodes`（代码注册，不建权限表）；新权限必须同时加入 `REGISTERED_PERMISSIONS` 和 `SYSTEM_ADMIN_PERMISSIONS`；
+- 接口方法加 `@PreAuthorize("hasAuthority('" + PermissionCodes.XXX + "')")`；
+- 关键管理操作（删除等）写审计：`AuditRecordApi.record(operatorId, action, targetId, result)`；**成功随调用方事务，失败由外层在事务回滚后记录**（SQLite 单写者限制，不可 REQUIRES_NEW）。
+
+### 质量
+
+- 业务方法必须有 Javadoc（方法名/执行链路/@link，禁止 `<ol><li>`，禁止 `\n` 字面量）；
+- 写完立即执行 ENGINEERING_CONVENTIONS §3 自查清单；
+- 验证：`scripts/quality.sh`（编译+迁移检查+前端构建）。
+
+## 本模块已知踩坑
+
+| 坑 | 现象 | 根因 | 正确做法 |
+| --- | --- | --- | --- |
+| SQLite 软删除默认值 | 新用户 deleted=NULL → 查询过滤后系统误判无数据 | SQLite `ALTER TABLE ADD COLUMN` 不写 NOT NULL/DEFAULT，@TableLogic insert 不填充 | DO 字段显式初始化 `= 0`；老库补 `UPDATE ... SET deleted=0 WHERE deleted IS NULL` 变更集 |
+| 权限重复插入 | 启动主键冲突失败 | 权限补齐逻辑与创建流程各插一遍 | 新增逻辑先查现有代码是否已覆盖（统一由一处写入） |
+| Jackson 注解不生效 | ID 序列化为数字，前端精度丢失 | 用了 `com.fasterxml`（Jackson 2）或注解标在字段 | 用 `tools.jackson`，注解标 getter |
+| `model.do` 包名 | 编译报"需要标识符" | `do` 是 Java 关键字 | 用 `model.entity` |
+| 手动登录会话不保持 | 登录后 me 返回 401 | 只 setAuthentication 未持久化 | 显式 `HttpSessionSecurityContextRepository.saveContext(context, request, response)` + `request.changeSessionId()` 防固定 |
+| CSRF 首次登录 403 | 首次直登被拦 | token 延迟生成，GET 不种 cookie | 前端登录页先 GET 一次种 cookie（CsrfCookieFilter 每个响应种） |
+| size>100 返回 500 | 参数错误变系统错误 | setter 抛 IllegalArgumentException | 抛 `BusinessException(PARAM_ERROR)` → 400 |
+
+## 禁止事项
+
+- **物理删除用户**（有审计/历史引用，用软删除）；
+- 删除初始化管理员（id=1）或当前登录账号；
+- 修改已执行/已发布的 Liquibase 变更集；
+- 跨模块访问 module-file/site 的 Mapper/DO/表；
+- 删除/重建数据库（AGENTS §16 红线）；
+- 把密码明文写入日志（支持 `app.admin-initial-password` 外部化，配置后不打印）。
+
+## 开发新功能步骤
+
+1. 对照 DATA_CONTRACT 确认表/字段（变更必须新增 Liquibase 变更集，不改已发布）；
+2. **先查现有代码是否已有相同能力**（避免重复逻辑——如权限写入、审计、软删除已有）；
+3. 实现：DTO → Service（Javadoc）→ Controller（@PreAuthorize）→ 前端（按已批准素材）；
+4. 写完立即自查（ENGINEERING_CONVENTIONS §3）；
+5. 按 TEST.md 覆盖用例验证 + 质量门禁。

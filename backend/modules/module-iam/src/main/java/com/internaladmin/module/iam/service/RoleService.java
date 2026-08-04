@@ -10,6 +10,9 @@ import com.internaladmin.module.iam.model.dto.CreateRoleDTO;
 import com.internaladmin.module.iam.model.dto.PermissionOptionDTO;
 import com.internaladmin.module.iam.model.dto.RoleListDTO;
 import com.internaladmin.module.iam.model.dto.UpdateRoleDTO;
+import com.internaladmin.module.audit.api.AuditRecordApi;
+import com.internaladmin.module.iam.mapper.UserRoleMapper;
+import com.internaladmin.module.iam.model.entity.UserRoleDO;
 import com.internaladmin.platform.kernel.error.BusinessException;
 import com.internaladmin.platform.kernel.error.ErrorCode;
 import org.springframework.stereotype.Service;
@@ -28,10 +31,15 @@ public class RoleService {
 
     private final RoleMapper roleMapper;
     private final RolePermissionMapper rolePermissionMapper;
+    private final UserRoleMapper userRoleMapper;
+    private final AuditRecordApi auditRecordApi;
 
-    public RoleService(RoleMapper roleMapper, RolePermissionMapper rolePermissionMapper) {
+    public RoleService(RoleMapper roleMapper, RolePermissionMapper rolePermissionMapper,
+                       UserRoleMapper userRoleMapper, AuditRecordApi auditRecordApi) {
         this.roleMapper = roleMapper;
         this.rolePermissionMapper = rolePermissionMapper;
+        this.userRoleMapper = userRoleMapper;
+        this.auditRecordApi = auditRecordApi;
     }
 
     /**
@@ -126,6 +134,56 @@ public class RoleService {
         rolePermissionMapper.delete(new LambdaQueryWrapper<RolePermissionDO>()
                 .eq(RolePermissionDO::getRoleId, role.getId()));
         savePermissionAssociations(role.getId(), dto.getPermissionCodes());
+    }
+
+    /**
+     * 删除角色（校验无用户引用后物理删除，并删除其权限关联与审计记录）。
+     *
+     * <p>方法：{@code delete}</p>
+     *
+     * <p>执行链路（共 6 步）：</p>
+     * 1. 按 ID 查询角色，不存在时抛出业务异常；
+     * 2. 查询该角色的用户分配数，被引用时拒绝删除（提示先解除分配）；
+     * 3. 从安全上下文解析操作者 ID；
+     * 4. 删除角色权限关联；
+     * 5. 物理删除角色；
+     * 6. 调用 {@link AuditRecordApi#record(Long, String, Long, String)} 记录 ROLE_DELETE 成功。
+     *
+     * @param id 角色 ID
+     * @throws BusinessException 角色不存在或被用户引用时抛出
+     */
+    @org.springframework.transaction.annotation.Transactional
+    public void delete(Long id) {
+        RoleDO role = roleMapper.selectById(id);
+        if (role == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "角色不存在");
+        }
+        Long userCount = userRoleMapper.selectCount(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<UserRoleDO>()
+                        .eq(UserRoleDO::getRoleId, id));
+        if (userCount > 0) {
+            throw new BusinessException(ErrorCode.BUSINESS_REJECTED, "该角色已被用户使用，请先解除用户分配");
+        }
+        Long operatorId = currentUserId();
+        rolePermissionMapper.delete(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<RolePermissionDO>()
+                .eq(RolePermissionDO::getRoleId, id));
+        roleMapper.deleteById(id);
+        auditRecordApi.record(operatorId, "ROLE_DELETE", id, "SUCCESS");
+    }
+
+    /**
+     * 从安全上下文解析当前用户 ID。
+     *
+     * @return 当前用户 ID
+     * @throws BusinessException 未登录时抛出
+     */
+    private Long currentUserId() {
+        org.springframework.security.core.Authentication authentication =
+                org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !(authentication.getPrincipal() instanceof Long userId)) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "未登录或登录已失效");
+        }
+        return userId;
     }
 
     /**

@@ -11,7 +11,9 @@ import com.internaladmin.platform.web.response.ApiResponse;
 import com.internaladmin.platform.web.response.IdResultDTO;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -81,6 +83,24 @@ public class UserController {
     @PutMapping
     public ApiResponse<Void> update(@Valid @RequestBody UpdateUserDTO dto) {
         userService.update(dto);
+        return ApiResponse.ok(null);
+    }
+
+    /**
+     * 软删除用户（不可恢复；被删用户不可登录，历史引用保留可审计）。
+     *
+     * <p>方法：{@code delete}</p>
+     *
+     * <p>执行链路（共 2 步）：</p>
+     * 1. 调用 {@link UserService#delete(Long)}（含保护与审计）；
+     * 2. 返回成功响应。
+     *
+     * @param id 用户 ID
+     * @return 成功响应
+     */
+    @DeleteMapping("/{id}")
+    public ApiResponse<Void> delete(@PathVariable Long id) {
+        userService.delete(id);
         return ApiResponse.ok(null);
     }
 }

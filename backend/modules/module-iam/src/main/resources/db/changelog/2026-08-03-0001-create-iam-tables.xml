@@ -122,4 +122,21 @@
         </insert>
     </changeSet>
 
+    <!-- 0004：用户软删除（deleted + @TableLogic），删除即不可见不可登录，审计可追溯 -->
+    <changeSet id="2026-08-03-0004-add-user-deleted" author="template">
+        <addColumn tableName="iam_user">
+            <column name="deleted" type="INTEGER" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+    </changeSet>
+
+    <!-- 0005：修复 SQLite ALTER TABLE 不写默认值导致的历史行 deleted=NULL（@TableLogic 过滤后误判无用户） -->
+    <changeSet id="2026-08-03-0005-backfill-user-deleted" author="template">
+        <update tableName="iam_user">
+            <column name="deleted" valueNumeric="0"/>
+            <where>deleted IS NULL</where>
+        </update>
+    </changeSet>
+
 </databaseChangeLog>

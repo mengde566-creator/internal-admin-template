@@ -35,5 +35,11 @@
             <artifactId>platform-security</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- 管理操作审计（用户/角色删除等） -->
+        <dependency>
+            <groupId>com.internaladmin</groupId>
+            <artifactId>module-audit</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 </project>

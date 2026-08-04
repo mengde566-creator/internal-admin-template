@@ -15,6 +15,7 @@ import com.internaladmin.module.iam.model.dto.CreateUserDTO;
 import com.internaladmin.module.iam.model.dto.UpdateUserDTO;
 import com.internaladmin.module.iam.model.dto.UserListDTO;
 import com.internaladmin.module.iam.model.dto.UserQueryDTO;
+import com.internaladmin.module.audit.api.AuditRecordApi;
 import com.internaladmin.platform.kernel.error.BusinessException;
 import com.internaladmin.platform.kernel.error.ErrorCode;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -38,17 +39,20 @@ public class UserService {
     private final RoleMapper roleMapper;
     private final DepartmentMapper departmentMapper;
     private final PasswordEncoder passwordEncoder;
+    private final AuditRecordApi auditRecordApi;
 
     public UserService(UserMapper userMapper,
                        UserRoleMapper userRoleMapper,
                        RoleMapper roleMapper,
                        DepartmentMapper departmentMapper,
-                       PasswordEncoder passwordEncoder) {
+                       PasswordEncoder passwordEncoder,
+                       AuditRecordApi auditRecordApi) {
         this.userMapper = userMapper;
         this.userRoleMapper = userRoleMapper;
         this.roleMapper = roleMapper;
         this.departmentMapper = departmentMapper;
         this.passwordEncoder = passwordEncoder;
+        this.auditRecordApi = auditRecordApi;
     }
 
     /**
@@ -202,6 +206,53 @@ public class UserService {
     private void replaceRoles(Long userId, List<Long> roleIds) {
         userRoleMapper.delete(new LambdaQueryWrapper<UserRoleDO>().eq(UserRoleDO::getUserId, userId));
         assignRoles(userId, roleIds);
+    }
+
+    /**
+     * 软删除用户（不可恢复，审计可追溯；被删用户不可登录、历史引用保留）。
+     *
+     * <p>方法：{@code delete}</p>
+     *
+     * <p>执行链路（共 5 步）：</p>
+     * 1. 按 ID 查询用户（@TableLogic 自动过滤已删），不存在时抛出业务异常；
+     * 2. 校验不能删除初始化管理员（id=1）与当前登录用户自身；
+     * 3. 从安全上下文解析操作者 ID；
+     * 4. 调用 {@code userMapper.deleteById} 软删除（置 deleted=1）；
+     * 5. 调用 {@link AuditRecordApi#record(Long, String, Long, String)} 记录 USER_DELETE 成功。
+     *
+     * @param id 用户 ID
+     * @throws BusinessException 用户不存在或受保护时抛出
+     */
+    @org.springframework.transaction.annotation.Transactional
+    public void delete(Long id) {
+        UserDO user = userMapper.selectById(id);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
+        }
+        Long operatorId = currentUserId();
+        if (Long.valueOf(1L).equals(id)) {
+            throw new BusinessException(ErrorCode.BUSINESS_REJECTED, "不能删除初始化管理员");
+        }
+        if (id.equals(operatorId)) {
+            throw new BusinessException(ErrorCode.BUSINESS_REJECTED, "不能删除当前登录账号");
+        }
+        userMapper.deleteById(id);
+        auditRecordApi.record(operatorId, "USER_DELETE", id, "SUCCESS");
+    }
+
+    /**
+     * 从安全上下文解析当前用户 ID。
+     *
+     * @return 当前用户 ID
+     * @throws BusinessException 未登录时抛出
+     */
+    private Long currentUserId() {
+        org.springframework.security.core.Authentication authentication =
+                org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !(authentication.getPrincipal() instanceof Long userId)) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "未登录或登录已失效");
+        }
+        return userId;
     }
 
     /**

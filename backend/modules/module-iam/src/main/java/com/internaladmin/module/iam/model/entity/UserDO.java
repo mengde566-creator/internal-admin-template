@@ -2,10 +2,11 @@ package com.internaladmin.module.iam.model.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 
 /**
- * 用户数据对象。内部人员统一账号；密码只保存哈希。
+ * 用户数据对象。内部人员统一账号；密码只保存哈希；支持软删除（deleted）。
  */
 @TableName("iam_user")
 public class UserDO {
@@ -28,6 +29,10 @@ public class UserDO {
 
     /** 是否已修改初始密码（首次登录强制改密依据） */
     private Boolean passwordChanged;
+
+    /** 软删除标志（0 未删 / 1 已删）。显式初始化 0：SQLite ALTER 不写默认值且 @TableLogic 不保证 insert 填充 */
+    @TableLogic
+    private Integer deleted = 0;
 
     public Long getId() {
         return id;
@@ -75,5 +80,13 @@ public class UserDO {
 
     public void setPasswordChanged(Boolean passwordChanged) {
         this.passwordChanged = passwordChanged;
+    }
+
+    public Integer getDeleted() {
+        return deleted;
+    }
+
+    public void setDeleted(Integer deleted) {
+        this.deleted = deleted;
     }
 }
