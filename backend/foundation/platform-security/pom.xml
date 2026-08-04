@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.internaladmin</groupId>
+        <artifactId>internal-admin-template</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>platform-security</artifactId>
+    <name>platform-security</name>
+    <description>Spring Security 基础配置、当前登录身份与权限校验基础能力（不含用户业务表）</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.internaladmin</groupId>
+            <artifactId>platform-kernel</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- 安全异常边界使用统一响应（platform-web） -->
+        <dependency>
+            <groupId>com.internaladmin</groupId>
+            <artifactId>platform-web</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <!-- 401/403 JSON 响应（tools.jackson，与 Boot 4 默认 Jackson 3 一致，避免双依赖混用） -->
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <!-- SecurityFilterChain 使用 Servlet API（provided，由 Web 容器提供） -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: internal-admin-template
+  datasource:
+    # 零配置启动：未提供外部数据库配置时使用项目本地 SQLite 文件库
+    url: jdbc:sqlite:./data/internal-admin.db?foreign_keys=on
+    driver-class-name: org.sqlite.JDBC
+  liquibase:
+    change-log: classpath:db/changelog-master.xml
+  servlet:
+    multipart:
+      # 与应用层白名单一致（REQ-V01-006：≤10MB），超过时明确拒绝而非 500
+      max-file-size: 10MB
+      max-request-size: 11MB
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health

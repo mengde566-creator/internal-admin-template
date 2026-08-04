@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- module-site：主页草稿表 + 当前公开快照表（单例，与草稿隔离） -->
+    <!-- 注：单例约束 CHECK (id = 1) 通过标准 SQL 建表实现（Liquibase 5 的 addCheckConstraint 不作为 changeSet 顶层元素） -->
+
+    <changeSet id="2026-08-03-0001-create-site-homepage-draft" author="template">
+        <sql>
+            CREATE TABLE site_homepage_draft (
+                id BIGINT NOT NULL PRIMARY KEY CHECK (id = 1),
+                site_name VARCHAR(120) NOT NULL,
+                introduction TEXT NOT NULL,
+                hero_file_id BIGINT NOT NULL,
+                contact_text TEXT NOT NULL,
+                color_scheme VARCHAR(32) NOT NULL
+            )
+        </sql>
+    </changeSet>
+
+    <changeSet id="2026-08-03-0001-create-site-homepage-publication" author="template">
+        <sql>
+            CREATE TABLE site_homepage_publication (
+                id BIGINT NOT NULL PRIMARY KEY CHECK (id = 1),
+                site_name VARCHAR(120) NOT NULL,
+                introduction TEXT NOT NULL,
+                hero_file_id BIGINT NOT NULL,
+                contact_text TEXT NOT NULL,
+                color_scheme VARCHAR(32) NOT NULL,
+                visible BOOLEAN NOT NULL,
+                published_by BIGINT NOT NULL,
+                published_at TIMESTAMP NOT NULL
+            )
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>

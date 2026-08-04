@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- module-iam：5 张表 + 基础数据（根部门、系统管理员角色） -->
+
+    <changeSet id="2026-08-03-0001-create-iam-department" author="template">
+        <createTable tableName="iam_department">
+            <column name="id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="code" type="VARCHAR(64)">
+                <constraints nullable="false" unique="true"/>
+            </column>
+            <column name="name" type="VARCHAR(100)">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <!-- 基础数据：根部门（生产基础数据，与演示数据分离） -->
+        <insert tableName="iam_department">
+            <column name="id" valueNumeric="1"/>
+            <column name="code" value="ROOT"/>
+            <column name="name" value="根部门"/>
+        </insert>
+    </changeSet>
+
+    <changeSet id="2026-08-03-0001-create-iam-user" author="template">
+        <createTable tableName="iam_user">
+            <column name="id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="department_id" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="username" type="VARCHAR(64)">
+                <constraints nullable="false" unique="true"/>
+            </column>
+            <column name="display_name" type="VARCHAR(100)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="password_hash" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+
+    <changeSet id="2026-08-03-0001-create-iam-role" author="template">
+        <createTable tableName="iam_role">
+            <column name="id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="code" type="VARCHAR(64)">
+                <constraints nullable="false" unique="true"/>
+            </column>
+            <column name="name" type="VARCHAR(100)">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <!-- 基础数据：系统管理员角色 -->
+        <insert tableName="iam_role">
+            <column name="id" valueNumeric="1"/>
+            <column name="code" value="SYSTEM_ADMIN"/>
+            <column name="name" value="系统管理员"/>
+        </insert>
+    </changeSet>
+
+    <changeSet id="2026-08-03-0001-create-iam-user-role" author="template">
+        <createTable tableName="iam_user_role">
+            <column name="user_id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="role_id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+
+    <changeSet id="2026-08-03-0001-create-iam-role-permission" author="template">
+        <createTable tableName="iam_role_permission">
+            <column name="role_id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="permission_code" type="VARCHAR(128)">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+
+    <!-- 0002：首次登录强制改密（REQ-V01-003 落地），向后兼容追加列 -->
+    <changeSet id="2026-08-03-0002-add-password-changed" author="template">
+        <addColumn tableName="iam_user">
+            <column name="password_changed" type="BOOLEAN" defaultValueBoolean="false">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+    </changeSet>
+
+    <!-- 0003：系统参数表 + 默认参数（是否强制首次登录改密，可配置） -->
+    <changeSet id="2026-08-03-0003-create-system-config" author="template">
+        <createTable tableName="system_config">
+            <column name="id" type="BIGINT">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="name" type="VARCHAR(100)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="param_key" type="VARCHAR(64)">
+                <constraints nullable="false" unique="true"/>
+            </column>
+            <column name="param_value" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <insert tableName="system_config">
+            <column name="id" valueNumeric="1"/>
+            <column name="name" value="强制首次登录修改密码"/>
+            <column name="param_key" value="force_password_change"/>
+            <column name="param_value" value="true"/>
+        </insert>
+    </changeSet>
+
+</databaseChangeLog>
