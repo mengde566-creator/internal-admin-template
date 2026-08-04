@@ -1,0 +1,189 @@
+.el-button {
+  min-height: 36px;
+  border-radius: 10px;
+  font-weight: 540;
+  transition: color 180ms ease, background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease, transform 150ms var(--ui-ease-out);
+}
+
+.el-button:not(.is-disabled):hover {
+  box-shadow: 0 8px 20px -14px color-mix(in srgb, var(--ui-primary) 55%, transparent);
+}
+
+.el-button:not(.is-disabled):active {
+  transform: scale(0.985);
+}
+
+.el-button--primary {
+  color: var(--ui-primary-contrast);
+  background: var(--ui-primary);
+  border-color: var(--ui-primary);
+}
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  background: var(--ui-surface-muted);
+  box-shadow: 0 0 0 1px var(--ui-border) inset;
+  border-radius: 10px;
+  transition: background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.el-input__wrapper,
+.el-select__wrapper {
+  min-height: 38px;
+}
+
+.el-input__wrapper:hover,
+.el-select__wrapper:hover,
+.el-textarea__inner:hover {
+  background: var(--ui-surface);
+  box-shadow: 0 0 0 1px var(--ui-border-strong) inset;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  background: var(--ui-surface);
+  box-shadow: 0 0 0 1px var(--ui-primary) inset, 0 0 0 3px var(--ui-primary-soft) !important;
+}
+
+.el-overlay {
+  background: var(--ui-overlay) !important;
+  backdrop-filter: blur(5px) saturate(90%);
+}
+
+.ui-managed-dialog.el-dialog {
+  color: var(--ui-text);
+  background: var(--ui-surface-elevated) !important;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius-lg);
+  box-shadow: var(--ui-shadow-elevated);
+  overflow: hidden;
+}
+
+.ui-managed-dialog .el-dialog__header {
+  margin: 0;
+  padding: 24px 26px 18px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.ui-managed-dialog .el-dialog__body {
+  padding: 22px 26px 10px;
+  color: var(--ui-text);
+}
+
+.ui-managed-dialog .el-dialog__footer {
+  padding: 16px 26px 22px;
+}
+
+.ui-managed-dialog .el-dialog__headerbtn {
+  top: 18px;
+  right: 18px;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  transition: background-color 180ms ease;
+}
+
+.ui-managed-dialog .el-dialog__headerbtn:hover {
+  background: var(--ui-surface-hover);
+}
+
+.dialog-fade-enter-active .el-dialog {
+  transition: opacity var(--ui-enter) var(--ui-ease-out), transform var(--ui-enter) var(--ui-ease-out);
+}
+
+.dialog-fade-leave-active .el-dialog {
+  transition: opacity var(--ui-exit) var(--ui-ease-in), transform var(--ui-exit) var(--ui-ease-in);
+}
+
+.dialog-fade-enter-from .el-dialog {
+  opacity: 0;
+  transform: translateY(10px) scale(0.985);
+}
+
+.dialog-fade-leave-to .el-dialog {
+  opacity: 0;
+  transform: translateY(6px) scale(0.99);
+}
+
+.el-notification,
+.el-popper.is-light,
+.el-select__popper.el-popper {
+  color: var(--ui-text);
+  background: var(--ui-surface-elevated) !important;
+  border-color: var(--ui-border-strong) !important;
+  box-shadow: var(--ui-shadow-elevated) !important;
+}
+
+.el-notification {
+  border-radius: var(--ui-radius);
+}
+
+.el-notification__title {
+  color: var(--ui-text-strong);
+  font-weight: 650;
+}
+
+.el-notification__content,
+.el-dropdown-menu__item {
+  color: var(--ui-text);
+}
+
+.el-dropdown-menu {
+  background: transparent;
+}
+
+.el-dropdown-menu__item {
+  gap: 9px;
+  border-radius: 8px;
+}
+
+.el-dropdown-menu__item:not(.is-disabled):focus,
+.el-dropdown-menu__item:not(.is-disabled):hover {
+  color: var(--ui-text-strong);
+  background: var(--ui-surface-hover);
+}
+
+.el-tag {
+  border-color: transparent;
+  font-weight: 550;
+}
+
+.el-table,
+.el-table .el-table__inner-wrapper,
+.el-table tr,
+.el-table th.el-table__cell,
+.el-table td.el-table__cell {
+  background: transparent;
+}
+
+.el-table::before,
+.el-table .el-table__inner-wrapper::before {
+  display: none;
+}
+
+.el-table th.el-table__cell {
+  color: var(--ui-text-muted);
+  background: var(--ui-surface-muted);
+  border-bottom-color: var(--ui-border);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.el-table td.el-table__cell {
+  color: var(--ui-text);
+  border-bottom-color: var(--ui-border);
+  transition: background-color 180ms ease;
+}
+
+.el-table .el-table__body tr:hover > td.el-table__cell {
+  background: var(--ui-primary-faint);
+}
+
+@media (max-width: 620px) {
+  .ui-managed-dialog.el-dialog {
+    width: calc(100% - 28px) !important;
+    margin-top: max(16px, 6vh);
+  }
+}
