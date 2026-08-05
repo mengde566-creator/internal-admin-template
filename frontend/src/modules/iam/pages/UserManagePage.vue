@@ -4,7 +4,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
 import { isAxiosError } from 'axios'
 import { iamQueryKeys } from '../query-keys'
-import { fetchUsersApi, createUserApi, updateUserApi, type UserListItem } from '../api/user'
+import { fetchUsersApi, createUserApi, updateUserApi, deleteUserApi, type UserListItem } from '../api/user'
 import { fetchRolesApi } from '../api/role'
 
 const queryClient = useQueryClient()
@@ -81,6 +81,17 @@ const saveMutation = useMutation({
   }
 })
 
+const deleteMutation = useMutation({
+  mutationFn: (id: string) => deleteUserApi(id),
+  onSuccess: () => {
+    ElMessage.success('用户已删除')
+    void queryClient.invalidateQueries({ queryKey: ['iam', 'users'] })
+  },
+  onError: (error) => {
+    ElMessage.error(errorMessage(error, '删除失败，请稍后重试'))
+  }
+})
+
 async function onSubmit() {
   if (!form.username || !form.displayName || (!editing.value && !form.password)) {
     ElMessage.warning('请填写完整信息')
@@ -133,9 +144,19 @@ function onSearch() {
           <span v-if="row.roleNames.length === 0" class="muted">未分配角色</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="100">
+      <el-table-column label="操作" width="140">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-popconfirm
+            title="删除后不可恢复，确定删除该用户？"
+            confirm-button-text="删除"
+            cancel-button-text="取消"
+            @confirm="deleteMutation.mutate(row.id)"
+          >
+            <template #reference>
+              <el-button link type="danger">删除</el-button>
+            </template>
+          </el-popconfirm>
         </template>
       </el-table-column>
     </el-table>

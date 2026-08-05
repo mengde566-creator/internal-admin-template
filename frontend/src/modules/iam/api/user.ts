@@ -58,3 +58,12 @@ export function createUserApi(payload: CreateUserPayload) {
 export function updateUserApi(payload: UpdateUserPayload) {
   return http.put<ApiResponse<null>>('/api/users', payload)
 }
+
+/**
+ * 软删除用户（不可恢复）。
+ *
+ * @param id 用户 ID
+ */
+export function deleteUserApi(id: string) {
+  return http.delete<ApiResponse<null>>(`/api/users/${id}`)
+}

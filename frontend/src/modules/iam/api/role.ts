@@ -59,3 +59,12 @@ export function createRoleApi(payload: CreateRolePayload) {
 export function updateRoleApi(payload: UpdateRolePayload) {
   return http.put<ApiResponse<null>>('/api/roles', payload)
 }
+
+/**
+ * 删除角色（校验无用户引用后物理删除）。
+ *
+ * @param id 角色 ID
+ */
+export function deleteRoleApi(id: string) {
+  return http.delete<ApiResponse<null>>(`/api/roles/${id}`)
+}

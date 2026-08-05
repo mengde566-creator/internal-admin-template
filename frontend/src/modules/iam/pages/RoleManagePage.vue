@@ -9,6 +9,7 @@ import {
   fetchPermissionOptionsApi,
   createRoleApi,
   updateRoleApi,
+  deleteRoleApi,
   type RoleListItem
 } from '../api/role'
 
@@ -75,6 +76,17 @@ const saveMutation = useMutation({
   }
 })
 
+const deleteMutation = useMutation({
+  mutationFn: (id: string) => deleteRoleApi(id),
+  onSuccess: () => {
+    ElMessage.success('角色已删除')
+    void queryClient.invalidateQueries({ queryKey: ['iam', 'roles'] })
+  },
+  onError: (error) => {
+    ElMessage.error(errorMessage(error, '删除失败，请稍后重试'))
+  }
+})
+
 async function onSubmit() {
   if (!form.code || !form.name) {
     ElMessage.warning('请填写角色编码和名称')
@@ -113,9 +125,19 @@ async function onSubmit() {
           <span v-if="row.permissionCodes.length === 0" class="muted">无权限</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="100">
+      <el-table-column label="操作" width="140">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-popconfirm
+            title="确定删除该角色？"
+            confirm-button-text="删除"
+            cancel-button-text="取消"
+            @confirm="deleteMutation.mutate(row.id)"
+          >
+            <template #reference>
+              <el-button link type="danger" :disabled="row.code === 'SYSTEM_ADMIN'">删除</el-button>
+            </template>
+          </el-popconfirm>
         </template>
       </el-table-column>
     </el-table>
