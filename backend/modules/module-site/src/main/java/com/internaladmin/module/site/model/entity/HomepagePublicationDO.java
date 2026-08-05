@@ -30,6 +30,9 @@ public class HomepagePublicationDO {
     /** 已发布配色编码快照 */
     private String colorScheme;
 
+    /** 已发布布局代码快照：GRID_SPLIT 或 BANNER_SPLIT */
+    private String layoutCode = "GRID_SPLIT";
+
     /** 匿名访问是否可见（撤回时置 false） */
     private Boolean visible;
 
@@ -85,6 +88,14 @@ public class HomepagePublicationDO {
 
     public void setColorScheme(String colorScheme) {
         this.colorScheme = colorScheme;
+    }
+
+    public String getLayoutCode() {
+        return layoutCode;
+    }
+
+    public void setLayoutCode(String layoutCode) {
+        this.layoutCode = layoutCode;
     }
 
     public Boolean getVisible() {

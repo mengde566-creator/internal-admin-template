@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- module-site：主页布局字段 + 草稿/发布区块表（公开主页改版，REQ 已确认） -->
+    <!-- 注：SQLite 的 ALTER TABLE ADD COLUMN 不写 NOT NULL/DEFAULT，故列可空，
+         默认值由 DO 字段给出，并用 UPDATE 回填历史行（CAPABILITY_COMMON §2） -->
+
+    <changeSet id="2026-08-04-0001-add-homepage-layout-code" author="template">
+        <sql>ALTER TABLE site_homepage_draft ADD COLUMN layout_code VARCHAR(32)</sql>
+        <sql>ALTER TABLE site_homepage_publication ADD COLUMN layout_code VARCHAR(32)</sql>
+        <sql>UPDATE site_homepage_draft SET layout_code = 'GRID_SPLIT' WHERE layout_code IS NULL</sql>
+        <sql>UPDATE site_homepage_publication SET layout_code = 'GRID_SPLIT' WHERE layout_code IS NULL</sql>
+    </changeSet>
+
+    <changeSet id="2026-08-04-0001-create-draft-section" author="template">
+        <sql>
+            CREATE TABLE site_homepage_draft_section (
+                id BIGINT NOT NULL PRIMARY KEY,
+                section_type VARCHAR(32) NOT NULL,
+                title VARCHAR(200) NOT NULL,
+                content TEXT NOT NULL,
+                hero_file_id BIGINT,
+                sort_order INTEGER NOT NULL
+            )
+        </sql>
+    </changeSet>
+
+    <changeSet id="2026-08-04-0001-create-publication-section" author="template">
+        <sql>
+            CREATE TABLE site_homepage_publication_section (
+                id BIGINT NOT NULL PRIMARY KEY,
+                section_type VARCHAR(32) NOT NULL,
+                title VARCHAR(200) NOT NULL,
+                content TEXT NOT NULL,
+                hero_file_id BIGINT,
+                sort_order INTEGER NOT NULL
+            )
+        </sql>
+    </changeSet>
+
+</databaseChangeLog>

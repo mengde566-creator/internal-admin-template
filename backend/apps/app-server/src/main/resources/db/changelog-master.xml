@@ -9,6 +9,7 @@
     <include file="db/changelog/2026-08-03-0001-create-iam-tables.xml"/>
     <include file="db/changelog/2026-08-03-0001-create-file-asset.xml"/>
     <include file="db/changelog/2026-08-03-0001-create-homepage-tables.xml"/>
+    <include file="db/changelog/2026-08-04-0001-add-layout-and-sections.xml"/>
     <include file="db/changelog/2026-08-03-0001-create-audit-operation.xml"/>
 
 </databaseChangeLog>

@@ -6,8 +6,10 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
+import java.util.List;
+
 /**
- * 主页草稿内容（获取与保存共用）。
+ * 主页草稿内容（获取与保存共用，含区块与布局）。
  */
 public class HomepageDraftDTO {
 
@@ -22,7 +24,6 @@ public class HomepageDraftDTO {
 
     /** 主展示图片 ID（64 位整数按字符串传输） */
     @NotNull(message = "主展示图片不能为空")
-    @JsonSerialize(using = ToStringSerializer.class)
     private Long heroFileId;
 
     /** 联系方式文本 */
@@ -33,6 +34,14 @@ public class HomepageDraftDTO {
     @NotBlank(message = "配色不能为空")
     @Size(max = 32, message = "配色编码长度不合法")
     private String colorScheme;
+
+    /** 布局代码：GRID_SPLIT 或 BANNER_SPLIT（默认 GRID_SPLIT） */
+    @NotBlank(message = "布局不能为空")
+    @Size(max = 32, message = "布局编码长度不合法")
+    private String layoutCode = "GRID_SPLIT";
+
+    /** 区块列表（草稿子内容，整体保存：id 空则新增、否则更新、列表外则删除） */
+    private List<HomepageSectionDTO> sections;
 
     public String getSiteName() {
         return siteName;
@@ -50,6 +59,7 @@ public class HomepageDraftDTO {
         this.introduction = introduction;
     }
 
+    @JsonSerialize(using = ToStringSerializer.class)
     public Long getHeroFileId() {
         return heroFileId;
     }
@@ -72,5 +82,21 @@ public class HomepageDraftDTO {
 
     public void setColorScheme(String colorScheme) {
         this.colorScheme = colorScheme;
+    }
+
+    public String getLayoutCode() {
+        return layoutCode;
+    }
+
+    public void setLayoutCode(String layoutCode) {
+        this.layoutCode = layoutCode;
+    }
+
+    public List<HomepageSectionDTO> getSections() {
+        return sections;
+    }
+
+    public void setSections(List<HomepageSectionDTO> sections) {
+        this.sections = sections;
     }
 }

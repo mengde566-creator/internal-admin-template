@@ -1,22 +1,37 @@
 import { http, type ApiResponse } from '../../../shared/api/http'
 
-/** 主页内容（草稿/公开共用字段契约） */
-export interface HomepageContent {
-  siteName: string
-  introduction: string
-  heroFileId: string
-  contactText: string
-  colorScheme: 'GRAPHITE' | 'AZURE'
+/** 布局代码（代码定义，前端只展示，权威在后端白名单） */
+export type LayoutCode = 'GRID_SPLIT' | 'BANNER_SPLIT'
+
+/** 区块类型代码（代码定义，第一批 4 种） */
+export type SectionType = 'ABOUT' | 'SERVICE' | 'NEWS' | 'CONTACT'
+
+/** 主页区块（草稿与公开共用传输结构；id 由后端生成，新增时为空） */
+export interface HomepageSection {
+  id?: string
+  sectionType: SectionType
+  title: string
+  content: string
+  heroFileId?: string
+  sortOrder?: number
 }
 
-/** 公开主页内容 */
-export interface HomepagePublic {
+/** 主页展示内容（草稿与公开页共用字段契约，含布局与区块） */
+export interface HomepageView {
   siteName: string
   introduction: string
   heroFileId: string
   contactText: string
   colorScheme: 'GRAPHITE' | 'AZURE'
+  layoutCode: LayoutCode
+  sections: HomepageSection[]
 }
+
+/** 主页草稿内容（获取与保存共用） */
+export type HomepageContent = HomepageView
+
+/** 公开主页内容 */
+export type HomepagePublic = HomepageView
 
 /**
  * 获取当前草稿（尚无草稿时返回 null）。
@@ -26,12 +41,12 @@ export function fetchDraftApi() {
 }
 
 /**
- * 保存草稿。
+ * 保存草稿（含布局与区块），返回保存后的草稿（含后端生成的区块 ID）。
  *
  * @param payload 草稿内容
  */
 export function saveDraftApi(payload: HomepageContent) {
-  return http.put<ApiResponse<null>>('/api/site/draft', payload)
+  return http.put<ApiResponse<HomepageContent>>('/api/site/draft', payload)
 }
 
 /**

@@ -28,6 +28,9 @@ public class HomepageDraftDO {
     /** 配色编码：GRAPHITE 或 AZURE */
     private String colorScheme;
 
+    /** 布局代码：GRID_SPLIT 或 BANNER_SPLIT（默认 GRID_SPLIT） */
+    private String layoutCode = "GRID_SPLIT";
+
     public Long getId() {
         return id;
     }
@@ -74,5 +77,13 @@ public class HomepageDraftDO {
 
     public void setColorScheme(String colorScheme) {
         this.colorScheme = colorScheme;
+    }
+
+    public String getLayoutCode() {
+        return layoutCode;
+    }
+
+    public void setLayoutCode(String layoutCode) {
+        this.layoutCode = layoutCode;
     }
 }

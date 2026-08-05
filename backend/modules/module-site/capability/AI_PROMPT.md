@@ -28,7 +28,7 @@ controller/  service/  mapper/  model/entity/  model/dto/
 
 ### 数据对象
 
-- 单例表（id=1）由 DO 固定；DTO 的 heroFileId getter 用 **tools.jackson** `ToStringSerializer`（字符串传输，防精度丢失）。
+- 单例表（id=1）由 DO 固定；ID 字符串传输等通用约定见工程顶层 `docs/development/CAPABILITY_COMMON.md`。
 
 ### 权限
 

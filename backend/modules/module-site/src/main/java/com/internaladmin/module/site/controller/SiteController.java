@@ -68,9 +68,8 @@ public class SiteController {
      */
     @PutMapping("/api/site/draft")
     @PreAuthorize("hasAuthority('site:homepage:edit')")
-    public ApiResponse<Void> saveDraft(@Valid @RequestBody HomepageDraftDTO dto) {
-        siteService.saveDraft(dto);
-        return ApiResponse.ok(null);
+    public ApiResponse<HomepageDraftDTO> saveDraft(@Valid @RequestBody HomepageDraftDTO dto) {
+        return ApiResponse.ok(siteService.saveDraft(dto));
     }
 
     /**

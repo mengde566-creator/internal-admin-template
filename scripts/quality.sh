@@ -51,11 +51,11 @@ n = len([r for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type='ta
 conn.close()
 print(n)
 ")"
-if [ "$TABLE_COUNT" != "9" ]; then
-  echo "错误：迁移后业务表数量应为 9，实际为 $TABLE_COUNT" >&2
+if [ "$TABLE_COUNT" != "12" ]; then
+  echo "错误：迁移后业务表数量应为 12，实际为 $TABLE_COUNT" >&2
   exit 1
 fi
-echo "    迁移检查通过：9 张业务表已从空库创建"
+echo "    迁移检查通过：12 张业务表已从空库创建"
 
 echo "==> [3/3] 前端：类型检查 + 构建"
 (cd frontend && npm run typecheck && npm run build)
