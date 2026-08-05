@@ -22,19 +22,9 @@
 | 14 | 参数校验 | 空账号/短密码/size>100→400 | ✅ 手动验证 |
 | 15 | 管理操作审计 | USER_DELETE/ROLE_DELETE 写入 audit_operation | ✅ 手动验证 |
 
-## 安全/权限用例
+## 通用用例
 
-- 未登录 401、越权 403、参数错误 400（含 size>100 非 500）；
-- Session 固定防护（登录后 SID 更换）；
-- CSRF：无 token 的状态变更请求被 403 拦截；登录页先 GET 种 cookie 后正常；
-- 密码不明文日志（配置 `app.admin-initial-password` 后不打印初始密码）。
-
-## 数据完整性用例
-
-- 软删除后不可见不可登录（@TableLogic 过滤）；
-- 被引用角色删除拒绝；
-- 更新 null=不修改角色；
-- SQLite 软删除默认值（新行 deleted=0）。
+安全/权限、数据完整性通用用例见工程顶层 `docs/development/CAPABILITY_COMMON.md` 第 3/4 节（本模块已覆盖：401/403/400、CSRF、Session 固定、软删除、null=不修改、引用拒绝）。
 
 ## 验收点
 

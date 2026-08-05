@@ -25,8 +25,7 @@ controller/  service/  mapper/  model/entity/  model/dto/  api/  bootstrap/
 ### 数据对象
 
 - DO 用 `DO` 后缀、`@TableName`；DTO 按场景命名（Create/Update/Query/List）；
-- **ID 一律字符串传输**：DTO 的 ID getter 加 `@JsonSerialize(using = ToStringSerializer.class)`——注意是 **tools.jackson** 包（Boot 4 默认 Jackson 3，`com.fasterxml` 注解不生效）；注解必须标在 **getter**（Jackson 用 getter 序列化，字段注解不生效）；
-- 更新 DTO 中 `null` 表示"不修改"（AGENTS §6）。
+- ID 字符串传输、变更集规则等通用约定见工程顶层 `docs/development/CAPABILITY_COMMON.md`（本模块只写特有的）。
 
 ### 权限与审计
 

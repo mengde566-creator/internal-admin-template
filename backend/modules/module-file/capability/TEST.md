@@ -17,18 +17,9 @@
 | 9 | 无 edit 权限用户上传/读取 | 403 | ✅ 手动验证 |
 | 10 | 公开端引用校验（module-site） | 未发布图片 `/api/public/files/{id}` → 404 | ✅ 手动验证 |
 
-## 安全/权限用例
+## 通用用例
 
-- 未登录访问上传/读取 → 401；
-- 越权（无 site:homepage:edit）→ 403；
-- 上传接口不可被匿名公开调用（公开读取走 module-site 引用校验）；
-- 文件名不可由用户指定（系统生成 UUID，防路径注入）。
-
-## 数据完整性用例
-
-- relative_path 唯一（重复插入被拒）；
-- 上传成功但元数据登记失败 → 清理文件（不留孤儿）；
-- 大小限制三处一致：application.yml（multipart） = FileStorageService 常量 = 前端客户端校验 = 提示文案。
+安全/权限通用用例见工程顶层 `docs/development/CAPABILITY_COMMON.md` 第 3 节（401/403 已覆盖）。
 
 ## 验收点
 
