@@ -12,7 +12,6 @@ import com.internaladmin.module.iam.model.dto.RoleListDTO;
 import com.internaladmin.module.iam.model.dto.UpdateRoleDTO;
 import com.internaladmin.module.audit.api.AuditRecordApi;
 import com.internaladmin.module.iam.mapper.UserRoleMapper;
-import com.internaladmin.module.iam.model.entity.UserRoleDO;
 import com.internaladmin.platform.kernel.error.BusinessException;
 import com.internaladmin.platform.kernel.error.ErrorCode;
 import org.springframework.stereotype.Service;
@@ -158,11 +157,10 @@ public class RoleService {
         if (role == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "角色不存在");
         }
-        Long userCount = userRoleMapper.selectCount(
-                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<UserRoleDO>()
-                        .eq(UserRoleDO::getRoleId, id));
-        if (userCount > 0) {
-            throw new BusinessException(ErrorCode.BUSINESS_REJECTED, "该角色已被用户使用，请先解除用户分配");
+        List<String> usernames = userRoleMapper.selectUsernamesByRoleId(id);
+        if (!usernames.isEmpty()) {
+            throw new BusinessException(ErrorCode.BUSINESS_REJECTED,
+                    "该角色正被用户 [" + String.join("、", usernames) + "] 使用，请先解除分配后再删除");
         }
         Long operatorId = currentUserId();
         rolePermissionMapper.delete(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<RolePermissionDO>()

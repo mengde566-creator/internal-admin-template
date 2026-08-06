@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import { isAxiosError } from 'axios'
 import { siteQueryKeys } from '../query-keys'
 import {
@@ -20,6 +21,36 @@ import { useAuthStore } from '../../auth/store/auth'
 
 const queryClient = useQueryClient()
 const auth = useAuthStore()
+
+/** 表单校验：必填规则与后端 @NotBlank/@NotNull 保持一致（站点名称/简介/联系方式/主图/区块标题/内容） */
+const formRef = ref<FormInstance>()
+const formRules: FormRules = {
+  siteName: [{ required: true, message: '请输入站点名称', trigger: 'blur' }],
+  introduction: [{ required: true, message: '请输入站点简介', trigger: 'blur' }],
+  contactText: [{ required: true, message: '请输入联系方式', trigger: 'blur' }],
+  heroFileId: [{ required: true, message: '请上传主展示图片', trigger: 'change' }],
+  sections: [
+    {
+      type: 'array',
+      defaultField: {
+        type: 'object',
+        fields: {
+          title: [{ required: true, message: '请输入区块标题', trigger: 'blur' }],
+          content: [{ required: true, message: '请输入区块内容', trigger: 'blur' }]
+        }
+      }
+    }
+  ]
+}
+
+/** 保存前先执行前端校验，未通过不发起请求（必填错误就地标红显示） */
+const handleSave = async () => {
+  const valid = await formRef.value?.validate().catch(() => false)
+  if (valid === false) {
+    return
+  }
+  saveMutation.mutate()
+}
 
 const draftQuery = useQuery({
   queryKey: siteQueryKeys.draft(),
@@ -230,7 +261,7 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
       <h1>主页内容管理</h1>
       <div class="actions">
         <el-button @click="showPreview = true">预览</el-button>
-        <el-button type="primary" :loading="saveMutation.isPending.value" @click="saveMutation.mutate()">
+        <el-button type="primary" :loading="saveMutation.isPending.value" @click="handleSave">
           保存草稿
         </el-button>
         <template v-if="auth.hasPermission('site:homepage:publish')">
@@ -246,14 +277,14 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
 
     <div class="layout">
       <div class="form-panel">
-        <el-form label-position="top">
-          <el-form-item label="站点名称">
+        <el-form ref="formRef" :model="form" :rules="formRules" label-position="top">
+          <el-form-item label="站点名称" prop="siteName" required>
             <el-input v-model="form.siteName" maxlength="120" placeholder="站点名称" />
           </el-form-item>
-          <el-form-item label="站点简介">
+          <el-form-item label="站点简介" prop="introduction" required>
             <el-input v-model="form.introduction" type="textarea" :rows="3" placeholder="一句话介绍站点" />
           </el-form-item>
-          <el-form-item label="联系方式">
+          <el-form-item label="联系方式" prop="contactText" required>
             <el-input v-model="form.contactText" placeholder="邮箱 / 电话 / 地址" />
           </el-form-item>
           <el-form-item label="配色">
@@ -267,7 +298,7 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
               <el-radio v-for="opt in layoutOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</el-radio>
             </el-radio-group>
           </el-form-item>
-          <el-form-item label="主展示图片">
+          <el-form-item label="主展示图片" prop="heroFileId" required>
             <div class="upload-row">
               <input
                 ref="fileInput"
@@ -294,16 +325,16 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
                 <el-button size="small" type="danger" plain @click="removeSection(index)">删除</el-button>
               </div>
             </div>
-            <el-form label-position="top" class="section-form">
+            <el-form :model="form" :rules="formRules" label-position="top" class="section-form">
               <el-form-item label="类型">
                 <el-select v-model="section.sectionType" placeholder="选择区块类型">
                   <el-option v-for="opt in sectionTypeOptions" :key="opt.value" :value="opt.value" :label="opt.label" />
                 </el-select>
               </el-form-item>
-              <el-form-item label="标题">
+              <el-form-item label="标题" :prop="'sections.' + index + '.title'" required>
                 <el-input v-model="section.title" placeholder="区块标题" />
               </el-form-item>
-              <el-form-item label="内容">
+              <el-form-item label="内容" :prop="'sections.' + index + '.content'" required>
                 <el-input v-model="section.content" type="textarea" :rows="3" placeholder="区块内容" />
               </el-form-item>
               <el-form-item label="配图（可空）">

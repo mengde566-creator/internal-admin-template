@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.internaladmin.module.iam.mapper.UserRoleMapper">
+
+    <!-- 查询引用指定角色的有效用户（排除已软删除），用于角色删除前的引用校验 -->
+    <select id="selectUsernamesByRoleId" resultType="java.lang.String">
+        SELECT u.username
+        FROM iam_user u
+        JOIN iam_user_role ur ON ur.user_id = u.id
+        WHERE ur.role_id = #{roleId} AND u.deleted = 0
+        ORDER BY u.id
+    </select>
+
+</mapper>

@@ -216,7 +216,40 @@ class IamFlowTest {
                 .andExpect(status().isOk());
         mockMvc.perform(delete("/api/roles/" + roleId).session(session).with(csrf()))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("已被用户使用")));
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("正被用户")));
+    }
+
+    @Test
+    @DisplayName("回归：被软删除用户的角色引用不阻塞删除（引用校验过滤 deleted）")
+    void roleDeleteIgnoresSoftDeletedUserReferences() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        String code = "SOFTREF" + UUID.randomUUID().toString().substring(0, 4);
+        MvcResult role = mockMvc.perform(post("/api/roles")
+                        .session(session)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"code\":\"" + code + "\",\"name\":\"软删引用\",\"permissionCodes\":[]}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String roleId = objectMapper.readTree(role.getResponse().getContentAsString())
+                .path("data").path("id").asText();
+        String username = unique("softrefuser");
+        // 用户绑定该角色
+        MvcResult user = mockMvc.perform(post("/api/users")
+                        .session(session)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"username\":\"" + username + "\",\"displayName\":\"软删用户\",\"password\":\"SoftRefPass123\",\"roleIds\":[\"" + roleId + "\"]}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String userId = objectMapper.readTree(user.getResponse().getContentAsString())
+                .path("data").path("id").asText();
+        // 软删除用户（关联记录保留在 iam_user_role）
+        mockMvc.perform(delete("/api/users/" + userId).session(session).with(csrf()))
+                .andExpect(status().isOk());
+        // 角色应可删除（有效用户引用为空）
+        mockMvc.perform(delete("/api/roles/" + roleId).session(session).with(csrf()))
+                .andExpect(status().isOk());
     }
 
     @Test
