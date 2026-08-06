@@ -36,7 +36,8 @@
 2. import 包名与当前目录一致（尤其 `model.entity`、`tools.jackson`）；
 3. 新依赖是否已在父 POM `dependencyManagement` 锁定；
 4. 新 Controller 是否遗漏 `@PreAuthorize` / 新 Mapper 是否加入 `@MapperScan` 列表；
-5. 前后端契约（字段名/类型/ID 字符串）一致。
+5. 前后端契约（字段名/类型/ID 字符串）一致；
+6. **涉及运行/启动的改动，按 [RUNBOOK.md](RUNBOOK.md) 第 4 节执行**：标准停止 → 确认构建产物最新 → `scripts/dev.sh start` → `scripts/dev.sh status` 全绿 → 再做功能验证；禁止用临时命令启动服务。
 
 ## 4. 教训来源
 
@@ -63,7 +64,7 @@
 - **工具参数转义**：JSON 参数中 `\\n` 解码后是反斜杠+n 字面量；要让 python 源码得到 `\\n`（匹配字面量），bash 命令参数需写四重反斜杠 `\\\\n`；
 - **grep 的 `\n` 匹配换行符**（GNU 扩展）：检查字面量 `\n` 必须用 python（`'\\\\n' in text`）而非 grep；
 - **Windows python 无 /tmp**：python 读不了 git bash 的 /tmp，跨工具传文件用项目内路径（如 data/）；
-- **子 shell 后台进程会被清理**：`(npm run dev &)` 在命令结束后被杀，长驻服务必须用保持运行的后台任务；
+- **子 shell 后台进程会被清理**：`(npm run dev &)` 在命令结束后被杀；**服务启动一律走 [RUNBOOK.md](RUNBOOK.md) + `scripts/dev.sh`**（nohup + setsid 脱离），禁止临时 `&` 启动；
 - **curl 不受 CORS 限制**：CORS 验证必须看响应头（Access-Control-Allow-Origin）而非请求是否成功。
 
 ### 5.4 开发纪律（写入流程）
@@ -71,8 +72,9 @@
 1. **新文件写前对照**第 2 节"代码约定"（包名/Jackson/ID 字符串/Boot 4 差异）；
 2. **写完立即自查**（第 3 节清单），禁止"等会统一修"；
 3. **一次工具调用只改一个文件**；跨文件改动分开调用；
-4. **验证分级**：编译 → 启动 → 接口 → 真实浏览器路径（img/跨域/代理/精度）；
-5. **新功能前先列"已确认事实"**：如上传先确认框架默认 multipart 限制再定白名单。
+4. **验证分级**：编译 → 启动（RUNBOOK 标准流程）→ 接口 → 真实浏览器路径（img/跨域/代理/精度）；
+5. **新功能前先列"已确认事实"**：如上传先确认框架默认 multipart 限制再定白名单；
+6. **落地验证 = quality 绿 + dev status 绿**：新增伴随组件（数据库/中间件）必须同步补充 dev.sh 检查项（RUNBOOK 第 3 节）。
 
 ## 6. 删除决策与软删除约定（2026-08-03 确认）
 
