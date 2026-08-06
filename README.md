@@ -20,20 +20,62 @@
 
 ## 当前阶段
 
-项目处于规划阶段，暂不急于堆叠功能或拆分微服务。当前优先确定：
+0.1 最小闭环已实现并验证：登录认证（Session + CSRF）、用户/角色/权限管理、系统参数、文件上传、主页内容管理（草稿/发布/撤回）、操作审计、公开展示页。配套模板机制（需求漏斗、验收引导、能力包、工程约定、质量门禁）同步在建设。
 
-1. 项目边界与模块分层；
-2. Java 后端、Vue 前端和数据库的工程基线；
-3. SQLite 零配置模式与外部数据库的切换机制；
-4. Python/AI 能力的接入边界；
-5. 第一版最小可用模板的验收标准。
+## 快速开始
 
-详细规划见 [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md)。
+### 环境要求
+
+- JDK 25（LTS）
+- Maven 3.9+
+- Node.js 20+（前端构建）
+
+### 启动后端（SQLite 零配置）
+
+```bash
+cd backend
+mvn -DskipTests package
+java -jar apps/app-server/target/app-server-0.1.0-SNAPSHOT.jar
+```
+
+- 无需预装数据库，首次启动自动创建 `backend/data/internal-admin.db` 并执行 Liquibase 迁移；
+- 首次启动自动创建管理员 `admin`，**初始密码随机生成并输出到启动日志**（也可通过环境变量 `APP_ADMIN_PASSWORD` 指定）；
+- 健康检查：`curl http://localhost:8080/actuator/health`。
+
+### 启动前端
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+访问 http://127.0.0.1:5173 ，开发代理已配置 `/api → 8080`。
+
+### 质量门禁
+
+```bash
+./scripts/quality.sh
+```
+
+包含：后端测试（mvn verify，含 14 个集成测试）+ 空库迁移检查（12 张表）+ 前端类型检查与构建。
+
+### 测试
+
+```bash
+cd backend
+mvn test -pl apps/app-server -am
+```
+
+集成测试使用独立测试库（`data/test-*.db`），不污染开发库。
 
 ## 文档入口
 
 - [项目愿景](docs/PROJECT_VISION.md)：已确认的长期目标——AI 可装配、人可审计的全栈模板，模块化 AI 能力包与四条幻觉治理防线；
 - [工作模式构想](docs/planning/WORKING_MODEL.md)：「项目灵魂」的完整展开——人机分工、材料体系、需求漏斗、验收机制、结构地图、验证方案（草稿，持续演进）；
+- [需求漏斗](docs/ai/REQUIREMENT_GUIDE.md)：需求澄清的强制流程（AGENTS 红线第 7/8 条）；
+- [验收引导协议](docs/ai/ACCEPTANCE_GUIDE.md)：测试文档/验收清单/风险标注（高/中/低 + 理由）；
+- [能力包通用规则](docs/development/CAPABILITY_COMMON.md)：AI 能力包的顶层通用约定（禁止复制进模块）；
 - [工程实现约定与已知陷阱](docs/development/ENGINEERING_CONVENTIONS.md)：已核实技术事实、代码约定、提交前自查清单、工具环境陷阱与开发纪律（**所有代码实现任务必读**）；
 - [需求索引](requirements/README.md)：需求状态、权威级别和阅读入口；
 - [产品范围草案](requirements/PRODUCT_SCOPE.md)：产品目标、角色、场景和长期边界；
