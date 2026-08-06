@@ -43,3 +43,6 @@ target/
 # ===== Local data (SQLite 文件库，不提交版本库) =====
 data/
 .reasonix/
+
+# 运行时日志与 PID
+logs/
