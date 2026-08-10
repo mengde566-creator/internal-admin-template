@@ -11,9 +11,9 @@
 | `api/auth/logout` | POST | 登录 | 销毁 Session |
 | `api/auth/me` | GET | 登录 | 当前用户+权限 |
 | `api/auth/change-password` | POST | 登录 | 改密（强制改密入口） |
-| `api/users` | GET/POST/PUT | `iam:user:manage` | 分页/创建/更新 |
+| `api/users` | GET/POST/PUT | `iam:user:manage` | 分页/创建/更新；创建成功返回 `{ data: { id: string } }` |
 | `api/users/{id}` | DELETE | `iam:user:manage` | 软删除 |
-| `api/roles` | GET/POST/PUT | `iam:role:manage` | 列表/创建/更新 |
+| `api/roles` | GET/POST/PUT | `iam:role:manage` | 列表/创建/更新；创建成功返回 `{ data: { id: string } }` |
 | `api/roles/{id}` | DELETE | `iam:role:manage` | 引用校验删除 |
 | `api/roles/permission-options` | GET | `iam:role:manage` | 权限选项（前端选择器） |
 | `api/system/configs` | GET/PUT | `system:config:manage` | 系统参数 |

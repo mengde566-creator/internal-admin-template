@@ -20,6 +20,12 @@ import java.io.IOException;
  */
 public final class CsrfCookieFilter extends OncePerRequestFilter {
 
+    private final boolean secure;
+
+    public CsrfCookieFilter(boolean secure) {
+        this.secure = secure;
+    }
+
     /**
      * 将 CSRF token 写入响应 cookie 后继续过滤器链。
      *
@@ -43,6 +49,8 @@ public final class CsrfCookieFilter extends OncePerRequestFilter {
         if (csrfToken != null) {
             Cookie cookie = new Cookie("XSRF-TOKEN", csrfToken.getToken());
             cookie.setPath("/");
+            cookie.setSecure(secure);
+            cookie.setAttribute("SameSite", "Lax");
             response.addCookie(cookie);
         }
         filterChain.doFilter(request, response);

@@ -9,8 +9,13 @@
 - [architecture/FRONTEND_STRUCTURE.md](architecture/FRONTEND_STRUCTURE.md)：已确认的单 Vue 应用结构、布局边界和未来客户空间方向；
 - [architecture/AUTHENTICATION.md](architecture/AUTHENTICATION.md)：已确认的当前认证主路径和长期多端、多服务演进边界；
 - [planning/REQUIREMENTS_ROADMAP.md](planning/REQUIREMENTS_ROADMAP.md)：需求分析阶段路线图；
-- [database/V0_1_SCHEMA_PROPOSAL.md](database/V0_1_SCHEMA_PROPOSAL.md)：待确认的 0.1 最小表结构；
-- [frontend/V0_1_UI_PROPOSALS.md](frontend/V0_1_UI_PROPOSALS.md)：待确认的 0.1 页面与视觉方案。
+- [database/V0_1_SCHEMA_PROPOSAL.md](database/V0_1_SCHEMA_PROPOSAL.md)：已确认并已落地的 0.1 表结构；
+- [frontend/V0_1_UI_PROPOSALS.md](frontend/V0_1_UI_PROPOSALS.md)：已确认的 0.1 页面与视觉方案。
+- [system/requirements/PUBLIC_SITE_REDESIGN.md](system/requirements/PUBLIC_SITE_REDESIGN.md)：已确认且已实现的公开主页布局与内容区块需求；
+- [system/api/iam/](system/api/iam/)：IAM 创建与删除接口的字段、错误语义和前后端对齐清单；
+- [development/RUNBOOK.md](development/RUNBOOK.md)：本地启动、检查与运行验证步骤。
+- [team/VERSION_DELIVERY_PROTOCOL.md](team/VERSION_DELIVERY_PROTOCOL.md)：跨版本任务的派发前可行性审查、研发接单、自审和总设计师独立验收规则；
+- [team/templates/VERSION_ENGINEERING_TASK_TEMPLATE.md](team/templates/VERSION_ENGINEERING_TASK_TEMPLATE.md)：版本工程任务必须使用的可执行性与证据模板；
 
 后续根据真实内容按需增加：
 

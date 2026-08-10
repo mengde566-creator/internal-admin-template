@@ -11,7 +11,6 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
 public class IdResultDTO {
 
     /** ID（64 位整数按字符串传输） */
-    @JsonSerialize(using = ToStringSerializer.class)
     private final Long id;
 
     /**
@@ -23,6 +22,7 @@ public class IdResultDTO {
         this.id = id;
     }
 
+    @JsonSerialize(using = ToStringSerializer.class)
     public Long getId() {
         return id;
     }

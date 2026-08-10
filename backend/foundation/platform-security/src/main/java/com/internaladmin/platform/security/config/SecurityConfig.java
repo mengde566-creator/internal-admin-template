@@ -4,14 +4,24 @@ import tools.jackson.databind.ObjectMapper;
 import com.internaladmin.platform.kernel.error.ErrorCode;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.logout.CompositeLogoutHandler;
+import org.springframework.security.web.authentication.logout.LogoutHandler;
+import org.springframework.security.web.authentication.logout.SecurityContextLogoutHandler;
+import org.springframework.security.web.authentication.session.ChangeSessionIdAuthenticationStrategy;
+import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.security.web.csrf.CsrfLogoutHandler;
 import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
+import org.springframework.security.web.csrf.CsrfTokenRepository;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
+import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -36,36 +46,51 @@ public class SecurityConfig {
      *
      * <p>方法：{@code securityFilterChain}</p>
      *
-     * <p>执行链路（共 6 步）：</p>
+     * <p>执行链路（共 7 步）：</p>
      * 1. 启用 CSRF，使用 {@link CookieCsrfTokenRepository}（HttpOnly=false，前端可读 XSRF-TOKEN 并回传）；
      * 2. 放行公开路径：登录、健康检查、公开主页与公开文件（/api/public/**）；
-     * 3. 其余请求要求认证（会话由服务端 Session 维持）；
-     * 4. 关闭默认表单登录与 httpBasic（统一走 /api/auth/login）；
-     * 5. 关闭默认退出（退出由业务接口销毁 Session）；
-     * 6. 配置 401/403 JSON 响应（未登录 401、无权限 403）。
+     * 3. 仅在启用契约 profile 时放行 {@code /v3/api-docs/**}，生产默认不暴露该入口；
+     * 4. 其余请求要求认证（会话由服务端 Session 维持）；
+     * 5. 关闭默认表单登录与 httpBasic（统一走 /api/auth/login）；
+     * 6. 关闭默认退出（退出由业务接口销毁 Session）；
+     * 7. 配置 401/403 JSON 响应（未登录 401、无权限 403）。
      *
      * @param http HttpSecurity
+     * @param apiDocsEnabled 是否启用运行时 OpenAPI 契约入口
      * @return 安全过滤链
      * @throws Exception 配置异常
      */
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http,
+                                                   @Value("${springdoc.api-docs.enabled:false}") boolean apiDocsEnabled,
+                                                   CsrfTokenRepository csrfTokenRepository,
+                                                   SecurityContextRepository securityContextRepository,
+                                                   SessionAuthenticationStrategy sessionAuthenticationStrategy,
+                                                   @Value("${app.security.csrf-cookie.secure:false}") boolean csrfCookieSecure)
+            throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
         http
                 .cors(Customizer.withDefaults())
                 .csrf(csrf -> csrf
                         // SPA + cookie 直读：前端从 XSRF-TOKEN cookie 取值放入 X-XSRF-TOKEN 请求头
-                        .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+                        .csrfTokenRepository(csrfTokenRepository)
                         .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
-                .addFilterAfter(new CsrfCookieFilter(),
+                .securityContext(context -> context.securityContextRepository(securityContextRepository))
+                .sessionManagement(session -> session.sessionAuthenticationStrategy(sessionAuthenticationStrategy))
+                .addFilterAfter(new CsrfCookieFilter(csrfCookieSecure),
                         org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class)
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/auth/login",
-                                "/actuator/health",
-                                "/actuator/health/**",
-                                "/api/public/**",
-                                "/error").permitAll()
-                        .anyRequest().authenticated())
+                .authorizeHttpRequests(auth -> {
+                    auth.requestMatchers("/api/auth/login",
+                                    "/actuator/health",
+                                    "/actuator/health/**",
+                                    "/api/public/**",
+                                    "/error")
+                            .permitAll();
+                    if (apiDocsEnabled) {
+                        auth.requestMatchers("/v3/api-docs/**").permitAll();
+                    }
+                    auth.anyRequest().authenticated();
+                })
                 .formLogin(form -> form.disable())
                 .httpBasic(basic -> basic.disable())
                 .logout(logout -> logout.disable())
@@ -89,6 +114,32 @@ public class SecurityConfig {
                                             "data", "")));
                         }));
         return http.build();
+    }
+
+    @Bean
+    public CsrfTokenRepository csrfTokenRepository(
+            @Value("${app.security.csrf-cookie.secure:false}") boolean secure) {
+        CookieCsrfTokenRepository repository = CookieCsrfTokenRepository.withHttpOnlyFalse();
+        repository.setCookieCustomizer(builder -> builder.path("/").sameSite("Lax").secure(secure));
+        return repository;
+    }
+
+    @Bean
+    public SecurityContextRepository securityContextRepository() {
+        return new HttpSessionSecurityContextRepository();
+    }
+
+    @Bean
+    public SessionAuthenticationStrategy sessionAuthenticationStrategy() {
+        return new ChangeSessionIdAuthenticationStrategy();
+    }
+
+    @Bean
+    public LogoutHandler authLogoutHandler(SecurityContextRepository securityContextRepository,
+                                           CsrfTokenRepository csrfTokenRepository) {
+        SecurityContextLogoutHandler securityContextLogoutHandler = new SecurityContextLogoutHandler();
+        securityContextLogoutHandler.setSecurityContextRepository(securityContextRepository);
+        return new CompositeLogoutHandler(securityContextLogoutHandler, new CsrfLogoutHandler(csrfTokenRepository));
     }
 
     /**

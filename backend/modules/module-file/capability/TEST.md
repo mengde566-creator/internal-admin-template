@@ -1,28 +1,32 @@
 # module-file 测试清单
 
-> 最后核对：2026-08-04。自动化测试代码待补充，以下为必须覆盖的用例（均已手动验证）。
+> 最后核对：2026-08-10（V01-06 无数据库自动化测试已补齐）。
+
+## 自动化测试边界
+
+`FileStorageServiceTest` 只构造 `FileStorageService`、真实 JDK 临时目录和 Mock `FileAssetMapper`；不启动 Spring 应用、Liquibase、MyBatis 或数据库。所有失败场景均断言 Mapper 不调用且临时目录没有常规文件残留；Mapper 插入失败额外断言已产生的最终文件被清理。
+
+WebP 正常样本来自 TwelveMonkeys 官方仓库 tag `twelvemonkeys-3.14.0` 的 `imageio/imageio-webp/src/test/resources/webp/small_1x1.webp`，SHA-256 为 `2f34799482dd5349b549d113fdaa188714d9737fe414e71541b752627bedbde3`，仅用于验证解码器路径；其 BSD-3-Clause 版权与许可文本保留在测试源码中。动态 WebP 拒绝样本由该静态 VP8 帧按 WebP RIFF 动画容器规则组合为双帧，仅用于验证单帧策略。
 
 ## 必测用例
 
-| # | 场景 | 预期 | 状态 |
+| # | 场景 | 预期 | 自动化状态 |
 | --- | --- | --- | --- |
-| 1 | 上传合法图片（jpg/png/webp，≤10MB） | 200，返回字符串 fileId | ✅ 手动验证 |
-| 2 | 上传超过 10MB | 400 明确提示"不能超过 10MB"（非 500） | ✅ 手动验证 |
-| 3 | 上传非白名单类型（如 gif） | 400 仅支持 jpg/jpeg/png/webp | ✅ 手动验证 |
-| 4 | 上传无扩展名/伪装扩展名 | 400（contentType+扩展名双校验） | ✅ 手动验证 |
-| 5 | 上传文件为空 | 400 上传文件不能为空 | ✅ 手动验证 |
-| 6 | 上传后元数据落库 | file_asset 记录 relative_path（yyyyMMdd/UUID.ext）+ content_type | ✅ 手动验证 |
-| 7 | 上传失败不留半文件 | 存储异常时无残留文件（deleteIfExists） | ✅ 手动验证 |
-| 8 | 管理端读取图片 | `/api/files/{id}`（edit 权限）返回文件流 | ✅ 手动验证 |
-| 9 | 无 edit 权限用户上传/读取 | 403 | ✅ 手动验证 |
-| 10 | 公开端引用校验（module-site） | 未发布图片 `/api/public/files/{id}` → 404 | ✅ 手动验证 |
+| 1 | 真实 JPEG 上传，客户端扩展名为 `.jpeg` | JDK ImageIO 解码通过；元数据为 `image/jpeg`，最终路径为系统生成 `.jpg` | ✅ |
+| 2 | 真实 PNG 上传 | JDK ImageIO 解码通过；元数据和最终扩展名均为 PNG | ✅ |
+| 3 | 真实 WebP 上传 | TwelveMonkeys ImageIO 3.14.0 解码通过；元数据和最终扩展名均为 WebP | ✅ |
+| 4 | MIME 伪装 | 实际 PNG 声明为 JPEG 被拒绝；Mapper 不调用、无残留文件 | ✅ |
+| 5 | 扩展名伪装 | 实际 PNG 使用 `.jpg` 被拒绝；Mapper 不调用、无残留文件 | ✅ |
+| 6 | 截断/签名正确但不可解码 PNG | 被完整解码检查拒绝；Mapper 不调用、无残留文件 | ✅ |
+| 7 | 非图片内容 | 被真实格式识别拒绝；Mapper 不调用、无残留文件 | ✅ |
+| 8 | 单边超过 8192 或总像素超过 40,000,000 | 在完整解码前按资源限制拒绝；Mapper 不调用、无残留文件 | ✅ |
+| 9 | 双帧 WebP | 被单帧策略拒绝；Mapper 不调用、无残留文件 | ✅ |
+| 10 | 实际字节数超过 10MB | 写临时文件时按实际流字节拒绝；Mapper 不调用、无残留文件 | ✅ |
+| 11 | Mapper 元数据插入失败 | 已移动到最终路径的文件被删除，不留临时/最终文件 | ✅ |
 
-## 通用用例
+## 保持的既有契约
 
-安全/权限通用用例见工程顶层 `docs/development/CAPABILITY_COMMON.md` 第 3 节（401/403 已覆盖）。
-
-## 验收点
-
-- 对应 REQ-V01-006（类型/大小/存储失败明确拒绝、未发布图片不泄露、仅本地存储）；
-- 质量门禁：`scripts/quality.sh` 全绿；
-- 自动化测试补齐后覆盖上表（待办：白名单/大小/命名/半文件清理为核心）。
+- 上传仍返回字符串 `fileId`；
+- 管理端读取仍使用 `FileStorageInfo.contentType` 作为响应 Content-Type，因此成功上传写入的是解码器派生值；
+- 读取和公开引用权限边界未在 V01-06 修改；
+- 未承诺重编码、剥离 Exif/ICC/XMP、尾随数据或全部 polyglot 风险。

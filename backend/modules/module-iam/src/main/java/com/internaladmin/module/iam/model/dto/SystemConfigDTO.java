@@ -9,7 +9,6 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
 public class SystemConfigDTO {
 
     /** 参数 ID（字符串传输） */
-    @JsonSerialize(using = ToStringSerializer.class)
     private Long id;
 
     /** 参数名称 */
@@ -21,6 +20,7 @@ public class SystemConfigDTO {
     /** 参数值 */
     private String paramValue;
 
+    @JsonSerialize(using = ToStringSerializer.class)
     public Long getId() {
         return id;
     }

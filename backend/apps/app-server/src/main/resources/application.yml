@@ -19,9 +19,27 @@ mybatis-plus:
 
 server:
   port: 8080
+  servlet:
+    session:
+      timeout: 30m
+      cookie:
+        http-only: true
+        same-site: lax
+        path: /
+        secure: false
+
+app:
+  security:
+    csrf-cookie:
+      secure: false
 
 management:
   endpoints:
     web:
       exposure:
         include: health
+
+springdoc:
+  api-docs:
+    # 默认（含生产）不暴露运行时契约；仅 application-contract.yml 显式开启。
+    enabled: false

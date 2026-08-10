@@ -57,7 +57,7 @@ export const router = createRouter({
           path: 'system-config',
           name: 'system-config',
           component: () => import('../../modules/iam/pages/SystemConfigPage.vue'),
-          meta: { title: '系统设置', permission: 'system:config:manage' }
+          meta: { title: '登录安全', permission: 'system:config:manage' }
         }
       ]
     },

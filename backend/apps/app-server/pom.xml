@@ -54,6 +54,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- 仅提供运行时 OpenAPI JSON；Swagger UI 不在 0.1 范围内。 -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+        </dependency>
         <!-- 集成测试（@SpringBootTest / MockMvc / MockMultipartFile） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

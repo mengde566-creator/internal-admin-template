@@ -12,6 +12,8 @@
 > **示范文件**（验证本流程真实可用的完整样例）：
 > - [创建用户契约清单](../../system/api/iam/USER_CREATE.md)
 > - [创建角色契约清单](../../system/api/iam/ROLE_CREATE.md)
+> - [删除用户契约清单](../../system/api/iam/USER_DELETE.md)
+> - [删除角色契约清单](../../system/api/iam/ROLE_DELETE.md)
 
 ## 0. 推导来源优先级（先查材料，再推导，最后才问）
 

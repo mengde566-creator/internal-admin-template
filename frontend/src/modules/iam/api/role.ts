@@ -1,4 +1,7 @@
+import type { paths } from '../../../generated/api-schema'
 import { http, type ApiResponse } from '../../../shared/api/http'
+
+type CreateRoleResponse = paths['/api/roles']['post']['responses'][200]['content']['application/json']
 
 /** 角色列表项（与后端 RoleListDTO 契约一致） */
 export interface RoleListItem {
@@ -48,7 +51,7 @@ export function fetchPermissionOptionsApi() {
  * @param payload 创建角色请求
  */
 export function createRoleApi(payload: CreateRolePayload) {
-  return http.post<ApiResponse<number>>('/api/roles', payload)
+  return http.post<CreateRoleResponse>('/api/roles', payload)
 }
 
 /**

@@ -1,0 +1,9 @@
+spring:
+  config:
+    activate:
+      on-profile: contract
+
+springdoc:
+  api-docs:
+    # 仅供 scripts/openapi-contract.sh 在外部允许环境抓取 /v3/api-docs。
+    enabled: true

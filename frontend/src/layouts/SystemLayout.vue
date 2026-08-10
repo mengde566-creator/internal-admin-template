@@ -20,7 +20,7 @@ const navigation = computed<NavigationItem[]>(() => [
   ...(auth.hasPermission('site:homepage:edit') ? [{ key: 'site-manage', label: '主页内容', icon: Picture }] : []),
   ...(auth.hasPermission('iam:user:manage') ? [{ key: 'users', label: '用户管理', icon: User }] : []),
   ...(auth.hasPermission('iam:role:manage') ? [{ key: 'roles', label: '角色管理', icon: Avatar }] : []),
-  ...(auth.hasPermission('system:config:manage') ? [{ key: 'system-config', label: '系统设置', icon: Setting }] : [])
+  ...(auth.hasPermission('system:config:manage') ? [{ key: 'system-config', label: '登录安全', icon: Setting }] : [])
 ])
 
 /** 当前激活的导航项 key（按路由名匹配） */

@@ -21,7 +21,9 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
+import org.springframework.security.web.context.SecurityContextRepository;
+import org.springframework.security.web.authentication.logout.LogoutHandler;
+import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -37,17 +39,26 @@ public class AuthService {
     private final RolePermissionMapper rolePermissionMapper;
     private final PasswordEncoder passwordEncoder;
     private final SystemConfigService systemConfigService;
+    private final SessionAuthenticationStrategy sessionAuthenticationStrategy;
+    private final SecurityContextRepository securityContextRepository;
+    private final LogoutHandler authLogoutHandler;
 
     public AuthService(UserMapper userMapper,
                        UserRoleMapper userRoleMapper,
                        RolePermissionMapper rolePermissionMapper,
                        PasswordEncoder passwordEncoder,
-                       SystemConfigService systemConfigService) {
+                       SystemConfigService systemConfigService,
+                       SessionAuthenticationStrategy sessionAuthenticationStrategy,
+                       SecurityContextRepository securityContextRepository,
+                       LogoutHandler authLogoutHandler) {
         this.userMapper = userMapper;
         this.userRoleMapper = userRoleMapper;
         this.rolePermissionMapper = rolePermissionMapper;
         this.passwordEncoder = passwordEncoder;
         this.systemConfigService = systemConfigService;
+        this.sessionAuthenticationStrategy = sessionAuthenticationStrategy;
+        this.securityContextRepository = securityContextRepository;
+        this.authLogoutHandler = authLogoutHandler;
     }
 
     /**
@@ -55,13 +66,14 @@ public class AuthService {
      *
      * <p>方法：{@code login}</p>
      *
-     * <p>执行链路（共 6 步）：</p>
+     * <p>执行链路（共 7 步）：</p>
      * 1. 按用户名查询 {@link UserDO}；
      * 2. 用户不存在或密码不匹配时抛出 {@link BusinessException}（统一提示“用户名或密码错误”，不泄露具体原因）；
      * 3. 调用 {@link #loadPermissions(Long)} 加载当前用户权限编码；
      * 4. 构建 {@link UsernamePasswordAuthenticationToken}，创建新 {@link SecurityContext} 并写入 {@link SecurityContextHolder}；
-     * 5. 调用 {@link HttpSessionSecurityContextRepository#saveContext(SecurityContext, jakarta.servlet.http.HttpServletRequest, jakarta.servlet.http.HttpServletResponse)} 将认证上下文持久化到 Session；
-     * 6. 返回登录结果（含是否必须修改初始密码）。
+     * 5. 调用 {@link SessionAuthenticationStrategy#onAuthentication(Authentication, HttpServletRequest, HttpServletResponse)} 执行标准 Session 固定防护；
+     * 6. 调用 {@link SecurityContextRepository#saveContext(SecurityContext, HttpServletRequest, HttpServletResponse)} 将认证上下文持久化到 Session；
+     * 7. 返回登录结果（含是否必须修改初始密码）。
      *
      * @param dto      登录请求
      * @param request  当前 HTTP 请求
@@ -81,9 +93,8 @@ public class AuthService {
         SecurityContext context = SecurityContextHolder.createEmptyContext();
         context.setAuthentication(authentication);
         SecurityContextHolder.setContext(context);
-        new HttpSessionSecurityContextRepository().saveContext(context, request, response);
-        // 防止 Session 固定攻击：登录成功后更换 Session ID（认证基线要求）
-        request.changeSessionId();
+        sessionAuthenticationStrategy.onAuthentication(authentication, request, response);
+        securityContextRepository.saveContext(context, request, response);
         boolean forcePasswordChange = systemConfigService.getBoolean(SystemConfigService.KEY_FORCE_PASSWORD_CHANGE);
         return new LoginResultDTO(user.getId(), user.getUsername(), user.getDisplayName(),
                 forcePasswordChange && !Boolean.TRUE.equals(user.getPasswordChanged()), permissions);
@@ -94,15 +105,14 @@ public class AuthService {
      *
      * <p>方法：{@code logout}</p>
      *
-     * <p>执行链路（共 2 步）：</p>
-     * 1. 调用 {@link SecurityContextHolder#clearContext()} 清除当前认证；
-     * 2. 调用 {@link jakarta.servlet.http.HttpSession#invalidate()} 销毁会话（安全要求：退出必须销毁服务端 Session）。
+     * <p>执行链路（共 1 步）：</p>
+     * 1. 调用 {@link LogoutHandler#logout(HttpServletRequest, HttpServletResponse, Authentication)} 执行标准 Session、SecurityContext repository 与 CSRF 清理。
      *
      * @param request 当前 HTTP 请求
+     * @param response 当前 HTTP 响应
      */
-    public void logout(HttpServletRequest request) {
-        SecurityContextHolder.clearContext();
-        request.getSession().invalidate();
+    public void logout(HttpServletRequest request, HttpServletResponse response) {
+        authLogoutHandler.logout(request, response, SecurityContextHolder.getContext().getAuthentication());
     }
 
     /**

@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
-    "build": "vue-tsc --noEmit && vite build"
+    "build": "vue-tsc --noEmit && vite build",
+    "openapi:generate": "../scripts/openapi-contract.sh generate",
+    "openapi:check": "../scripts/openapi-contract.sh check"
   },
   "dependencies": {
     "@element-plus/icons-vue": "2.3.2",

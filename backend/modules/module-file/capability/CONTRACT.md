@@ -1,6 +1,6 @@
 # module-file CONTRACT（公开 API 契约 + 数据契约）
 
-> 最后核对：2026-08-04。通用规则（ID 字符串/变更集/跨模块标识/安全用例）见工程顶层 `docs/development/CAPABILITY_COMMON.md`。
+> 最后核对：2026-08-10。通用规则（ID 字符串/变更集/跨模块标识/安全用例）见工程顶层 `docs/development/CAPABILITY_COMMON.md`。
 
 ## 公开 API 契约
 
@@ -17,7 +17,7 @@
 | --- | --- | --- | --- |
 | `file_asset` | 文件元数据 | id、relative_path(唯一)、content_type | 0001 |
 
-**存储约定**：文件本体在 `app.storage-root`（默认 `./data/uploads`）；`relative_path` 形如 `yyyyMMdd/UUID.ext`（系统生成，禁止用户输入）。类型白名单 jpg/jpeg/png/webp、大小 ≤10MB（application.yml multipart 与应用层常量一致）。
+**存储约定**：文件本体在 `app.storage-root`（默认 `./data/uploads`）；上传先写入受控 `.upload-tmp/` 临时目录，只有 JPEG/PNG/JDK ImageIO 或 WebP/TwelveMonkeys ImageIO 3.14.0 的真实解码通过后才移动到最终路径。实际字节数 ≤10MB、单边 ≤8192、总像素 ≤40,000,000、仅单帧；截断、损坏、伪装或声明不一致的图片被拒绝。`relative_path` 形如 `yyyyMMdd/UUID.ext`，扩展名与 `content_type` 均由解码器结果派生，禁止使用用户输入。验证、移动或元数据登记失败时删除临时和最终文件；清理失败必须可见。
 
 ## DO / DTO 索引
 

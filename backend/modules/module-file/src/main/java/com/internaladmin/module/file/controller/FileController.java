@@ -99,13 +99,13 @@ public class FileController {
     public static class UploadResult {
 
         /** 文件 ID（64 位整数按字符串传输） */
-        @JsonSerialize(using = ToStringSerializer.class)
         private final Long fileId;
 
         public UploadResult(Long fileId) {
             this.fileId = fileId;
         }
 
+        @JsonSerialize(using = ToStringSerializer.class)
         public Long getFileId() {
             return fileId;
         }

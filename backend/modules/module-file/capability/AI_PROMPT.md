@@ -1,11 +1,11 @@
 # module-file AI 提示词
 
 > 开发/修改 module-file 时 AI 必须加载本文件（AGENTS.md §2.3 装配规则）。
-> 最后核对：2026-08-04（与当前代码一致）
+> 最后核对：2026-08-10（V01-06 已同步真实内容校验与失败清理）
 
 ## 模块定位
 
-本地文件能力模块：展示图片的存储（类型/大小白名单、系统命名、本地目录）、元数据登记、管理端读取与跨模块文件查询契约。0.1 只支持本地文件存储，不引入对象存储/图片处理。
+本地文件能力模块：展示图片的受控临时存储、真实内容校验、系统命名、元数据登记、管理端读取与跨模块文件查询契约。0.1 只支持本地文件存储，不引入对象存储、重编码或异步图片处理。
 
 ## 硬性约束（必须遵守）
 
@@ -29,10 +29,10 @@ api/  controller/  mapper/  model/entity/  service/
 ### 存储规则（REQ-V01-006 已确认）
 
 - 存储根：`app.storage-root`（默认 `./data/uploads`），数据库只存相对路径；
-- **类型白名单**：image/jpeg、image/png、image/webp（contentType 需规范化：去 `;charset` 等参数、小写）；
-- **扩展名白名单**：jpg/jpeg/png/webp（双校验：contentType + 扩展名）；
-- **大小限制 ≤10MB**（应用层常量 + `spring.servlet.multipart.max-file-size` 必须一致）；
-- **文件命名系统生成**：`yyyyMMdd/UUID.ext`，**禁止使用用户输入的文件名/路径**。
+- **真实格式**：JPEG、PNG 使用 JDK ImageIO；WebP 使用锁定的 TwelveMonkeys ImageIO 3.14.0。客户端 Content-Type、文件名和扩展名只用于与解码结果的一致性校验，不能作为最终事实。
+- **资源限制**：实际字节数 ≤10MB、单边 ≤8192、总像素 ≤40,000,000，且只允许单帧；必须先读取尺寸再完整解码首帧。
+- **失败清理顺序**：受控临时文件 → 实际格式/资源/完整解码/单帧校验 → 随机最终文件名 → 元数据登记；任一失败删除临时及已产生的最终文件，清理失败必须可见。
+- **最终存储事实**：Content-Type 与 `yyyyMMdd/UUID.ext` 的扩展名均从解码器结果派生；禁止使用用户输入的文件名、路径、MIME 或扩展名作为存储事实。
 
 ### 权限
 
@@ -50,8 +50,10 @@ api/  controller/  mapper/  model/entity/  service/
 | --- | --- | --- | --- |
 | multipart 默认 1MB | 超 1MB 上传报系统内部错误（500） | Spring 默认 `max-file-size=1MB`，与应用层 10MB 白名单不一致，解析阶段抛 MaxUploadSizeExceededException | application.yml 配置 `spring.servlet.multipart.max-file-size: 10MB`（+max-request-size）；GlobalExceptionHandler 处理超限 → 400 明确提示 |
 | 存储目录/日期子目录缺失 | 上传报"文件存储失败" | `Files.copy` 目标父目录不存在 | 上传前 `Files.createDirectories(storageRoot)` + `Files.createDirectories(target.getParent())`（日期子目录） |
-| 半文件残留 | 上传失败留下部分文件 | copy 中途异常 | catch 中 `Files.deleteIfExists(target)` 清理 |
-| contentType 带参数 | 白名单校验误拒 | `image/png;charset=utf-8` 不匹配 | 规范化：取 `;` 前部分、trim、小写 |
+| MIME/扩展名伪装 | 伪造 `image/jpeg` 或 `.jpg` 进入存储 | 信任客户端声明 | 先 ImageIO 完整解码，再与规范化 MIME/扩展名一致性校验；最终值只取解码器结果 |
+| 截断、损坏或签名伪装 | 魔数正确但内容不可读 | 只验签名或声明 | ImageReader 读取尺寸、校验单帧并完整解码首帧；异常或 null 明确拒绝 |
+| 半文件残留 | 验证、移动或元数据登记失败后残留文件 | 先写最终文件且异常吞掉清理错误 | 先写受控临时文件；失败时删除临时/最终文件，删除失败抛出可见基础设施异常 |
+| contentType 带参数 | 合法声明被误判 | `image/png;charset=utf-8` 未规范化 | 仅用于一致性校验前取 `;` 前部分、trim、小写 |
 | 前端 img 加载失败 | 草稿预览图裂图 | img 相对路径请求 Vite 无代理；管理端读取要登录 cookie | 前端配 Vite `/api` 代理（同源带 cookie）；管理端预览走 `/api/files/{id}`，公开页走 `/api/public/files/{id}` |
 
 ## 禁止事项
@@ -66,6 +68,6 @@ api/  controller/  mapper/  model/entity/  service/
 
 1. 对照 DATA_CONTRACT 确认表/字段（file_asset 变更必须新增 Liquibase 变更集）；
 2. 先查现有代码是否已有相同能力（上传/读取/查询契约已实现，改动多为增量）；
-3. 实现：Service（存储/校验）→ Controller（@PreAuthorize）→ 前端（按已批准素材）；
+3. 实现：Service（受控临时写入/真实解码/失败清理）→ Controller（保留 @PreAuthorize 与字符串 ID 契约）→ 前端（按已批准素材）；
 4. 写完立即自查（ENGINEERING_CONVENTIONS §3）；
-5. 按 TEST.md 覆盖用例验证（重点：白名单、大小、命名、半文件清理、双通道读取）。
+5. 按 TEST.md 覆盖用例验证（重点：JPEG/PNG/WebP 实际解码、伪装/损坏、尺寸/像素/单帧、Mapper 失败清理与双通道读取）。

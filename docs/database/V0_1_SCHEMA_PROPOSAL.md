@@ -2,9 +2,9 @@
 
 > 状态：已确认  
 > 版本：0.1  
-> 更新日期：2026-08-03  
+> 更新日期：2026-08-09
 > 依据：[0.1 需求范围](../../requirements/V0_1_SCOPE.md)  
-> 变更说明：2026-08-03 经 0.1 闭环模式化走查（[V01_MODE_WALKTHROUGH.md](../planning/V01_MODE_WALKTHROUGH.md)）确认 9 张表与“当前草稿表 + 当前发布快照表”双表模型
+> 变更说明：以已执行 Liquibase 变更集为准同步系统参数、用户软删除，以及主页布局和草稿/发布区块快照；0.1 当前共 12 张业务表。
 
 ## 1. 设计边界
 
@@ -36,12 +36,15 @@
 | `module-iam` | `iam_role` | 保存管理员创建的角色 |
 | `module-iam` | `iam_user_role` | 用户通过角色获得权限 |
 | `module-iam` | `iam_role_permission` | 角色关联代码中定义的权限编码 |
+| `module-iam` | `system_config` | 保存首次登录强制改密所需的最小系统参数 |
 | `module-file` | `file_asset` | 保存本地图片的元数据与磁盘相对路径 |
 | `module-site` | `site_homepage_draft` | 保存当前可编辑草稿 |
 | `module-site` | `site_homepage_publication` | 保存当前公开快照，与草稿隔离 |
-| `module-audit` | `audit_operation` | 记录主页发布与撤回的操作者、时间和结果 |
+| `module-site` | `site_homepage_draft_section` | 保存当前草稿的内容区块 |
+| `module-site` | `site_homepage_publication_section` | 保存当前公开快照的内容区块 |
+| `module-audit` | `audit_operation` | 记录主页发布、撤回和用户/角色删除的操作者、时间和结果 |
 
-基础模块和 `app-server` 不拥有业务表。0.1合计9张业务表。
+基础模块和 `app-server` 不拥有业务表。0.1合计12张业务表。
 
 ## 3. 关系
 
@@ -53,13 +56,18 @@ iam_department
 
 file_asset
     ├─ site_homepage_draft.hero_file_id
-    └─ site_homepage_publication.hero_file_id
+    ├─ site_homepage_publication.hero_file_id
+    ├─ site_homepage_draft_section.hero_file_id
+    └─ site_homepage_publication_section.hero_file_id
 
 site_homepage_draft
-    ──发布时复制内容──▶ site_homepage_publication
+    ├─ 1 ── N site_homepage_draft_section
+    └─ 发布时复制内容 ──▶ site_homepage_publication
+                                  └─ 1 ── N site_homepage_publication_section
 
 site_homepage_publication
-    ──发布/撤回结果──▶ audit_operation
+iam_user / iam_role / site_homepage_publication
+    ──管理、发布或撤回结果──▶ audit_operation
 ```
 
 `module-site` 使用 `module-file` 的公开API验证图片，不直接查询 `file_asset`。因此 `hero_file_id` 不建立跨模块外键。`audit_operation` 中的操作者和目标同样只保存标识，不建立到其他模块的外键。
@@ -83,12 +91,14 @@ site_homepage_publication
 | 字段 | 类型 | 约束 | 用途 |
 | --- | --- | --- | --- |
 | `id` | BIGINT | 主键 | 用户ID |
-| `department_id` | BIGINT | 非空、外键 | 所属部门 |
+| `department_id` | BIGINT | 非空 | 所属部门标识 |
 | `username` | VARCHAR(64) | 非空、唯一 | 登录账号 |
 | `display_name` | VARCHAR(100) | 非空 | 页面展示名称 |
 | `password_hash` | VARCHAR(255) | 非空 | 密码哈希，不保存明文 |
+| `password_changed` | BOOLEAN | 非空，默认 `false` | 是否已经完成首次改密 |
+| `deleted` | INTEGER | 非空，默认 `0` | 软删除标记；`1` 表示用户不可见且不可登录 |
 
-不增加启停状态、手机号、邮箱、头像、岗位、外部账号、租户、登录次数和软删除字段。
+不增加启停状态、手机号、邮箱、头像、岗位、外部账号、租户和登录次数字段。
 
 ### 4.3 `iam_role`
 
@@ -104,8 +114,8 @@ site_homepage_publication
 
 | 字段 | 类型 | 约束 | 用途 |
 | --- | --- | --- | --- |
-| `user_id` | BIGINT | 联合主键、外键 | 用户ID |
-| `role_id` | BIGINT | 联合主键、外键 | 角色ID |
+| `user_id` | BIGINT | 联合主键 | 用户ID |
+| `role_id` | BIGINT | 联合主键 | 角色ID |
 
 联合主键防止同一角色重复分配给同一用户。
 
@@ -113,10 +123,21 @@ site_homepage_publication
 
 | 字段 | 类型 | 约束 | 用途 |
 | --- | --- | --- | --- |
-| `role_id` | BIGINT | 联合主键、外键 | 角色ID |
+| `role_id` | BIGINT | 联合主键 | 角色ID |
 | `permission_code` | VARCHAR(128) | 联合主键 | 代码中注册的权限编码 |
 
 0.1不创建 `iam_permission` 表。权限名称和可用权限列表由代码维护，避免数据库权限元数据与实际接口产生两套来源。
+
+### 4.6 `system_config`
+
+仅保存首次登录强制改密所需参数，不建设通用参数中心。
+
+| 字段 | 类型 | 约束 | 用途 |
+| --- | --- | --- | --- |
+| `id` | BIGINT | 主键 | 参数ID |
+| `name` | VARCHAR(100) | 非空 | 参数名称 |
+| `param_key` | VARCHAR(64) | 非空、唯一 | 参数键，当前为 `force_password_change` |
+| `param_value` | VARCHAR(255) | 非空 | 参数值，默认 `true` |
 
 ## 5. 文件表
 
@@ -134,7 +155,7 @@ site_homepage_publication
 
 ## 6. 主页表
 
-0.1只有一个主页。两张表的主键固定为 `1`，并使用 `CHECK (id = 1)` 保证各表最多一行；不创建通用页面、模板、区块和历史版本表。
+0.1只有一个主页。草稿和发布快照两张主页表的主键固定为 `1`，并使用 `CHECK (id = 1)` 保证各表最多一行。布局、配色和区块类型均使用代码定义枚举，不创建模板、主题或类型表。
 
 ### 6.1 `site_homepage_draft`
 
@@ -146,6 +167,7 @@ site_homepage_publication
 | `hero_file_id` | BIGINT | 非空 | 主展示图片ID |
 | `contact_text` | TEXT | 非空 | 联系方式文本 |
 | `color_scheme` | VARCHAR(32) | 非空 | 草稿配色编码：`GRAPHITE` 或 `AZURE` |
+| `layout_code` | VARCHAR(32) | 可空（历史行已回填） | 草稿布局编码：`GRID_SPLIT` 或 `BANNER_SPLIT` |
 
 ### 6.2 `site_homepage_publication`
 
@@ -162,21 +184,39 @@ site_homepage_publication
 | `visible` | BOOLEAN | 非空 | 匿名访问是否可见 |
 | `published_by` | BIGINT | 非空 | 最近发布者用户ID |
 | `published_at` | TIMESTAMP | 非空 | 最近成功发布时间 |
+| `layout_code` | VARCHAR(32) | 可空（历史行已回填） | 已发布布局编码：`GRID_SPLIT` 或 `BANNER_SPLIT` |
 
 撤回只将 `visible` 设为 `false`，不修改草稿。再次发布时原子覆盖当前快照。0.1不保存历史版本。
+
+### 6.3 `site_homepage_draft_section`
+
+草稿区块按 `sort_order` 排序；保存草稿时，传入区块数组是完整期望状态。
+
+| 字段 | 类型 | 约束 | 用途 |
+| --- | --- | --- | --- |
+| `id` | BIGINT | 主键 | 应用生成的区块ID |
+| `section_type` | VARCHAR(32) | 非空 | `ABOUT` / `SERVICE` / `NEWS` / `CONTACT` |
+| `title` | VARCHAR(200) | 非空 | 区块标题 |
+| `content` | TEXT | 非空 | 区块正文 |
+| `hero_file_id` | BIGINT | 可空 | 可选区块配图标识 |
+| `sort_order` | INTEGER | 非空 | 展示顺序 |
+
+### 6.4 `site_homepage_publication_section`
+
+字段与草稿区块相同。发布时在同一事务中整体替换为草稿区块快照，公开访问只读取该表中当前可见快照关联的区块。
 
 ## 7. 审计表
 
 ### 7.1 `audit_operation`
 
-只记录0.1明确要求的主页发布与撤回结果。
+记录0.1已实现的主页发布、撤回，以及用户和角色删除的成功结果。
 
 | 字段 | 类型 | 约束 | 用途 |
 | --- | --- | --- | --- |
 | `id` | BIGINT | 主键 | 审计记录ID |
 | `operator_id` | BIGINT | 非空 | 操作者用户ID |
-| `action` | VARCHAR(32) | 非空 | `SITE_PUBLISH` 或 `SITE_WITHDRAW` |
-| `target_id` | BIGINT | 非空 | 主页目标ID，0.1为1 |
+| `action` | VARCHAR(32) | 非空 | `SITE_PUBLISH`、`SITE_WITHDRAW`、`USER_DELETE` 或 `ROLE_DELETE` |
+| `target_id` | BIGINT | 非空 | 被操作的主页、用户或角色ID |
 | `result` | VARCHAR(16) | 非空 | `SUCCESS` 或 `FAILURE` |
 | `occurred_at` | TIMESTAMP | 非空 | 操作结果产生时间 |
 
@@ -186,9 +226,9 @@ site_homepage_publication
 
 建议Liquibase按以下顺序聚合：
 
-1. `module-iam`：创建5张IAM表，写入根部门与系统管理员角色；
+1. `module-iam`：创建6张IAM表，写入根部门、系统管理员角色和首次改密参数；
 2. `module-file`：创建 `file_asset`；
-3. `module-site`：创建草稿和当前发布快照表；
+3. `module-site`：创建草稿、当前发布快照和两张区块表；
 4. `module-audit`：创建最小操作审计表。
 
 初始化管理员账号不通过Liquibase写入固定明文凭据；具体输入方式在实现登录时只选择一条明确路径，不属于本次表结构决策。
@@ -200,12 +240,12 @@ site_homepage_publication
 - Session、JWT、Refresh Token和Token黑名单表；
 - 权限点、菜单、岗位、部门树、数据范围和租户表；
 - 文件分片、对象存储、缩略图和文件公开关联表；
-- 通用页面、模板、区块、导航、文章和发布历史表；
+- 通用页面、模板、导航、文章和发布历史表；
 - 主题、配色变量和动态样式表；
 - 通用操作日志、登录日志和请求日志表；
 - 参数、字典、通知、任务、工作流和AI相关表。
 
-## 10. 已确认结论（2026-08-03）
+## 10. 已确认结论（2026-08-09）
 
-1. 0.1 采用上述 9 张表，不增加权限点表和 Session 表——**已确认**；
-2. 主页采用“当前草稿表 + 当前发布快照表”，两张表均包含代码定义的配色编码，不建设主题表和历史版本表——**已确认**。
+1. 0.1 采用上述12张表，不增加权限点表和 Session 表——**已确认**；
+2. 主页采用“当前草稿表 + 当前发布快照表 + 两张区块快照表”，布局、配色和区块类型均由代码定义，不建设主题表、类型表和历史版本表——**已确认**。

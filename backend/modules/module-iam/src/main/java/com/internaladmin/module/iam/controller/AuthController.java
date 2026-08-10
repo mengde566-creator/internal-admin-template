@@ -55,15 +55,16 @@ public class AuthController {
      * <p>方法：{@code logout}</p>
      *
      * <p>执行链路（共 2 步）：</p>
-     * 1. 调用 {@link AuthService#logout(HttpServletRequest)} 销毁会话；
+     * 1. 调用 {@link AuthService#logout(HttpServletRequest, HttpServletResponse)} 执行标准退出清理；
      * 2. 返回成功响应。
      *
      * @param request 当前 HTTP 请求
+     * @param response 当前 HTTP 响应
      * @return 成功响应
      */
     @PostMapping("/logout")
-    public ApiResponse<Void> logout(HttpServletRequest request) {
-        authService.logout(request);
+    public ApiResponse<Void> logout(HttpServletRequest request, HttpServletResponse response) {
+        authService.logout(request, response);
         return ApiResponse.ok(null);
     }
 

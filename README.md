@@ -84,8 +84,8 @@ mvn test -pl apps/app-server -am
 - [0.1 身份与授权范围](requirements/iam/IDENTITY_AUTHORIZATION.md)：已确认的根部门、用户、角色和权限模型边界；
 - [非功能需求草案](requirements/QUALITY_REQUIREMENTS.md)：安全、质量、兼容、性能和可维护性目标；
 - [需求分析路线图](docs/planning/REQUIREMENTS_ROADMAP.md)：需求阶段的讨论顺序、产物和退出条件；
-- [0.1 表结构方案](docs/database/V0_1_SCHEMA_PROPOSAL.md)：待确认的最小业务表及字段；
-- [0.1 前端方案](docs/frontend/V0_1_UI_PROPOSALS.md)：待确认的页面范围、视觉方向和组件库选择；
+- [0.1 表结构方案](docs/database/V0_1_SCHEMA_PROPOSAL.md)：已确认并已落地的 12 张业务表、草稿/发布快照和区块结构；
+- [0.1 前端方案](docs/frontend/V0_1_UI_PROPOSALS.md)：已确认的页面范围、视觉方向、组件库与已实现交互边界；
 - [基础规划初稿](docs/PROJECT_PLAN.md)：长期早期思路，不作为 0.1 实现依据；
 - [后端模块架构](docs/architecture/BACKEND_MODULES.md)：已确认的 Spring Boot 多模块边界、依赖方向和未来 Spring Cloud 接入条件；
 - [前端物理结构](docs/architecture/FRONTEND_STRUCTURE.md)：已确认的单 Vue 应用、产品布局、身份边界和未来客户空间方向；

@@ -1,9 +1,11 @@
 # 0.1 闭环模式化走查（公开主页内容发布）
 
-> 状态：走查记录（应用 WORKING_MODEL 模式框架审视 0.1 已确认需求）
+> 状态：历史走查记录（应用 WORKING_MODEL 模式框架审视 0.1 已确认需求）
 > 日期：2026-08-03
 > 目的：① 用模式验证 0.1 的表结构方案是否成立；② 用 0.1 第一次实战检验模式（需求漏斗、实体关系认识、规则材料、验收材料）是否真的好用
-> 依据：[V0_1_SCOPE.md](../../requirements/V0_1_SCOPE.md)（已确认）、[V0_1_SCHEMA_PROPOSAL.md](../../docs/database/V0_1_SCHEMA_PROPOSAL.md)（待确认）、[IDENTITY_AUTHORIZATION.md](../../requirements/iam/IDENTITY_AUTHORIZATION.md)（已确认）
+> 依据：[V0_1_SCOPE.md](../../requirements/V0_1_SCOPE.md)（当时已确认）、[V0_1_SCHEMA_PROPOSAL.md](../../docs/database/V0_1_SCHEMA_PROPOSAL.md)（当时待确认）、[IDENTITY_AUTHORIZATION.md](../../requirements/iam/IDENTITY_AUTHORIZATION.md)（当时已确认）
+>
+> 本记录保留 2026-08-03 的9表走查结论；当前已执行的12表结构、主页布局与区块快照请以 [当前表结构方案](../database/V0_1_SCHEMA_PROPOSAL.md) 为准。
 
 ## 1. 需求漏斗（0.1 闭环的再结构化）
 

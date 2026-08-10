@@ -33,6 +33,8 @@
     <properties>
         <java.version>25</java.version>
         <mybatis-plus.version>3.5.17</mybatis-plus.version>
+        <springdoc-openapi.version>3.1.0</springdoc-openapi.version>
+        <twelvemonkeys-imageio.version>3.14.0</twelvemonkeys-imageio.version>
     </properties>
 
     <dependencyManagement>
@@ -48,6 +50,18 @@
                 <groupId>com.baomidou</groupId>
                 <artifactId>mybatis-plus-jsqlparser</artifactId>
                 <version>${mybatis-plus.version}</version>
+            </dependency>
+            <!-- 仅在 contract profile 运行时生成 OpenAPI JSON，不包含 Swagger UI。 -->
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+                <version>${springdoc-openapi.version}</version>
+            </dependency>
+            <!-- WebP 通过标准 ImageIO SPI 解码，JPEG/PNG 仍使用 JDK ImageIO。 -->
+            <dependency>
+                <groupId>com.twelvemonkeys.imageio</groupId>
+                <artifactId>imageio-webp</artifactId>
+                <version>${twelvemonkeys-imageio.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

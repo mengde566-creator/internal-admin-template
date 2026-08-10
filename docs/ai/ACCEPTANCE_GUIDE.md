@@ -1,11 +1,14 @@
 # 验收引导协议（ACCEPTANCE_GUIDE）
 
-> 版本：0.1
+> 版本：0.2
 > 状态：生效
-> 关联：需求漏斗（docs/ai/REQUIREMENT_GUIDE.md）、开发规范（AGENTS.md §12 测试规范）
+> 更新日期：2026-08-10
+> 关联：需求漏斗（docs/ai/REQUIREMENT_GUIDE.md）、开发规范（AGENTS.md §12 测试规范）、版本任务交付协议（docs/team/VERSION_DELIVERY_PROTOCOL.md）
 >
 > 本协议回答一个核心问题：**「做完」由谁说了算、怎么才算数。**
 > 与需求漏斗互为上下两端：需求漏斗解决「做什么、怎么做对」，验收引导解决「怎么知道做对了」。
+
+本协议负责用户视角的功能验收；版本任务的派发可行性、研发接单与自审、技术证据和总设计师独立验收由 [版本任务交付协议](../team/VERSION_DELIVERY_PROTOCOL.md) 统一约束。两者互补，不能用研发自审替代最终验收。
 
 ## 1. 为什么需要验收引导
 

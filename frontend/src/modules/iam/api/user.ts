@@ -1,4 +1,7 @@
+import type { paths } from '../../../generated/api-schema'
 import { http, type ApiResponse } from '../../../shared/api/http'
+
+type CreateUserResponse = paths['/api/users']['post']['responses'][200]['content']['application/json']
 
 /** 用户列表项（与后端 UserListDTO 契约一致） */
 export interface UserListItem {
@@ -47,7 +50,7 @@ export function fetchUsersApi(params: { page: number; size: number; keyword?: st
  * @param payload 创建用户请求
  */
 export function createUserApi(payload: CreateUserPayload) {
-  return http.post<ApiResponse<number>>('/api/users', payload)
+  return http.post<CreateUserResponse>('/api/users', payload)
 }
 
 /**

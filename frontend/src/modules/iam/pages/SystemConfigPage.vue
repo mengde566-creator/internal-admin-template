@@ -40,7 +40,7 @@ function onChangeForcePassword(value: boolean) {
 <template>
   <section class="system-config">
     <header class="page-header">
-      <h1>系统设置</h1>
+      <h1>登录安全</h1>
     </header>
 
     <el-table v-loading="configsQuery.isLoading.value" :data="configsQuery.data.value ?? []" border>
