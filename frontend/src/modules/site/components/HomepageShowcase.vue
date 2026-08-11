@@ -50,7 +50,7 @@ const sectionTypeLabel: Record<SectionType, string> = {
       <p class="eyebrow">Welcome to</p>
       <h1 class="site-name">{{ content.siteName }}</h1>
       <p class="introduction">{{ content.introduction }}</p>
-      <div class="hero-image-wrap">
+      <div v-if="content.heroFileId" class="hero-image-wrap">
         <img :src="heroUrl" :alt="`${content.siteName} 主图`" class="hero-image" />
       </div>
     </header>

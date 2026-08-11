@@ -26,7 +26,7 @@
 
 - 日志：`logs/backend.log`、`logs/frontend.log`（进程 PID 也在此目录）；
 - 后端启动较慢（约 6-10 秒），`status` 会显示健康检查结果；
-- 首次启动自动创建 `backend/data/internal-admin.db` 并执行 Liquibase 迁移；管理员初始密码输出到 `logs/backend.log`（或用环境变量 `APP_ADMIN_PASSWORD` 指定）。
+- 首次启动自动创建 `backend/data/internal-admin.db` 并执行 Liquibase 迁移；管理员初始密码输出到 `logs/backend.log`（或用环境变量 `APP_ADMIN_INITIAL_PASSWORD` 指定）。
 
 ## 3. 启动检查清单（status 覆盖项）
 
@@ -50,7 +50,7 @@
 代码修改后需要重启验证时，按此顺序（写进自查清单）：
 
 1. `./scripts/dev.sh stop`（标准停止，不残留进程）；
-2. 确认构建产物最新：后端 `mvn -DskipTests package`（或 `./scripts/quality.sh` 全量），前端由 dev 模式即时生效；
+2. 确认构建产物最新：后端在 `backend/` 下执行 `./mvnw -DskipTests package`；需要无数据库质量验证时执行 `./scripts/quality.sh --no-database`，需要完整隔离 SQLite 质量验证时执行 `./scripts/quality.sh --database`。前端由 dev 模式即时生效，依赖安装统一使用锁文件 `npm ci`；
 3. `./scripts/dev.sh start`；
 4. `./scripts/dev.sh status` 确认后端 UP、前端 200、依赖检查全绿；
 5. 再做功能验证（curl / 页面操作）。
@@ -67,6 +67,6 @@
 
 ## 6. 与质量门禁的关系
 
-- `scripts/quality.sh` 负责"静态与回归验证"（编译/测试/迁移/构建）；
+- `scripts/quality.sh --no-database` 负责不启动应用、不连接数据库的静态与回归验证；`scripts/quality.sh --database` 在其基础上负责隔离 SQLite 集成、空库迁移启动与构建验证。两种模式均使用 Maven Wrapper，前端与 OpenAPI 工具依赖须预先以 `npm ci` 安装；
 - `scripts/dev.sh` 负责"运行时验证"（依赖/启动/健康）；
 - **两者一起构成落地验证**：quality 绿 + dev status 绿，才能声明"可交付"。

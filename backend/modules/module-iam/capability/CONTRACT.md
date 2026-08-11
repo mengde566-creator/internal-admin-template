@@ -1,14 +1,14 @@
 # module-iam CONTRACT（公开 API 契约 + 数据契约）
 
-> 最后核对：2026-08-04。通用规则（ID 字符串/变更集/跨模块标识/安全用例）见工程顶层 `docs/development/CAPABILITY_COMMON.md`。
+> 最后核对：2026-08-11。通用规则（ID 字符串/变更集/跨模块标识/安全用例）见工程顶层 `docs/development/CAPABILITY_COMMON.md`。
 
 ## 公开 API 契约
 
 | API | 方法 | 权限 | 说明 |
 | --- | --- | --- | --- |
 | `PermissionCodes`（api） | 常量 | — | 全局权限编码注册表（跨模块契约） |
-| `api/auth/login` | POST | 公开 | 登录，返回用户信息+mustChangePassword |
-| `api/auth/logout` | POST | 登录 | 销毁 Session |
+| `api/auth/login` | POST | 公开 | 登录，返回用户信息+mustChangePassword；使用标准会话策略轮换预登录 Session，并持久化 SecurityContext |
+| `api/auth/logout` | POST | 登录 | 保持 JSON API；通过标准退出处理链失效 Session、清理 SecurityContext 与 XSRF-TOKEN |
 | `api/auth/me` | GET | 登录 | 当前用户+权限 |
 | `api/auth/change-password` | POST | 登录 | 改密（强制改密入口） |
 | `api/users` | GET/POST/PUT | `iam:user:manage` | 分页/创建/更新；创建成功返回 `{ data: { id: string } }` |

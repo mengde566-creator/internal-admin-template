@@ -1,14 +1,21 @@
 package com.internaladmin.app;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.internaladmin.module.audit.mapper.AuditOperationMapper;
+import com.internaladmin.module.audit.model.entity.AuditOperationDO;
+import com.internaladmin.module.site.mapper.HomepagePublicationSectionMapper;
+import com.internaladmin.module.site.model.entity.HomepagePublicationSectionDO;
 import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -18,6 +25,10 @@ import java.util.UUID;
 import javax.imageio.ImageIO;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -32,7 +43,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>测试库 data/test-site.db 与测试上传目录独立于开发环境；站点名唯一避免互相干扰；
  * 发布类测试结束前撤回，保证"未发布时 404"场景不受影响。</p>
  */
-@SpringBootTest(properties = {
+@SpringBootTest(classes = Application.class, properties = {
         "spring.datasource.url=jdbc:sqlite:./data/test-site.db?foreign_keys=on",
         "app.admin-initial-password=TestPass123",
         "app.storage-root=./data/test-site-uploads"
@@ -45,6 +56,15 @@ class SiteFlowTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private AuditOperationMapper auditOperationMapper;
+
+    /**
+     * 仅在发布区块插入点注入受控异常；该 Spy 包装真实 Mapper，事务与 HTTP 链路仍由 Spring + SQLite 执行。
+     */
+    @MockitoSpyBean
+    private HomepagePublicationSectionMapper publicationSectionMapper;
 
     private String unique(String prefix) {
         return prefix + UUID.randomUUID().toString().substring(0, 8);
@@ -72,6 +92,47 @@ class SiteFlowTest {
                 .andReturn();
         return objectMapper.readTree(result.getResponse().getContentAsString())
                 .path("data").path("fileId").asText();
+    }
+
+    private String draft(String siteName, String introduction, String heroFileId, String colorScheme,
+                         String layoutCode, String sectionType, String sectionTitle, String sectionContent) {
+        return ("{\"siteName\":\"%s\",\"introduction\":\"%s\",\"heroFileId\":\"%s\","
+                + "\"contactText\":\"contact@test.com\",\"colorScheme\":\"%s\",\"layoutCode\":\"%s\","
+                + "\"sections\":[{\"sectionType\":\"%s\",\"title\":\"%s\",\"content\":\"%s\","
+                + "\"heroFileId\":null,\"sortOrder\":0}]}"
+        )
+                .formatted(siteName, introduction, heroFileId, colorScheme, layoutCode,
+                        sectionType, sectionTitle, sectionContent);
+    }
+
+    private void saveDraft(MockHttpSession session, String draft) throws Exception {
+        mockMvc.perform(put("/api/site/draft")
+                        .session(session)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content(draft))
+                .andExpect(status().isOk());
+    }
+
+    private long auditCount(String action, String result) {
+        return auditOperationMapper.selectCount(new LambdaQueryWrapper<AuditOperationDO>()
+                .eq(AuditOperationDO::getAction, action)
+                .eq(AuditOperationDO::getTargetId, 1L)
+                .eq(AuditOperationDO::getResult, result));
+    }
+
+    private void assertPublicSnapshot(String siteName, String introduction, String colorScheme,
+                                      String layoutCode, String sectionType, String sectionTitle,
+                                      String sectionContent) throws Exception {
+        mockMvc.perform(get("/api/public/site"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.siteName").value(siteName))
+                .andExpect(jsonPath("$.data.introduction").value(introduction))
+                .andExpect(jsonPath("$.data.colorScheme").value(colorScheme))
+                .andExpect(jsonPath("$.data.layoutCode").value(layoutCode))
+                .andExpect(jsonPath("$.data.sections[0].sectionType").value(sectionType))
+                .andExpect(jsonPath("$.data.sections[0].title").value(sectionTitle))
+                .andExpect(jsonPath("$.data.sections[0].content").value(sectionContent));
     }
 
     @Test
@@ -125,32 +186,71 @@ class SiteFlowTest {
     }
 
     @Test
-    @DisplayName("草稿修改不影响已发布快照（并撤回清理）")
-    void draftEditDoesNotAffectPublished() throws Exception {
+    @DisplayName("完整 A/B 草稿隔离、发布区块失败回滚、公开文件边界、撤回与审计")
+    void publicationRollbackKeepsCompleteAAndAuditsEveryOutcome() throws Exception {
         MockHttpSession session = loginAsAdmin();
-        String fileId = uploadPng(session);
-        String siteName = unique("站点A");
-        String draftA = "{\"siteName\":\"" + siteName + "\",\"introduction\":\"A\",\"heroFileId\":\"" + fileId
-                + "\",\"contactText\":\"c\",\"colorScheme\":\"GRAPHITE\",\"layoutCode\":\"GRID_SPLIT\",\"sections\":[]}";
-        mockMvc.perform(put("/api/site/draft").session(session).contentType(MediaType.APPLICATION_JSON).with(csrf()).content(draftA))
-                .andExpect(status().isOk());
+        String publishedFileId = uploadPng(session);
+        String unreferencedFileId = uploadPng(session);
+        String siteNameA = unique("站点A");
+        String introductionA = "A 的完整简介";
+        String sectionTitleA = "A 的关于区块";
+        String sectionContentA = "A 的完整公开区块内容";
+        String draftA = draft(siteNameA, introductionA, publishedFileId, "GRAPHITE", "GRID_SPLIT",
+                "ABOUT", sectionTitleA, sectionContentA);
+
+        long publishSuccessBefore = auditCount("SITE_PUBLISH", "SUCCESS");
+        long publishFailureBefore = auditCount("SITE_PUBLISH", "FAILURE");
+        long withdrawSuccessBefore = auditCount("SITE_WITHDRAW", "SUCCESS");
+
+        saveDraft(session, draftA);
         mockMvc.perform(post("/api/site/publish").session(session).with(csrf())).andExpect(status().isOk());
-        // 公开读为 A
-        mockMvc.perform(get("/api/public/site"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.siteName").value(siteName));
+        assertThat(auditCount("SITE_PUBLISH", "SUCCESS")).isEqualTo(publishSuccessBefore + 1);
+        assertPublicSnapshot(siteNameA, introductionA, "GRAPHITE", "GRID_SPLIT",
+                "ABOUT", sectionTitleA, sectionContentA);
 
-        // 改草稿为 B，不发布
-        String draftB = draftA.replace("\"introduction\":\"A\"", "\"introduction\":\"B\"");
-        mockMvc.perform(put("/api/site/draft").session(session).contentType(MediaType.APPLICATION_JSON).with(csrf()).content(draftB))
-                .andExpect(status().isOk());
-        // 公开仍为 A（草稿修改不影响线上）
-        mockMvc.perform(get("/api/public/site"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.siteName").value(siteName));
+        mockMvc.perform(get("/api/public/files/" + publishedFileId)).andExpect(status().isOk());
+        mockMvc.perform(get("/api/public/files/" + unreferencedFileId)).andExpect(status().isNotFound());
 
-        // 清理：撤回，避免影响"未发布 404"场景
+        String siteNameB = unique("站点B");
+        String introductionB = "B 的不同简介";
+        String sectionTitleB = "B 的服务区块";
+        String sectionContentB = "B 的不同草稿区块内容";
+        String draftB = draft(siteNameB, introductionB, publishedFileId, "AZURE", "BANNER_SPLIT",
+                "SERVICE", sectionTitleB, sectionContentB);
+        saveDraft(session, draftB);
+
+        clearInvocations(publicationSectionMapper);
+        doThrow(new IllegalStateException("受控的发布区块写入失败"))
+                .when(publicationSectionMapper)
+                .insert(any(HomepagePublicationSectionDO.class));
+        mockMvc.perform(post("/api/site/publish").session(session).with(csrf()))
+                .andExpect(status().isInternalServerError());
+        ArgumentCaptor<HomepagePublicationSectionDO> failedSection = ArgumentCaptor.forClass(HomepagePublicationSectionDO.class);
+        var publishSectionWrites = inOrder(publicationSectionMapper);
+        publishSectionWrites.verify(publicationSectionMapper).delete(any());
+        publishSectionWrites.verify(publicationSectionMapper).insert(failedSection.capture());
+        assertThat(failedSection.getValue().getContent()).isEqualTo(sectionContentB);
+        assertThat(auditCount("SITE_PUBLISH", "FAILURE")).isEqualTo(publishFailureBefore + 1);
+
+        // 发布主表更新和发布区块清空都在同一事务中；受控区块写入失败后公开快照必须完整保留 A。
+        assertPublicSnapshot(siteNameA, introductionA, "GRAPHITE", "GRID_SPLIT",
+                "ABOUT", sectionTitleA, sectionContentA);
+
         mockMvc.perform(post("/api/site/withdraw").session(session).with(csrf())).andExpect(status().isOk());
+        assertThat(auditCount("SITE_WITHDRAW", "SUCCESS")).isEqualTo(withdrawSuccessBefore + 1);
+        mockMvc.perform(get("/api/public/site")).andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/public/files/" + publishedFileId)).andExpect(status().isNotFound());
+
+        // 撤回只隐藏发布快照，管理草稿及 B 区块仍必须保留。
+        mockMvc.perform(get("/api/site/draft").session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.siteName").value(siteNameB))
+                .andExpect(jsonPath("$.data.introduction").value(introductionB))
+                .andExpect(jsonPath("$.data.colorScheme").value("AZURE"))
+                .andExpect(jsonPath("$.data.layoutCode").value("BANNER_SPLIT"))
+                .andExpect(jsonPath("$.data.sections[0].sectionType").value("SERVICE"))
+                .andExpect(jsonPath("$.data.sections[0].title").value(sectionTitleB))
+                .andExpect(jsonPath("$.data.sections[0].content").value(sectionContentB));
     }
 
     @Test

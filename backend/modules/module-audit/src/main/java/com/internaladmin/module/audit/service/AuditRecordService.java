@@ -26,9 +26,10 @@ public class AuditRecordService implements AuditRecordApi {
      * <p>方法：{@code record}</p>
      *
      * <p>执行链路（共 3 步）：</p>
-     * 1. 组装 {@link AuditOperationDO}（动作、目标、结果、当前时间）；
-     * 2. 以独立事务写入（调用方失败回滚不影响审计落库）；
-     * 3. 完成记录。
+     * 1. 使用 {@link Transactional} 的默认 REQUIRED 传播：成功审计加入调用方事务并随其提交或回滚；
+     * 2. 组装 {@link AuditOperationDO}（动作、目标、结果、当前时间）；
+     * 3. 调用 {@link AuditOperationMapper#insert(Object)} 写入记录；业务失败审计应由外层在原业务事务回滚后调用本方法，
+     *    此时在新的默认 REQUIRED 事务中写入，不使用 REQUIRES_NEW。
      *
      * @param operatorId 操作者用户 ID
      * @param action     动作编码

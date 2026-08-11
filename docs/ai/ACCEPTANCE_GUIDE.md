@@ -94,7 +94,8 @@ AI 时代研发者的角色已变为「方案制作者、决策者、验收人�
 
 ## 7. 与质量门禁的关系
 
-- `scripts/quality.sh` 执行：后端测试（mvn verify 含本协议第 5 节落地的自动化用例）+
-  空库迁移检查 + 前端类型检查与构建；
+- `./scripts/quality.sh --no-database` 执行无数据库后端门禁、OpenAPI 漂移检查与前端测试/清单/类型检查/构建；
+- `./scripts/quality.sh --database` 先完整执行无数据库层，再执行隔离 SQLite 的 IAM、Site、运行时 OpenAPI 与空库迁移启动验证。后端命令使用 Maven Wrapper，前端与 OpenAPI 工具依赖以锁文件 `npm ci` 预装；
+- 已验收的 V01-08/V01-10 质量证据不替代 V01-12 的发布级干净来源、开发脚本生命周期、真实 Chromium 和远端 CI 验证；
 - 自动化测试覆盖的是「客观可回归」部分；「主观验收」部分由人在合入前按验收清单执行；
 - 两者都通过，才允许声明「完成」。

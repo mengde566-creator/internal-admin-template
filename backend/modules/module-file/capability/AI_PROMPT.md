@@ -42,7 +42,7 @@ api/  controller/  mapper/  model/entity/  service/
 ### 质量
 
 - 业务方法 Javadoc（方法名/执行链路/@link，禁 `<ol><li>`、禁 `\n` 字面量）；
-- 写完立即自查（ENGINEERING_CONVENTIONS §3）；验证 `scripts/quality.sh`。
+- 写完立即自查（ENGINEERING_CONVENTIONS §3）；验证时显式选择 `./scripts/quality.sh --no-database` 或 `./scripts/quality.sh --database`：后者先执行前者，再执行隔离 SQLite 集成与空库启动验证。后端使用 Maven Wrapper，前端与 OpenAPI 工具依赖以 `npm ci` 按锁文件安装；V01-10 已验收质量链，发布级 V01-12 证据仍待执行。
 
 ## 本模块已知踩坑
 

@@ -20,33 +20,33 @@
 
 ## 当前阶段
 
-0.1 最小闭环已实现并验证：登录认证（Session + CSRF）、用户/角色/权限管理、系统参数、文件上传、主页内容管理（草稿/发布/撤回）、操作审计、公开展示页。配套模板机制（需求漏斗、验收引导、能力包、工程约定、质量门禁）同步在建设。
+0.1 功能闭环已实现：登录认证（Session + CSRF）、用户/角色/权限管理、系统参数、文件上传、主页内容管理（草稿/发布/撤回）、操作审计、公开展示页。V01-08 的高风险流程测试与 V01-10 的质量链已验收；发布级的干净来源、开发脚本生命周期、真实 Chromium 和远端 CI 证据仍由 V01-12 完成。配套模板机制（需求漏斗、验收引导、能力包、工程约定、质量门禁）同步在建设。
 
 ## 快速开始
 
 ### 环境要求
 
 - JDK 25（LTS）
-- Maven 3.9+
-- Node.js 20+（前端构建）
+- 项目自带 Maven Wrapper（`backend/mvnw`，无需系统 Maven）
+- Node.js 24（前端与 OpenAPI 工具）
 
 ### 启动后端（SQLite 零配置）
 
 ```bash
 cd backend
-mvn -DskipTests package
+./mvnw -DskipTests package
 java -jar apps/app-server/target/app-server-0.1.0-SNAPSHOT.jar
 ```
 
 - 无需预装数据库，首次启动自动创建 `backend/data/internal-admin.db` 并执行 Liquibase 迁移；
-- 首次启动自动创建管理员 `admin`，**初始密码随机生成并输出到启动日志**（也可通过环境变量 `APP_ADMIN_PASSWORD` 指定）；
+- 首次启动自动创建管理员 `admin`，**初始密码随机生成并输出到启动日志**（也可通过环境变量 `APP_ADMIN_INITIAL_PASSWORD` 指定）；
 - 健康检查：`curl http://localhost:8080/actuator/health`。
 
 ### 启动前端
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -55,16 +55,22 @@ npm run dev
 ### 质量门禁
 
 ```bash
-./scripts/quality.sh
+./scripts/quality.sh --no-database
 ```
 
-包含：后端测试（mvn verify，含 14 个集成测试）+ 空库迁移检查（12 张表）+ 前端类型检查与构建。
+无数据库质量层不启动应用、不连接数据库，覆盖无数据库后端门禁、OpenAPI 漂移、前端单元测试、E2E 用例清单、类型检查和构建。执行前端/契约质量门禁前，先按锁文件安装依赖：`cd frontend && npm ci`、`cd tools/openapi && npm ci`。
+
+```bash
+./scripts/quality.sh --database
+```
+
+完整隔离数据库质量层会先执行 `--no-database`，再运行 IAM/Site/OpenAPI 集成验证，并通过临时 SQLite 空库启动核验 Liquibase；它不执行 `clean`，也不使用系统 Maven。
 
 ### 测试
 
 ```bash
 cd backend
-mvn test -pl apps/app-server -am
+./mvnw test -pl apps/app-server -am
 ```
 
 集成测试使用独立测试库（`data/test-*.db`），不污染开发库。

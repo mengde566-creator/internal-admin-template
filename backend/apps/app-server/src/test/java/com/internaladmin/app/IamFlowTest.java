@@ -1,5 +1,11 @@
 package com.internaladmin.app;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.internaladmin.module.audit.mapper.AuditOperationMapper;
+import com.internaladmin.module.audit.model.entity.AuditOperationDO;
+import com.internaladmin.module.iam.mapper.RoleMapper;
+import com.internaladmin.module.iam.mapper.RolePermissionMapper;
+import com.internaladmin.module.iam.model.entity.RolePermissionDO;
 import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -7,16 +13,20 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -28,7 +38,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>测试库 data/test-iam.db 独立于开发库；测试数据使用唯一用户名避免互相干扰；
  * 修改全局状态（admin 密码、系统参数）的测试执行后自行恢复。</p>
  */
-@SpringBootTest(properties = {
+@SpringBootTest(classes = Application.class, properties = {
         "spring.datasource.url=jdbc:sqlite:./data/test-iam.db?foreign_keys=on",
         "app.admin-initial-password=TestPass123"
 })
@@ -41,15 +51,28 @@ class IamFlowTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private AuditOperationMapper auditOperationMapper;
+
+    @Autowired
+    private RoleMapper roleMapper;
+
+    @Autowired
+    private RolePermissionMapper rolePermissionMapper;
+
     private String unique(String prefix) {
         return prefix + UUID.randomUUID().toString().substring(0, 8);
     }
 
     private MockHttpSession loginAsAdmin() throws Exception {
+        return login("admin", "TestPass123");
+    }
+
+    private MockHttpSession login(String username, String password) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .with(csrf())
-                        .content("{\"username\":\"admin\",\"password\":\"TestPass123\"}"))
+                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
                 .andExpect(status().isOk())
                 .andReturn();
         return (MockHttpSession) result.getRequest().getSession(false);
@@ -93,11 +116,37 @@ class IamFlowTest {
     }
 
     @Test
-    @DisplayName("已登录但无用户管理权限访问 /api/users 返回 403")
-    void forbiddenWithoutPermission() throws Exception {
-        mockMvc.perform(get("/api/users")
-                        .with(user("editor1").authorities(
-                                new org.springframework.security.core.authority.SimpleGrantedAuthority("site:homepage:edit"))))
+    @DisplayName("真实持久化无权限账号访问 IAM、发布和上传接口均返回 403")
+    void persistedUserWithoutPermissionsGets403FromProtectedApis() throws Exception {
+        MockHttpSession adminSession = loginAsAdmin();
+        String roleCode = unique("NOPERM");
+        MvcResult role = mockMvc.perform(post("/api/roles")
+                        .session(adminSession)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"code\":\"" + roleCode + "\",\"name\":\"无权限角色\",\"permissionCodes\":[]}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String roleId = objectMapper.readTree(role.getResponse().getContentAsString())
+                .path("data").path("id").asText();
+        String username = unique("noaccess");
+        mockMvc.perform(post("/api/users")
+                        .session(adminSession)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"username\":\"" + username + "\",\"displayName\":\"无权限用户\",\"password\":\"NoAccessPass123\",\"roleIds\":[\"" + roleId + "\"]}"))
+                .andExpect(status().isOk());
+        MockHttpSession unprivilegedSession = login(username, "NoAccessPass123");
+
+        mockMvc.perform(get("/api/users").session(unprivilegedSession))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/site/publish").session(unprivilegedSession).with(csrf()))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(multipart("/api/files")
+                        .file(new MockMultipartFile("file", "blocked.png", MediaType.IMAGE_PNG_VALUE,
+                                new byte[]{1, 2, 3}))
+                        .session(unprivilegedSession)
+                        .with(csrf()))
                 .andExpect(status().isForbidden());
     }
 
@@ -171,7 +220,48 @@ class IamFlowTest {
     }
 
     @Test
-    @DisplayName("软删除用户后不可登录")
+    @DisplayName("初始化管理员与当前登录账号均不可删除，并返回精确业务原因")
+    void protectedUsersCannotBeDeleted() throws Exception {
+        MockHttpSession adminSession = loginAsAdmin();
+        MvcResult currentAdmin = mockMvc.perform(get("/api/auth/me").session(adminSession))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.username").value("admin"))
+                .andReturn();
+        String initialAdminId = objectMapper.readTree(currentAdmin.getResponse().getContentAsString())
+                .path("data").path("userId").asText();
+        mockMvc.perform(delete("/api/users/" + initialAdminId).session(adminSession).with(csrf()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("不能删除初始化管理员"));
+
+        String roleCode = unique("SELFDELETE");
+        MvcResult role = mockMvc.perform(post("/api/roles")
+                        .session(adminSession)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"code\":\"" + roleCode + "\",\"name\":\"用户管理员\",\"permissionCodes\":[\"iam:user:manage\"]}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String roleId = objectMapper.readTree(role.getResponse().getContentAsString())
+                .path("data").path("id").asText();
+        String username = unique("selfdelete");
+        MvcResult user = mockMvc.perform(post("/api/users")
+                        .session(adminSession)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"username\":\"" + username + "\",\"displayName\":\"当前账号\",\"password\":\"SelfDeletePass123\",\"roleIds\":[\"" + roleId + "\"]}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String userId = objectMapper.readTree(user.getResponse().getContentAsString())
+                .path("data").path("id").asText();
+        MockHttpSession currentUserSession = login(username, "SelfDeletePass123");
+
+        mockMvc.perform(delete("/api/users/" + userId).session(currentUserSession).with(csrf()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("不能删除当前登录账号"));
+    }
+
+    @Test
+    @DisplayName("软删除用户后查询和登录不可见，并记录成功审计")
     void softDeleteUser() throws Exception {
         MockHttpSession session = loginAsAdmin();
         String username = unique("todelete");
@@ -186,11 +276,18 @@ class IamFlowTest {
                 .path("data").path("id").asText();
         mockMvc.perform(delete("/api/users/" + userId).session(session).with(csrf()))
                 .andExpect(status().isOk());
+        mockMvc.perform(get("/api/users").param("keyword", username).session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.records").isEmpty());
         mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .with(csrf())
                         .content("{\"username\":\"" + username + "\",\"password\":\"DeletePass123\"}"))
                 .andExpect(status().isUnauthorized());
+        assertNotNull(auditOperationMapper.selectOne(new LambdaQueryWrapper<AuditOperationDO>()
+                .eq(AuditOperationDO::getAction, "USER_DELETE")
+                .eq(AuditOperationDO::getTargetId, Long.valueOf(userId))
+                .eq(AuditOperationDO::getResult, "SUCCESS")));
     }
 
     @Test
@@ -253,7 +350,7 @@ class IamFlowTest {
     }
 
     @Test
-    @DisplayName("无引用角色可删除")
+    @DisplayName("无引用角色删除后角色、权限关联均清理，并记录成功审计")
     void roleDeleteSucceedsWhenUnreferenced() throws Exception {
         MockHttpSession session = loginAsAdmin();
         String code = "FREE" + UUID.randomUUID().toString().substring(0, 6);
@@ -261,12 +358,20 @@ class IamFlowTest {
                         .session(session)
                         .contentType(MediaType.APPLICATION_JSON)
                         .with(csrf())
-                        .content("{\"code\":\"" + code + "\",\"name\":\"无引用\",\"permissionCodes\":[]}"))
+                        .content("{\"code\":\"" + code + "\",\"name\":\"无引用\",\"permissionCodes\":[\"site:homepage:edit\"]}"))
                 .andExpect(status().isOk())
                 .andReturn();
         String roleId = objectMapper.readTree(role.getResponse().getContentAsString())
                 .path("data").path("id").asText();
         mockMvc.perform(delete("/api/roles/" + roleId).session(session).with(csrf()))
                 .andExpect(status().isOk());
+        Long deletedRoleId = Long.valueOf(roleId);
+        assertNull(roleMapper.selectById(deletedRoleId));
+        assertEquals(0, rolePermissionMapper.selectCount(new LambdaQueryWrapper<RolePermissionDO>()
+                .eq(RolePermissionDO::getRoleId, deletedRoleId)));
+        assertNotNull(auditOperationMapper.selectOne(new LambdaQueryWrapper<AuditOperationDO>()
+                .eq(AuditOperationDO::getAction, "ROLE_DELETE")
+                .eq(AuditOperationDO::getTargetId, deletedRoleId)
+                .eq(AuditOperationDO::getResult, "SUCCESS")));
     }
 }

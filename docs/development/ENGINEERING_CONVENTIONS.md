@@ -13,7 +13,7 @@
 | MyBatis-Plus 分页 | 3.5.9+ 分页插件拆到 `mybatis-plus-jsqlparser` 模块 | 只引 starter 时 `PaginationInnerInterceptor` 找不到 |
 | 组件扫描 | `@SpringBootApplication(scanBasePackages = "com.internaladmin")` + 显式 `@MapperScan` 各模块 mapper 包 | 默认只扫 app 包，业务模块组件全部不生效 |
 | 方法级权限异常 | Spring Security 7 抛 `AuthorizationDeniedException`（非旧 `AccessDeniedException`） | 处理器要覆盖它；多 `@RestControllerAdvice` 时用 `@Order(HIGHEST_PRECEDENCE)` 保证优先 |
-| CSRF（SPA） | token 延迟生成（GET 不种 cookie），需 `CsrfCookieFilter` 每个响应种 `XSRF-TOKEN`；用 `CsrfTokenRequestAttributeHandler`（非 Xor）支持 cookie 直读 | 登录请求 403 |
+| CSRF（SPA） | token 延迟生成；`CsrfCookieFilter` 只触发延迟 token，`CookieCsrfTokenRepository` 是 `XSRF-TOKEN` 的唯一写入源；退出请求跳过该过滤器并由标准 `CsrfLogoutHandler` 删除 token；用 `CsrfTokenRequestAttributeHandler`（非 Xor）支持 cookie 直读 | 登录前未取得 token 会 403；过滤器与 repository 同时写 cookie 会产生重复或覆盖 |
 | 手动登录 | 手动 `setAuthentication` 后必须显式 `HttpSessionSecurityContextRepository.saveContext(context, request, response)` | 会话不保持（me 401） |
 | CORS | `HttpSecurity` 链必须显式 `.cors(Customizer.withDefaults())` + `CorsConfigurationSource` bean | 只有 bean 不启用 |
 | SQLite 单写者 | 不支持并发写事务；审计等 REQUIRES_NEW 独立写会 `SQLITE_BUSY` | 成功审计随主事务；失败审计由外层在事务回滚后记录 |

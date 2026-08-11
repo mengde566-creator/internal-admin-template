@@ -52,7 +52,7 @@ public class SecurityConfig {
      * 3. 仅在启用契约 profile 时放行 {@code /v3/api-docs/**}，生产默认不暴露该入口；
      * 4. 其余请求要求认证（会话由服务端 Session 维持）；
      * 5. 关闭默认表单登录与 httpBasic（统一走 /api/auth/login）；
-     * 6. 关闭默认退出（退出由业务接口销毁 Session）；
+     * 6. 关闭默认退出 URL，保留 JSON 退出接口委托 {@link LogoutHandler} 标准链清理会话、context 与 CSRF；
      * 7. 配置 401/403 JSON 响应（未登录 401、无权限 403）。
      *
      * @param http HttpSecurity
@@ -65,8 +65,7 @@ public class SecurityConfig {
                                                    @Value("${springdoc.api-docs.enabled:false}") boolean apiDocsEnabled,
                                                    CsrfTokenRepository csrfTokenRepository,
                                                    SecurityContextRepository securityContextRepository,
-                                                   SessionAuthenticationStrategy sessionAuthenticationStrategy,
-                                                   @Value("${app.security.csrf-cookie.secure:false}") boolean csrfCookieSecure)
+                                                   SessionAuthenticationStrategy sessionAuthenticationStrategy)
             throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
         http
@@ -77,7 +76,7 @@ public class SecurityConfig {
                         .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler()))
                 .securityContext(context -> context.securityContextRepository(securityContextRepository))
                 .sessionManagement(session -> session.sessionAuthenticationStrategy(sessionAuthenticationStrategy))
-                .addFilterAfter(new CsrfCookieFilter(csrfCookieSecure),
+                .addFilterAfter(new CsrfCookieFilter(),
                         org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> {
                     auth.requestMatchers("/api/auth/login",

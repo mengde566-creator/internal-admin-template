@@ -111,7 +111,7 @@ function loadDraft() {
 
 /** 草稿加载完成后填充编辑表单（仅一次；后续以保存响应为准，避免覆盖未保存修改） */
 watch(draftQuery.data, () => {
-  if (!hydrated) {
+  if (!hydrated && draftQuery.data.value) {
     loadDraft()
     hydrated = true
   }

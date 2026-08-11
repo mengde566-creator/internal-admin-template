@@ -7,6 +7,9 @@
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
     "build": "vue-tsc --noEmit && vite build",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
     "openapi:generate": "../scripts/openapi-contract.sh generate",
     "openapi:check": "../scripts/openapi-contract.sh check"
   },
@@ -20,9 +23,13 @@
     "vue-router": "5.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@vitejs/plugin-vue": "6.0.8",
+    "@vue/test-utils": "2.4.11",
+    "jsdom": "30.0.1",
     "typescript": "6.0.3",
     "vite": "8.1.5",
+    "vitest": "4.1.7",
     "vue-tsc": "3.3.8"
   }
 }

@@ -1,6 +1,6 @@
 # V01-07 Session Cookie 与会话安全配置
 
-> 状态：进行中
+> 状态：完成（总设计师 / 总架构师独立验收通过）
 > 所属版本：0.1
 > 主责角色：研发工程师（乙）
 > 设计与派发：总设计师 / 总架构师
@@ -139,3 +139,18 @@
 未执行项/风险：<如实填写>
 需要总设计师处理：协调源文件冻结后的契约回归并独立验收
 ```
+
+## 10. 总设计师独立验收结论
+
+2026-08-11，总设计师 / 总架构师完成独立验收，结论为通过：
+
+- JDK 17 与 Oracle JDK 25.0.4 均执行 `NoDatabaseSessionSecurityTest,NoDatabaseSessionSecurityProductionTest`，各 3 项测试全部通过；
+- 真实 HTTP 测试已覆盖 local/prod Cookie 唯一性与属性、登录 Session ID 轮换、旧 Session 失效、新 Session 保持、携带 CSRF 的退出及退出后 401；
+- 两个专用测试上下文均机械断言不存在 `DataSource`、`SpringLiquibase` 和 `SqlSessionFactory`；
+- `./scripts/openapi-contract.sh check` 退出 0，OpenAPI 契约与前端 TypeScript 生成类型无漂移，AC-05 关闭；
+- IAM 能力包与工程通用约定已同步当前 Session/CSRF 事实，`git diff --check` 退出 0；
+- 未运行 `clean`、主应用、Liquibase、SQLite/MyBatis 或任何数据库测试。
+
+最终状态：AC-01 至 AC-08 全部关闭，V01-07 完成。完整应用、真实数据库和发布级验证仍由 V01-12 承担；Mockito/Byte Buddy 动态 agent 的未来兼容警告保留为 V01-12 风险，不影响本任务无 Mockito 专用测试的验收结论。
+
+独立验收证据见 [V01-07 架构验收报告](evidence/V01-07_ARCHITECT_REVIEW.md)。

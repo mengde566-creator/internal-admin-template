@@ -242,4 +242,4 @@
 - ~~本地图片目录、访问规则和限制~~——✅ 已确认（2026-08-03：`data/uploads/`、类型白名单、≤10MB（由 5MB 调整）、受控接口）；
 - ~~初始化管理员方式~~——✅ 已确认（2026-08-03：默认账号 + 随机初始密码 + 首次登录强制改密）；
 - ~~[前端组件库与视觉方案](../docs/frontend/V0_1_UI_PROPOSALS.md)~~——✅ 已确认（2026-08-03 确认视觉方案；2026-08-09 确认新增专用“登录安全”入口：Minimal Tech、Element Plus 正式采用、微交互 B 预设+预留 A/C 修改口、GSAP 不引入、8 页面）；
-- ~~本地与 CI 的统一质量命令~~——✅ 已确认（2026-08-03：`scripts/quality.sh` 统一入口——后端 `mvn clean verify` + 空库迁移检查（12 张表）+ 前端 `typecheck`/`build`，任一失败整体失败）。
+- ~~本地与 CI 的统一质量命令~~——✅ 已确认（当前实现：`scripts/quality.sh --no-database` 为无数据库质量入口，`scripts/quality.sh --database` 在其后执行隔离 SQLite 集成与空库迁移启动验证；后端统一使用 Maven Wrapper，前端与 OpenAPI 工具统一以锁文件执行 `npm ci`，任一阶段失败整体失败）。

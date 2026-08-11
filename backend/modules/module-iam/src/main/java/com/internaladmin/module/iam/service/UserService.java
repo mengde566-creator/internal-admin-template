@@ -34,6 +34,8 @@ import java.util.stream.Collectors;
 @Service
 public class UserService {
 
+    private static final String INITIAL_ADMIN_USERNAME = "admin";
+
     private final UserMapper userMapper;
     private final UserRoleMapper userRoleMapper;
     private final RoleMapper roleMapper;
@@ -215,8 +217,8 @@ public class UserService {
      *
      * <p>执行链路（共 5 步）：</p>
      * 1. 按 ID 查询用户（@TableLogic 自动过滤已删），不存在时抛出业务异常；
-     * 2. 校验不能删除初始化管理员（id=1）与当前登录用户自身；
-     * 3. 从安全上下文解析操作者 ID；
+     * 2. 按账号校验不能删除初始化管理员；
+     * 3. 从安全上下文解析操作者 ID 并校验不能删除当前登录用户自身；
      * 4. 调用 {@code userMapper.deleteById} 软删除（置 deleted=1）；
      * 5. 调用 {@link AuditRecordApi#record(Long, String, Long, String)} 记录 USER_DELETE 成功。
      *
@@ -229,10 +231,10 @@ public class UserService {
         if (user == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
         }
-        Long operatorId = currentUserId();
-        if (Long.valueOf(1L).equals(id)) {
+        if (INITIAL_ADMIN_USERNAME.equals(user.getUsername())) {
             throw new BusinessException(ErrorCode.BUSINESS_REJECTED, "不能删除初始化管理员");
         }
+        Long operatorId = currentUserId();
         if (id.equals(operatorId)) {
             throw new BusinessException(ErrorCode.BUSINESS_REJECTED, "不能删除当前登录账号");
         }

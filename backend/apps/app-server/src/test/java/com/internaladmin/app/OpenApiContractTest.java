@@ -24,7 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 当前研发环境严格禁止执行此类测试。</p>
  */
 @ActiveProfiles("contract")
-@SpringBootTest(properties = {
+@SpringBootTest(classes = Application.class, properties = {
         "spring.datasource.url=jdbc:sqlite:./data/test-openapi-contract.db?foreign_keys=on",
         "app.admin-initial-password=TestPass123"
 })

@@ -1,7 +1,7 @@
 # module-iam AI 提示词
 
 > 开发/修改 module-iam 时 AI 必须加载本文件（AGENTS.md §2.3 装配规则）。
-> 最后核对：2026-08-04（与当前代码一致）
+> 最后核对：2026-08-11（与当前代码一致）
 
 ## 模块定位
 
@@ -37,7 +37,7 @@ controller/  service/  mapper/  model/entity/  model/dto/  api/  bootstrap/
 
 - 业务方法必须有 Javadoc（方法名/执行链路/@link，禁止 `<ol><li>`，禁止 `\n` 字面量）；
 - 写完立即执行 ENGINEERING_CONVENTIONS §3 自查清单；
-- 验证：`scripts/quality.sh`（编译+迁移检查+前端构建）。
+- 验证必须显式选择：`./scripts/quality.sh --no-database` 只执行无数据库质量层；`./scripts/quality.sh --database` 在其后执行隔离 SQLite 集成和空库启动验证。后端使用 Maven Wrapper，前端与 OpenAPI 工具依赖以 `npm ci` 按锁文件安装；V01-08 与 V01-10 已验收，发布级 V01-12 证据仍待执行。
 
 ## 本模块已知踩坑
 
@@ -47,14 +47,14 @@ controller/  service/  mapper/  model/entity/  model/dto/  api/  bootstrap/
 | 权限重复插入 | 启动主键冲突失败 | 权限补齐逻辑与创建流程各插一遍 | 新增逻辑先查现有代码是否已覆盖（统一由一处写入） |
 | Jackson 注解不生效 | ID 序列化为数字，前端精度丢失 | 用了 `com.fasterxml`（Jackson 2）或注解标在字段 | 用 `tools.jackson`，注解标 getter |
 | `model.do` 包名 | 编译报"需要标识符" | `do` 是 Java 关键字 | 用 `model.entity` |
-| 手动登录会话不保持 | 登录后 me 返回 401 | 只 setAuthentication 未持久化 | 显式 `HttpSessionSecurityContextRepository.saveContext(context, request, response)` + `request.changeSessionId()` 防固定 |
-| CSRF 首次登录 403 | 首次直登被拦 | token 延迟生成，GET 不种 cookie | 前端登录页先 GET 一次种 cookie（CsrfCookieFilter 每个响应种） |
+| 手动登录会话不保持或固定 | 登录后 me 返回 401，或沿用预登录 Session | 只 setAuthentication，未调用标准策略与 repository | 注入 `SessionAuthenticationStrategy` 后先执行认证策略，再由 `SecurityContextRepository.saveContext(context, request, response)` 持久化；V01-07 专用真实 HTTP 测试断言 ID 轮换、旧 ID 401、新 ID 200 |
+| CSRF 首次登录 403 或重复写 Cookie | 首次直登被拦，或响应含多个 XSRF-TOKEN | token 延迟生成，或过滤器与 repository 同时写 Cookie | 前端登录页先 GET 一次取得 cookie；`CsrfCookieFilter` 只触发延迟 token，`CookieCsrfTokenRepository` 是 XSRF-TOKEN 唯一写入源 |
 | size>100 返回 500 | 参数错误变系统错误 | setter 抛 IllegalArgumentException | 抛 `BusinessException(PARAM_ERROR)` → 400 |
 
 ## 禁止事项
 
 - **物理删除用户**（有审计/历史引用，用软删除）；
-- 删除初始化管理员（id=1）或当前登录账号；
+- 删除初始化管理员账号 `admin` 或当前登录账号；
 - 修改已执行/已发布的 Liquibase 变更集；
 - 跨模块访问 module-file/site 的 Mapper/DO/表；
 - 删除/重建数据库（AGENTS §16 红线）；
