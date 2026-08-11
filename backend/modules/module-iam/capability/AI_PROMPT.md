@@ -1,7 +1,7 @@
 # module-iam AI 提示词
 
 > 开发/修改 module-iam 时 AI 必须加载本文件（AGENTS.md §2.3 装配规则）。
-> 最后核对：2026-08-11（与当前代码一致）
+> 最后核对：2026-08-12（V01-12 发布级验证通过）
 
 ## 模块定位
 
@@ -37,7 +37,7 @@ controller/  service/  mapper/  model/entity/  model/dto/  api/  bootstrap/
 
 - 业务方法必须有 Javadoc（方法名/执行链路/@link，禁止 `<ol><li>`，禁止 `\n` 字面量）；
 - 写完立即执行 ENGINEERING_CONVENTIONS §3 自查清单；
-- 验证必须显式选择：`./scripts/quality.sh --no-database` 只执行无数据库质量层；`./scripts/quality.sh --database` 在其后执行隔离 SQLite 集成和空库启动验证。后端使用 Maven Wrapper，前端与 OpenAPI 工具依赖以 `npm ci` 按锁文件安装；V01-08 与 V01-10 已验收，发布级 V01-12 证据仍待执行。
+- 验证必须显式选择：`./scripts/quality.sh --no-database` 只执行无数据库质量层；`./scripts/quality.sh --database` 在其后执行隔离 SQLite 集成和空库启动验证。后端使用 Maven Wrapper，前端与 OpenAPI 工具依赖以 `npm ci` 按锁文件安装；V01-08、V01-10 与固定 SHA 的 V01-12 发布级验证均已验收。
 
 ## 本模块已知踩坑
 
