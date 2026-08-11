@@ -318,7 +318,8 @@ stop_service() {
         return 1
     fi
     kill "$pid"
-    for _ in $(seq 1 10); do
+    # Spring 正常关闭已实测约 2.02 秒，保留 10 秒余量避免安全退出被误判超时。
+    for _ in $(seq 1 50); do
         is_pid_alive "$pid" || break
         sleep 0.2
     done
