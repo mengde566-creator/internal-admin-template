@@ -3,6 +3,7 @@ package com.internaladmin.app;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.internaladmin.module.audit.mapper.AuditOperationMapper;
 import com.internaladmin.module.audit.model.entity.AuditOperationDO;
+import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.iam.mapper.RoleMapper;
 import com.internaladmin.module.iam.mapper.RolePermissionMapper;
 import com.internaladmin.module.iam.model.entity.RolePermissionDO;
@@ -19,6 +20,9 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.UUID;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import javax.imageio.ImageIO;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -148,6 +152,76 @@ class IamFlowTest {
                         .session(unprivilegedSession)
                         .with(csrf()))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("文件权限独立于主页编辑权限")
+    void filePermissionIsIndependentFromSiteEdit() throws Exception {
+        MockHttpSession adminSession = loginAsAdmin();
+
+        String siteRoleCode = unique("SITEONLY");
+        MvcResult siteRole = mockMvc.perform(post("/api/roles")
+                        .session(adminSession)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"code\":\"" + siteRoleCode + "\",\"name\":\"仅主页编辑\",\"permissionCodes\":[\""
+                                + PermissionCodes.SITE_HOMEPAGE_EDIT + "\"]}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String siteRoleId = objectMapper.readTree(siteRole.getResponse().getContentAsString())
+                .path("data").path("id").asText();
+        String siteOnlyUsername = unique("siteonly");
+        mockMvc.perform(post("/api/users")
+                        .session(adminSession)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"username\":\"" + siteOnlyUsername + "\",\"displayName\":\"仅主页编辑用户\","
+                                + "\"password\":\"SiteOnlyPass123\",\"roleIds\":[\"" + siteRoleId + "\"]}"))
+                .andExpect(status().isOk());
+        MockHttpSession siteOnlySession = login(siteOnlyUsername, "SiteOnlyPass123");
+        mockMvc.perform(multipart("/api/files")
+                        .file(new MockMultipartFile("file", "blocked.png", MediaType.IMAGE_PNG_VALUE, tinyPng()))
+                        .session(siteOnlySession)
+                        .with(csrf()))
+                .andExpect(status().isForbidden());
+
+        String fileRoleCode = unique("FILEONLY");
+        MvcResult fileRole = mockMvc.perform(post("/api/roles")
+                        .session(adminSession)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"code\":\"" + fileRoleCode + "\",\"name\":\"文件管理\",\"permissionCodes\":[\""
+                                + PermissionCodes.FILE_MANAGE + "\"]}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String fileRoleId = objectMapper.readTree(fileRole.getResponse().getContentAsString())
+                .path("data").path("id").asText();
+        String fileOnlyUsername = unique("fileonly");
+        mockMvc.perform(post("/api/users")
+                        .session(adminSession)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"username\":\"" + fileOnlyUsername + "\",\"displayName\":\"文件管理用户\","
+                                + "\"password\":\"FileOnlyPass123\",\"roleIds\":[\"" + fileRoleId + "\"]}"))
+                .andExpect(status().isOk());
+        MockHttpSession fileOnlySession = login(fileOnlyUsername, "FileOnlyPass123");
+        MvcResult upload = mockMvc.perform(multipart("/api/files")
+                        .file(new MockMultipartFile("file", "allowed.png", MediaType.IMAGE_PNG_VALUE, tinyPng()))
+                        .session(fileOnlySession)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andReturn();
+        String fileId = objectMapper.readTree(upload.getResponse().getContentAsString())
+                .path("data").path("fileId").asText();
+        mockMvc.perform(get("/api/files/" + fileId).session(fileOnlySession))
+                .andExpect(status().isOk());
+    }
+
+    private byte[] tinyPng() throws Exception {
+        BufferedImage image = new BufferedImage(1, 1, BufferedImage.TYPE_INT_RGB);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ImageIO.write(image, "png", output);
+        return output.toByteArray();
     }
 
     @Test
@@ -358,7 +432,8 @@ class IamFlowTest {
                         .session(session)
                         .contentType(MediaType.APPLICATION_JSON)
                         .with(csrf())
-                        .content("{\"code\":\"" + code + "\",\"name\":\"无引用\",\"permissionCodes\":[\"site:homepage:edit\"]}"))
+                        .content("{\"code\":\"" + code + "\",\"name\":\"无引用\",\"permissionCodes\":[\""
+                                + PermissionCodes.USER_MANAGE + "\"]}"))
                 .andExpect(status().isOk())
                 .andReturn();
         String roleId = objectMapper.readTree(role.getResponse().getContentAsString())

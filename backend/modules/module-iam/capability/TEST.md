@@ -17,7 +17,8 @@
 | 9 | 软删除用户 | 删除后列表不含、登录 401 | ✅ 自动（`IamFlowTest`） |
 | 10 | 删除 admin 自身/初始化管理员 | 按唯一账号 `admin` 识别初始化管理员；与当前登录账号均 400 精确拒绝 | ✅ 自动（`IamFlowTest`） |
 | 11 | 角色引用校验删除 | 被用户引用→400 拒绝；无引用→删除+清权限关联；软删除用户引用不阻塞 | ✅ 自动（`IamFlowTest`） |
-| 12 | 越权访问 | 真实持久化无权限角色/用户访问用户列表、站点发布、文件上传均→403 | ✅ 自动（`IamFlowTest#persistedUserWithoutPermissionsGets403FromProtectedApis`） |
+| 12 | 越权访问 | 真实持久化无权限角色/用户访问用户列表、站点发布、文件上传均→403；仅有 `site:homepage:edit` 不能调用文件接口 | 🟡 用例已编写，待允许 SQLite 验证窗口 |
+| 19 | 文件权限独立 | 仅有 `site:homepage:edit` 的角色调用文件接口→403；仅有 `file:manage` 的角色可上传并读取文件 | 🟡 用例已编写，待允许 SQLite 验证窗口 |
 | 13 | 未登录访问受保护接口 | 401 JSON | ✅ 自动（`IamFlowTest`） |
 | 14 | 参数校验 | 空账号/短密码/size>100→400 | ✅ 手动验证 |
 | 15 | 管理操作审计 | USER_DELETE/ROLE_DELETE 写入 audit_operation | ✅ 自动（`IamFlowTest`） |
@@ -26,6 +27,8 @@
 | 18 | prod Cookie 响应属性 | Session 与 XSRF-TOKEN 各仅一条，均为 Path=/、SameSite=Lax、Secure=true；仅检查 HTTP 响应属性，不在 HTTP 客户端回传 Secure cookie | ✅ 自动（`NoDatabaseSessionSecurityProductionTest`） |
 
 ## 通用用例
+
+文件接口权限升级说明：`file:manage` 与 `site:homepage:edit` 独立；仅拥有旧主页编辑权限的既有角色应由管理员手工补选“文件管理”，不会自动迁移，也不通过双权限兼容掩盖缺失权限。
 
 安全/权限、数据完整性通用用例见工程顶层 `docs/development/CAPABILITY_COMMON.md` 第 3/4 节（本模块已覆盖：401/403/400、CSRF、Session 固定、软删除、null=不修改、引用拒绝）。
 

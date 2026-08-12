@@ -36,7 +36,7 @@ api/  controller/  mapper/  model/entity/  service/
 
 ### 权限
 
-- 上传与管理端读取：`site:homepage:edit`（@PreAuthorize）；
+- 上传与管理端读取：`file:manage`（@PreAuthorize）；该权限由中央权限目录注册，module-file 不依赖业务模块；
 - 公开读取：不在本模块（module-site 的 /api/public/files/{id} 做引用校验）。
 
 ### 质量

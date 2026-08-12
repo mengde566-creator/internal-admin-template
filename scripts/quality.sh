@@ -78,23 +78,25 @@ check_prerequisites() {
 
 run_no_database() {
   check_prerequisites
-  echo "==> [1/7] 后端：无数据库会话安全门禁"
+  echo "==> [1/8] 模块边界：生产源码依赖与权限命名空间"
+  bash "$ROOT/scripts/check-module-boundaries.sh"
+  echo "==> [2/8] 后端：无数据库会话安全门禁"
   (cd backend && ./mvnw -Djava.version=25 -pl apps/app-server -am \
     -Dtest=NoDatabaseSessionSecurityTest,NoDatabaseSessionSecurityProductionTest \
     -Dsurefire.failIfNoSpecifiedTests=false test)
-  echo "==> [2/7] 后端：无数据库文件存储门禁"
+  echo "==> [3/8] 后端：无数据库文件存储门禁"
   (cd backend && ./mvnw -Djava.version=25 -pl modules/module-file -am \
     -Dtest=FileStorageServiceTest \
     -Dsurefire.failIfNoSpecifiedTests=false test)
-  echo "==> [3/7] 后端：OpenAPI 无数据库漂移检查"
+  echo "==> [4/8] 后端：OpenAPI 无数据库漂移检查"
   "$ROOT/scripts/openapi-contract.sh" check
-  echo "==> [4/7] 前端：Vitest"
+  echo "==> [5/8] 前端：Vitest"
   (cd frontend && npm run test:unit)
-  echo "==> [5/7] 前端：Playwright 用例清单"
+  echo "==> [6/8] 前端：Playwright 用例清单"
   (cd frontend && npm run test:e2e -- --list)
-  echo "==> [6/7] 前端：TypeScript"
+  echo "==> [7/8] 前端：TypeScript"
   (cd frontend && npm run typecheck)
-  echo "==> [7/7] 前端：构建"
+  echo "==> [8/8] 前端：构建"
   (cd frontend && npm run build)
   echo "==> 无数据库质量层全部通过"
 }

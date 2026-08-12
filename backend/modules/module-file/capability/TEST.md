@@ -28,5 +28,5 @@ WebP 正常样本来自 TwelveMonkeys 官方仓库 tag `twelvemonkeys-3.14.0` �
 
 - 上传仍返回字符串 `fileId`；
 - 管理端读取仍使用 `FileStorageInfo.contentType` 作为响应 Content-Type，因此成功上传写入的是解码器派生值；
-- 读取和公开引用权限边界未在 V01-06 修改；
+- 管理端上传/读取使用独立的 `file:manage`；公开引用权限边界仍由 module-site 的公开接口负责；
 - 未承诺重编码、剥离 Exif/ICC/XMP、尾随数据或全部 polyglot 风险。

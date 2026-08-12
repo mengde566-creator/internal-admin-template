@@ -3,6 +3,7 @@ package com.internaladmin.app;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.internaladmin.module.audit.mapper.AuditOperationMapper;
 import com.internaladmin.module.audit.model.entity.AuditOperationDO;
+import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.site.mapper.HomepagePublicationSectionMapper;
 import com.internaladmin.module.site.model.entity.HomepagePublicationSectionDO;
 import tools.jackson.databind.ObjectMapper;
@@ -36,6 +37,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.hamcrest.Matchers.hasItem;
 
 /**
  * module-site 集成测试：上传/草稿/发布/公开读取/撤回/草稿与发布隔离。
@@ -76,6 +78,7 @@ class SiteFlowTest {
                         .with(csrf())
                         .content("{\"username\":\"admin\",\"password\":\"TestPass123\"}"))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.permissions", hasItem(PermissionCodes.FILE_MANAGE)))
                 .andReturn();
         return (MockHttpSession) result.getRequest().getSession(false);
     }

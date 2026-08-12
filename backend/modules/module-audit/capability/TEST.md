@@ -1,26 +1,19 @@
 # module-audit 测试清单
 
-> 最后核对：2026-08-11。下列自动化状态只引用 V01-08 已完成的真实 Spring + SQLite 证据；本模块当前没有单独的审计查询或重试能力测试，因为相应能力未实现也不属于 0.1 范围。
+> 最后核对：2026-08-12。本模块只验证通用记录映射与失败可见；消费者动作语义分别由调用方能力包维护。
 
-## 已证明的跨模块审计写入
+## 通用服务单测
 
 | # | 场景 | 预期 | 自动化状态与证据 |
 | --- | --- | --- |
-| 1 | 用户软删除成功 | 写入目标用户的 `USER_DELETE / SUCCESS` | ✅ 自动：`IamFlowTest.softDeleteUser` 以 `AuditOperationMapper` 精确断言；V01-08A 真实 SQLite 12/12 通过 |
-| 2 | 无引用角色删除成功 | 角色与权限关联清理后写入目标角色的 `ROLE_DELETE / SUCCESS` | ✅ 自动：`IamFlowTest.roleDeleteSucceedsWhenUnreferenced` 以 Mapper 精确断言；V01-08A 真实 SQLite 12/12 通过 |
-| 3 | 主页发布成功 | 写入 `SITE_PUBLISH / SUCCESS` | ✅ 自动：`SiteFlowTest` 以固定主页目标和 action/result 增量断言；V01-08B 真实 SQLite 4/4 通过 |
-| 4 | 主页发布失败 | 业务事务回滚后由 Controller 外层写入 `SITE_PUBLISH / FAILURE`，旧公开快照保持 | ✅ 自动：`SiteFlowTest` 受控发布区块写入失败后精确断言；V01-08B 真实 SQLite 4/4 通过 |
-| 5 | 主页撤回成功 | 写入 `SITE_WITHDRAW / SUCCESS` | ✅ 自动：`SiteFlowTest` 以固定主页目标和 action/result 增量断言；V01-08B 真实 SQLite 4/4 通过 |
+| 1 | 通用字段映射 | `operator/action/target/result/time` 交给 Mapper | ✅ `AuditRecordServiceTest` 通过（本轮 JDK25 无数据库目标测试） |
+| 2 | Mapper 写入失败 | Mapper 异常向调用方可见，不返回假成功 | ✅ `AuditRecordServiceTest` 通过（本轮 JDK25 无数据库目标测试） |
 
-## 未覆盖或不在范围的事项
+## 消费者验证边界
 
-| 场景 | 当前状态 | 边界 |
-| --- | --- | --- |
-| `SITE_WITHDRAW / FAILURE` 的失败审计 | 未由 V01-08 证明 | 当前代码保留回滚后外层记录路径；未将其标为自动通过。 |
-| 审计记录查询、筛选、导出或管理页面 | 未实现 | 0.1 不提供该能力，禁止以测试清单暗示已存在。 |
-| 失败重试、异步投递、`REQUIRES_NEW` 独立写入 | 未实现且禁止 | SQLite 单写者约束下，保持默认 REQUIRED 与回滚后外层失败记录。 |
+调用业务模块的动作、目标及成功/失败业务断言分别保留在各自能力包和应用集成测试中；它们不构成 module-audit 的动作注册表。审计查询、筛选、导出、重试、异步投递和 `REQUIRES_NEW` 均不在本模块范围。
 
 ## 真实验证边界
 
-- V01-08 总设计师验收记录：`IamFlowTest` 12/12、`SiteFlowTest` 4/4，均为真实 Spring + 隔离 SQLite；相关 Surefire XML 位于 `apps/app-server/target/surefire-reports/`。
-- V01-08 只证明列出的高风险审计写入，不替代完整 `verify`、多数据库兼容或发布环境验证；这些验证仍按后续版本任务处理。
+- 应用层消费者证据由各调用业务模块及其能力包维护；本清单只记录本模块直接单测，不把消费者证据复制为 module-audit 事实。
+- 数据库、迁移和真实应用验证按任务授权执行；本轮整改不运行数据库测试。

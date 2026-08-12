@@ -20,7 +20,7 @@ api/  mapper/  model/entity/  service/
 
 ### 依赖与事务
 
-- 依赖：platform-kernel、platform-data；被 module-iam 与 module-site 通过 `AuditRecordApi` 依赖。
+- 依赖：platform-kernel、platform-data；由调用业务模块通过 `AuditRecordApi` 依赖。
 - `AuditRecordService#record` 使用无参 `@Transactional`，即默认 `REQUIRED`：成功审计加入调用方业务事务，业务提交时一同提交，业务回滚时一同回滚。
 - 业务失败审计必须由原业务事务已经回滚后的外层边界调用；此时本方法在没有现存事务时按默认 REQUIRED 开启正常事务写入。
 - SQLite 单写者限制下禁止改用 `REQUIRES_NEW`、并行写入或失败重试掩盖 `SQLITE_BUSY`。
@@ -28,8 +28,7 @@ api/  mapper/  model/entity/  service/
 ### 数据语义
 
 - `audit_operation` 只保存：操作者 ID、动作编码、目标 ID、结果和发生时间；记录 ID 由应用生成。
-- 0.1 已有调用动作是 `USER_DELETE`、`ROLE_DELETE`、`SITE_PUBLISH`、`SITE_WITHDRAW`；结果值为调用方传入的 `SUCCESS` 或 `FAILURE`。
-- 动作编码由调用业务语义确定；本模块不建立动作注册表、字典表或通用审计配置。
+- 动作编码、目标 ID 和结果值均由调用方按业务语义提供；本模块只保存调用方传入值，不建立动作注册表、字典表或通用审计配置。
 
 ## 禁止事项
 

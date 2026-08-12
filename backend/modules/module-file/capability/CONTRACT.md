@@ -6,8 +6,8 @@
 
 | API | 方法 | 权限 | 说明 |
 | --- | --- | --- | --- |
-| `api/files` | POST | `site:homepage:edit` | 上传图片，返回 `{fileId: "字符串"}` |
-| `api/files/{fileId}` | GET | `site:homepage:edit` | 管理端读取（草稿预览） |
+| `api/files` | POST | `file:manage` | 上传图片，返回 `{fileId: "字符串"}` |
+| `api/files/{fileId}` | GET | `file:manage` | 管理端读取（草稿预览） |
 
 **跨模块契约**：`FileQueryApi`（findById → FileStorageInfo、exists、getById）——module-site 等调用方只走此接口，禁止查 file_asset 表。公开文件读取由 module-site 的 `/api/public/files/{id}` 完成（引用校验后经 FileQueryApi 取存储信息）。
 

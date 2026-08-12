@@ -20,6 +20,9 @@ public final class PermissionCodes {
     /** 角色管理：创建和管理角色。 */
     public static final String ROLE_MANAGE = "iam:role:manage";
 
+    /** 文件管理：上传文件与管理端读取。 */
+    public static final String FILE_MANAGE = "file:manage";
+
     /** 主页内容维护：编辑、保存草稿、预览。 */
     public static final String SITE_HOMEPAGE_EDIT = "site:homepage:edit";
 
@@ -33,6 +36,7 @@ public final class PermissionCodes {
     public static final String[] SYSTEM_ADMIN_PERMISSIONS = {
             USER_MANAGE,
             ROLE_MANAGE,
+            FILE_MANAGE,
             SITE_HOMEPAGE_EDIT,
             SITE_HOMEPAGE_PUBLISH,
             SYSTEM_CONFIG_MANAGE
@@ -44,6 +48,7 @@ public final class PermissionCodes {
     static {
         REGISTERED_PERMISSIONS.put(USER_MANAGE, "用户管理");
         REGISTERED_PERMISSIONS.put(ROLE_MANAGE, "角色管理");
+        REGISTERED_PERMISSIONS.put(FILE_MANAGE, "文件管理");
         REGISTERED_PERMISSIONS.put(SITE_HOMEPAGE_EDIT, "主页内容编辑");
         REGISTERED_PERMISSIONS.put(SITE_HOMEPAGE_PUBLISH, "主页发布");
         REGISTERED_PERMISSIONS.put(SYSTEM_CONFIG_MANAGE, "系统设置");

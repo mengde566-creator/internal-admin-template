@@ -30,6 +30,7 @@ controller/  service/  mapper/  model/entity/  model/dto/  api/  bootstrap/
 ### 权限与审计
 
 - 权限编码集中在 `api/PermissionCodes`（代码注册，不建权限表）；新权限必须同时加入 `REGISTERED_PERMISSIONS` 和 `SYSTEM_ADMIN_PERMISSIONS`；
+- `file:manage` 是文件上传与管理端读取的独立权限；既有自定义角色升级由管理员在角色管理中手工勾选“文件管理”，不得自动迁移或保留旧权限兼容；
 - 接口方法加 `@PreAuthorize("hasAuthority('" + PermissionCodes.XXX + "')")`；
 - 关键管理操作（删除等）写审计：`AuditRecordApi.record(operatorId, action, targetId, result)`；**成功随调用方事务，失败由外层在事务回滚后记录**（SQLite 单写者限制，不可 REQUIRES_NEW）。
 

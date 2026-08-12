@@ -7,7 +7,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
 
 /**
- * 操作审计记录。0.1 只记录主页发布与撤回结果。
+ * 操作审计记录。动作、目标和结果的业务语义由调用方定义。
  */
 @TableName("audit_operation")
 public class AuditOperationDO {
@@ -19,13 +19,13 @@ public class AuditOperationDO {
     /** 操作者用户 ID */
     private Long operatorId;
 
-    /** 动作：SITE_PUBLISH 或 SITE_WITHDRAW */
+    /** 调用方定义的动作编码 */
     private String action;
 
-    /** 目标 ID（主页目标，0.1 为 1） */
+    /** 调用方定义的目标业务对象 ID */
     private Long targetId;
 
-    /** 结果：SUCCESS 或 FAILURE */
+    /** 调用方定义的结果编码 */
     private String result;
 
     /** 操作结果产生时间 */

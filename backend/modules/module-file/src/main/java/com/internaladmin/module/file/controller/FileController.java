@@ -23,13 +23,13 @@ import org.springframework.web.multipart.MultipartFile;
 import java.nio.file.Path;
 
 /**
- * 文件接口：上传与管理端读取（需要主页内容编辑权限）。
+ * 文件接口：上传与管理端读取（需要文件管理权限）。
  *
- * <p>公开读取走 module-site 的 /api/public/files/{id}（仅已发布快照引用的图片可读）。</p>
+ * <p>公开读取由公开内容接口负责（仅已发布内容引用的图片可读）。</p>
  */
 @RestController
 @RequestMapping("/api/files")
-@PreAuthorize("hasAuthority('site:homepage:edit')")
+@PreAuthorize("hasAuthority('file:manage')")
 public class FileController {
 
     private final FileStorageService fileStorageService;
@@ -63,7 +63,7 @@ public class FileController {
     }
 
     /**
-     * 管理端读取图片（草稿预览用）。
+     * 管理端读取图片（文件管理权限保护）。
      *
      * <p>方法：{@code read}</p>
      *
@@ -72,8 +72,8 @@ public class FileController {
      * 2. 从磁盘读取文件；
      * 3. 返回文件流（携带已校验的媒体类型）。
      *
-     * <p>安全边界：本接口需要内容编辑权限，仅用于管理端草稿预览；
-     * 匿名公开读取必须走 module-site 的公开接口（仅已发布快照引用的图片可读）。</p>
+     * <p>安全边界：本接口需要文件管理权限；匿名公开读取必须走公开内容接口，
+     * 且仅允许已发布内容引用的图片。</p>
      *
      * @param fileId 文件 ID
      * @return 图片文件流

@@ -6,7 +6,7 @@
 
 | API | 方法 | 权限 | 说明 |
 | --- | --- | --- | --- |
-| `PermissionCodes`（api） | 常量 | — | 全局权限编码注册表（跨模块契约） |
+| `PermissionCodes`（api） | 常量 | — | 全局权限编码注册表（跨模块契约）；包含 `file:manage`（文件上传与管理端读取） |
 | `api/auth/login` | POST | 公开 | 登录，返回用户信息+mustChangePassword；使用标准会话策略轮换预登录 Session，并持久化 SecurityContext |
 | `api/auth/logout` | POST | 登录 | 保持 JSON API；通过标准退出处理链失效 Session、清理 SecurityContext 与 XSRF-TOKEN |
 | `api/auth/me` | GET | 登录 | 当前用户+权限 |
@@ -19,6 +19,8 @@
 | `api/system/configs` | GET/PUT | `system:config:manage` | 系统参数 |
 
 **内部契约**：登录依赖 `SystemConfigService.getBoolean(force_password_change)` 计算 mustChangePassword；权限加载走 用户→角色→权限 批量组装（防 N+1）。
+
+**消费者审计事实**：用户软删除使用 `USER_DELETE`，角色无引用删除使用 `ROLE_DELETE`；动作、目标 ID、成功结果及引用/保护失败语义由本模块服务与 IAM 集成测试维护，不由 module-audit 登记。
 
 ## 表清单
 
