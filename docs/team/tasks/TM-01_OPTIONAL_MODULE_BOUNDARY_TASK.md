@@ -146,7 +146,7 @@
 
 ## 7. 当前结果
 
-- 结论：TM-01A/B/C 已完成并冻结；模块边界受控反例与主模板无数据库质量入口均已通过。文件权限真实 SQLite 行为验证受当前运行环境的更高优先级数据库只读限制约束，尚未执行；TM-01D 尚未开始，因此本任务不标记完成。
+- 结论：TM-01A/B/C 已完成并冻结；模块边界受控反例与主模板无数据库质量入口均已通过。TM-01D 的派生源码同步、裁剪残留检查、编译和 Audit 定向单测已完成，并形成工厂派生项目固定提交 `3c75eb5`。文件权限真实 SQLite 行为与派生项目运行验证受当前运行环境的更高优先级数据库只读限制约束，尚未执行，因此本任务不标记完成。
 - 实际证据：
   - 权限目录新增 `file:manage`（“文件管理”），并加入系统管理员默认权限与注册选项；`FileController` 仅以该通用权限保护上传/管理端读取，不再依赖或表述 `site:homepage:edit`。
   - `IamFlowTest` 新增仅主页编辑角色被文件接口拒绝、仅文件管理角色可上传并读取的回归；`SiteFlowTest` 登录后的系统管理员角色显式断言拥有 `file:manage`。角色删除样本改用 `iam:user:manage`，不再以 Site 权限作任意数据。
@@ -156,5 +156,6 @@
   - 早期探路及整改后的 JDK 25 无数据库编译：`./mvnw -Djava.version=25 -DskipTests -pl apps/app-server -am test-compile`，退出 0；Audit 单测 `./mvnw -Djava.version=25 -pl apps/app-server -am -Dtest=AuditRecordServiceTest -Dsurefire.failIfNoSpecifiedTests=false test` 2/2 退出 0；`git diff --check` 退出 0；定向检索确认 module-audit 不含消费者动作清单，FileController 不含旧 Site 权限，Site 契约包含新增外部装配点。
   - TM-01C 新增只读边界脚本并接入无数据库质量入口；当前仓库正例通过。临时夹具中的 foundation 生产源码违规导入业务模块时，脚本退出 1 并输出精确规则，证明门禁不是空检查；夹具未进入项目工作区。
   - 主模板 `./scripts/quality.sh --no-database` 退出 0：边界检查、Session 安全、文件内容校验、OpenAPI 漂移、Vitest 8/8、Playwright 3 条清单、TypeScript 与前端构建共 8 步通过。
-- 未执行项与剩余风险：当前运行环境存在高于项目规范的数据库绝对只读限制，因此未执行 `IamFlowTest`/`SiteFlowTest` 的隔离 SQLite 权限回归；不能据此声称旧权限 403、新权限放行的数据库链路已验证。首次 Audit 单测因 JDK25 Mockito inline agent 自附加失败（2 errors）后已在测试文件内改为 JDK Proxy，无新增依赖，复验通过。人工补权限是已确认升级策略；正式使用自定义角色的部署方必须按升级说明操作。TM-01D 长期派生样本尚未执行。
+  - 工厂派生项目在保留 Site 裁剪事实的前提下同步通用审计契约、能力包模板、派生指南和边界门禁；Site 生产源码、测试及脚本残留扫描无命中，边界检查、JDK 25 `test-compile` 与 `AuditRecordServiceTest` 2/2 通过；同步结果提交为 `3c75eb5`。
+- 未执行项与剩余风险：当前运行环境存在高于项目规范的数据库绝对只读限制，因此未执行主模板 `IamFlowTest`/`SiteFlowTest` 的隔离 SQLite 权限回归；不能据此声称旧权限 403、新权限放行的数据库链路已验证。工厂派生项目尚未执行 `quality.sh --database`、启动、登录工作台和首次正常停止，不能标记 TM-01D 完成。首次 Audit 单测因 JDK25 Mockito inline agent 自附加失败（2 errors）后已在测试文件内改为 JDK Proxy，无新增依赖，复验通过。人工补权限是已确认升级策略；正式使用自定义角色的部署方必须按升级说明操作。
 - 文件与副作用范围：仅修改本任务 TM-01A/B 允许的生产权限/Controller、能力包、审计通用 Javadoc、IAM/Site 测试、Site/模板契约、认证架构、模板派生指南、README 与本任务书；未新增实施/验收报告，未修改 Liquibase、角色数据、生产 SecurityConfig、其他任务状态或生成物。
