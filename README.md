@@ -1,8 +1,10 @@
 # Internal Admin Template
 
+> **模板是本仓库的首要产品。** 当前公开主页、草稿与发布功能是用于验证模板完整性的参考实现，不是仓库要长期围绕其扩展的专用业务系统。
+
 ## 项目灵魂：有方法的轻
 
-**目标**：本项目不是一个"更全的后端模板"，它探索的是 AI 时代企业系统的一种新生产方式——**人定义契约，AI 执行装配，机器自动验证，人做最终审计**。模板、模块、素材库都是这种方式的载体与副产品。
+**目标**：建设一个可以直接运行、清楚裁剪、稳定派生的全栈内部管理系统模板。AI 时代的生产方式——**人定义契约，AI 执行装配，机器自动验证，人做最终审计**——服务于模板质量，不能反过来把模板变成流程和文档的附属品。
 
 **愿景**：这是我作为独立开发者给自己的正式项目。我想做一个好的工具、一个更适合新时代的工具，带着心血在网络中前行。
 
@@ -14,13 +16,18 @@
 
 ---
 
-面向独立开发者的可复用全栈基础工程，用于快速派生同时包含公开展示端和内部管理端的完整项目。
+面向独立开发者的可复用全栈基础工程，用于快速派生内部管理系统；公开展示端是一个可选的参考业务形态。
 
 本项目将提供一套包含后端、前端、数据库设计和部署方案的完整应用。它可以直接运行、裁剪和扩展，真实业务系统能够在此基础上派生，而不必重复建设认证、权限、组织、审计等基础模块。
 
 ## 当前阶段
 
-0.1 功能闭环已实现：登录认证（Session + CSRF）、用户/角色/权限管理、系统参数、文件上传、主页内容管理（草稿/发布/撤回）、操作审计、公开展示页。V01-08 的高风险流程测试与 V01-10 的质量链已验收；发布级的干净来源、开发脚本生命周期、真实 Chromium 和远端 CI 证据仍由 V01-12 完成。配套模板机制（需求漏斗、验收引导、能力包、工程约定、质量门禁）同步在建设。
+`0.1.0` 工程闭环已经完成并合并到 `main`。
+
+- **模板底座**：Java 25 + Spring Boot 模块化单体、Vue 3 管理端、SQLite 零配置启动、Liquibase、Session/CSRF、用户/角色/权限、文件、审计、OpenAPI 和本地/CI 统一质量入口；
+- **参考实现**：`module-site` 与前端 `modules/site` 提供主页草稿、预览、发布、撤回和匿名读取，用来证明一个业务模块可以贯通数据库、后端、API、前端、权限与测试；
+- **当前边界**：0.1 已证明参考应用可运行，不等于已经证明任意派生、模块裁剪和上游升级全部成熟；
+- **下一优先级**：先补齐模板派生、命名替换、可选模块裁剪和第二业务模块复用验证，再评估参考主页的新功能。
 
 ## 快速开始
 
@@ -77,27 +84,13 @@ cd backend
 
 ## 文档入口
 
-- [项目愿景](docs/PROJECT_VISION.md)：已确认的长期目标——AI 可装配、人可审计的全栈模板，模块化 AI 能力包与四条幻觉治理防线；
-- [工作模式构想](docs/planning/WORKING_MODEL.md)：「项目灵魂」的完整展开——人机分工、材料体系、需求漏斗、验收机制、结构地图、验证方案（草稿，持续演进）；
-- [需求漏斗](docs/ai/REQUIREMENT_GUIDE.md)：需求澄清的强制流程（AGENTS 红线第 7/8 条）；
-- [验收引导协议](docs/ai/ACCEPTANCE_GUIDE.md)：测试文档/验收清单/风险标注（高/中/低 + 理由）；
-- [能力包通用规则](docs/development/CAPABILITY_COMMON.md)：AI 能力包的顶层通用约定（禁止复制进模块）；
-- [工程实现约定与已知陷阱](docs/development/ENGINEERING_CONVENTIONS.md)：已核实技术事实、代码约定、提交前自查清单、工具环境陷阱与开发纪律（**所有代码实现任务必读**）；
-- [需求索引](requirements/README.md)：需求状态、权威级别和阅读入口；
-- [产品范围草案](requirements/PRODUCT_SCOPE.md)：产品目标、角色、场景和长期边界；
-- [产品界面与访问边界](requirements/PRODUCT_SURFACES.md)：已确认的公开站点、内部工作台、管理控制台和统一登录边界；
-- [0.1 需求范围](requirements/V0_1_SCOPE.md)：已确认的首版业务闭环、AI 流水线和验收边界；
-- [0.1 身份与授权范围](requirements/iam/IDENTITY_AUTHORIZATION.md)：已确认的根部门、用户、角色和权限模型边界；
-- [非功能需求草案](requirements/QUALITY_REQUIREMENTS.md)：安全、质量、兼容、性能和可维护性目标；
-- [需求分析路线图](docs/planning/REQUIREMENTS_ROADMAP.md)：需求阶段的讨论顺序、产物和退出条件；
-- [0.1 表结构方案](docs/database/V0_1_SCHEMA_PROPOSAL.md)：已确认并已落地的 12 张业务表、草稿/发布快照和区块结构；
-- [0.1 前端方案](docs/frontend/V0_1_UI_PROPOSALS.md)：已确认的页面范围、视觉方向、组件库与已实现交互边界；
-- [基础规划初稿](docs/PROJECT_PLAN.md)：长期早期思路，不作为 0.1 实现依据；
-- [后端模块架构](docs/architecture/BACKEND_MODULES.md)：已确认的 Spring Boot 多模块边界、依赖方向和未来 Spring Cloud 接入条件；
-- [前端物理结构](docs/architecture/FRONTEND_STRUCTURE.md)：已确认的单 Vue 应用、产品布局、身份边界和未来客户空间方向；
-- [认证架构](docs/architecture/AUTHENTICATION.md)：已确认的 0.1 Session 与长期 OAuth2/OIDC、BFF、JWT 演进路线；
-- [开发规范](AGENTS.md)：人工开发和 AI 生成代码必须遵守的规则；
-- [材料索引](references/README.md)：外部资料及其与需求的关联。
+按使用顺序阅读：
+
+1. **开始使用模板**：[快速开始](#快速开始)、[运行手册](docs/development/RUNBOOK.md)、[质量入口](scripts/quality.sh)；
+2. **理解模板边界**：[项目愿景](docs/PROJECT_VISION.md)、[后端模块架构](docs/architecture/BACKEND_MODULES.md)、[前端物理结构](docs/architecture/FRONTEND_STRUCTURE.md)、[认证架构](docs/architecture/AUTHENTICATION.md)；
+3. **基于模板开发**：[开发规范](AGENTS.md)、[工程实现约定](docs/development/ENGINEERING_CONVENTIONS.md)、[能力包通用规则](docs/development/CAPABILITY_COMMON.md)、[需求索引](requirements/README.md)；
+4. **查看参考实现**：[0.1 需求范围](requirements/V0_1_SCOPE.md)、[0.1 表结构](docs/database/V0_1_SCHEMA_PROPOSAL.md)、[0.1 前端方案](docs/frontend/V0_1_UI_PROPOSALS.md)；
+5. **查看历史证据**：[0.1 封版任务与验收档案](docs/team/tasks/README.md)。历史任务说明当时如何交付，不是新项目必须复制的流程。
 
 ## 核心原则
 
