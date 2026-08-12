@@ -5,6 +5,7 @@
 ## 1. 模板使用与架构
 
 - [PROJECT_VISION.md](PROJECT_VISION.md)：模板优先级、目标使用者、模块能力包和演进边界；
+- [TEMPLATE_MATURITY_AUDIT.md](TEMPLATE_MATURITY_AUDIT.md)：0.1 模板派生能力的轻量成熟度审计；
 - [development/RUNBOOK.md](development/RUNBOOK.md)：本地启动、质量检查和运行验证；
 - [architecture/BACKEND_MODULES.md](architecture/BACKEND_MODULES.md)：已确认的后端模块、依赖边界和微服务演进原则；
 - [architecture/FRONTEND_STRUCTURE.md](architecture/FRONTEND_STRUCTURE.md)：已确认的单 Vue 应用结构、布局边界和未来客户空间方向；
