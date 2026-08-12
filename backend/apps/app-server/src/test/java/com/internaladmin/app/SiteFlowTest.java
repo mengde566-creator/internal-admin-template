@@ -9,27 +9,30 @@ import com.internaladmin.module.site.model.entity.HomepagePublicationSectionDO;
 import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.mock.web.MockMultipartFile;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import javax.imageio.ImageIO;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.inOrder;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -51,6 +54,7 @@ import static org.hamcrest.Matchers.hasItem;
         "app.storage-root=./data/test-site-uploads"
 })
 @AutoConfigureMockMvc
+@Import(SiteFlowTest.MapperTestConfiguration.class)
 class SiteFlowTest {
 
     @Autowired
@@ -62,11 +66,75 @@ class SiteFlowTest {
     @Autowired
     private AuditOperationMapper auditOperationMapper;
 
+    @Autowired
+    private PublicationSectionMapperControl publicationSectionMapperControl;
+
     /**
-     * 仅在发布区块插入点注入受控异常；该 Spy 包装真实 Mapper，事务与 HTTP 链路仍由 Spring + SQLite 执行。
+     * 通过 JDK 动态代理包装真实 MyBatis Mapper，仅在测试需要时控制 insert 失败并记录调用。
+     * 代理不替换 Mapper 实现，事务、数据库写入和其余方法仍由真实 Mapper 执行。
      */
-    @MockitoSpyBean
-    private HomepagePublicationSectionMapper publicationSectionMapper;
+    @TestConfiguration(proxyBeanMethods = false)
+    static class MapperTestConfiguration {
+
+        @Bean
+        PublicationSectionMapperControl publicationSectionMapperControl() {
+            return new PublicationSectionMapperControl();
+        }
+
+        @Bean
+        BeanPostProcessor publicationSectionMapperWrapper(PublicationSectionMapperControl control) {
+            return new BeanPostProcessor() {
+                @Override
+                public Object postProcessAfterInitialization(Object bean, String beanName) {
+                    if (!"homepagePublicationSectionMapper".equals(beanName)
+                            || !(bean instanceof HomepagePublicationSectionMapper)) {
+                        return bean;
+                    }
+                    return Proxy.newProxyInstance(
+                            HomepagePublicationSectionMapper.class.getClassLoader(),
+                            new Class<?>[]{HomepagePublicationSectionMapper.class},
+                            (proxy, method, args) -> {
+                                control.beforeInvoke(method, args);
+                                try {
+                                    return method.invoke(bean, args);
+                                } catch (InvocationTargetException exception) {
+                                    throw exception.getCause();
+                                }
+                            });
+                }
+            };
+        }
+    }
+
+    static final class PublicationSectionMapperControl {
+
+        private final List<MapperInvocation> invocations = new ArrayList<>();
+        private boolean failInserts;
+
+        void clear() {
+            invocations.clear();
+            failInserts = false;
+        }
+
+        void failInserts() {
+            failInserts = true;
+        }
+
+        void beforeInvoke(Method method, Object[] args) {
+            invocations.add(new MapperInvocation(method.getName(), args == null ? new Object[0] : args.clone()));
+            if (failInserts && "insert".equals(method.getName())) {
+                failInserts = false;
+                throw new IllegalStateException("受控的发布区块写入失败");
+            }
+        }
+
+        List<MapperInvocation> invocations() {
+            return List.copyOf(invocations);
+        }
+    }
+
+    record MapperInvocation(String methodName, Object[] arguments) {
+    }
 
     private String unique(String prefix) {
         return prefix + UUID.randomUUID().toString().substring(0, 8);
@@ -222,17 +290,17 @@ class SiteFlowTest {
                 "SERVICE", sectionTitleB, sectionContentB);
         saveDraft(session, draftB);
 
-        clearInvocations(publicationSectionMapper);
-        doThrow(new IllegalStateException("受控的发布区块写入失败"))
-                .when(publicationSectionMapper)
-                .insert(any(HomepagePublicationSectionDO.class));
+        publicationSectionMapperControl.clear();
+        publicationSectionMapperControl.failInserts();
         mockMvc.perform(post("/api/site/publish").session(session).with(csrf()))
                 .andExpect(status().isInternalServerError());
-        ArgumentCaptor<HomepagePublicationSectionDO> failedSection = ArgumentCaptor.forClass(HomepagePublicationSectionDO.class);
-        var publishSectionWrites = inOrder(publicationSectionMapper);
-        publishSectionWrites.verify(publicationSectionMapper).delete(any());
-        publishSectionWrites.verify(publicationSectionMapper).insert(failedSection.capture());
-        assertThat(failedSection.getValue().getContent()).isEqualTo(sectionContentB);
+        List<MapperInvocation> publishSectionWrites = publicationSectionMapperControl.invocations();
+        assertThat(publishSectionWrites).extracting(MapperInvocation::methodName)
+                .containsExactly("delete", "insert");
+        assertThat(publishSectionWrites.get(1).arguments()[0])
+                .isInstanceOf(HomepagePublicationSectionDO.class);
+        assertThat(((HomepagePublicationSectionDO) publishSectionWrites.get(1).arguments()[0]).getContent())
+                .isEqualTo(sectionContentB);
         assertThat(auditCount("SITE_PUBLISH", "FAILURE")).isEqualTo(publishFailureBefore + 1);
 
         // 发布主表更新和发布区块清空都在同一事务中；受控区块写入失败后公开快照必须完整保留 A。
