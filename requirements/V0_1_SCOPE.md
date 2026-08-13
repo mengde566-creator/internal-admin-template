@@ -240,8 +240,8 @@
 
 这些问题不会改变 0.1 业务范围，但会影响工程骨架，必须在开始实现前确认：
 
-- ~~[主页内容及发布快照的表结构方案](../docs/database/V0_1_SCHEMA_PROPOSAL.md)~~——✅ 已确认（2026-08-09：12 张表，草稿/发布双表模型 + 布局与区块快照）；
+- ~~主页内容及发布快照的表结构方案~~——✅ 已确认（2026-08-09：12 张表，草稿/发布双表模型 + 布局与区块快照，不增加权限点表和 Session 表；当前数据契约分属 [IAM](../backend/modules/module-iam/capability/CONTRACT.md)、[文件](../backend/modules/module-file/capability/CONTRACT.md)、[Site](../backend/modules/module-site/capability/CONTRACT.md) 与[审计](../backend/modules/module-audit/capability/CONTRACT.md) 能力包）；
 - ~~本地图片目录、访问规则和限制~~——✅ 已确认（2026-08-03：`data/uploads/`、类型白名单、≤10MB（由 5MB 调整）、受控接口）；
 - ~~初始化管理员方式~~——✅ 已确认（2026-08-03：默认账号 + 随机初始密码 + 首次登录强制改密）；
-- ~~[前端组件库与视觉方案](../docs/frontend/V0_1_UI_PROPOSALS.md)~~——✅ 已确认（2026-08-03 确认视觉方案；2026-08-09 确认新增专用“登录安全”入口：Minimal Tech、Element Plus 正式采用、微交互 B 预设+预留 A/C 修改口、GSAP 不引入、8 页面）；
+- ~~前端组件库与视觉方案~~——✅ 已确认（2026-08-03 确认视觉方案；2026-08-09 确认新增专用“登录安全”入口：Minimal Tech、Element Plus 正式采用、微交互采用 B“克制现代”预设——进入 250—280ms、退出 150—180ms、位移 6—15px；A 表示“稳妥直接”，C 表示“柔和灵动”，仅保留通过独立交互令牌调整的修改口，不承诺未确认数值；GSAP 不引入，共 8 个页面；当前边界见[前端物理结构](../docs/architecture/FRONTEND_STRUCTURE.md)与[公开主页需求](../docs/system/requirements/PUBLIC_SITE_REDESIGN.md)）；
 - ~~本地与 CI 的统一质量命令~~——✅ 已确认（当前实现：`scripts/quality.sh --no-database` 为无数据库质量入口，`scripts/quality.sh --database` 在其后执行隔离 SQLite 集成与空库迁移启动验证；后端统一使用 Maven Wrapper，前端与 OpenAPI 工具统一以锁文件执行 `npm ci`，任一阶段失败整体失败）。

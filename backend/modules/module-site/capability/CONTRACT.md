@@ -36,7 +36,7 @@
 | 前端路由与导航 | `frontend/src/app/router/index.ts` 的 `site-manage`、`public-site` 路由；`frontend/src/layouts/SystemLayout.vue` 的主页内容导航 | 移除路由、页面、导航和对应模块导入；检查直接访问路由被统一守卫处理 |
 | 前端业务资产与测试 | `frontend/src/modules/site/` 页面、组件、API 与其 `*.test.ts`；`frontend/src/app/router/index.test.ts`；`frontend/e2e/site-publish-flow.spec.ts` 及 `frontend/e2e/fixtures/` 专属样本 | 删除站点页面/组件/API、路由测试、E2E 用例和专属 fixture；保留工具链本身及其他模块测试 |
 | 质量与旧入口 | `scripts/quality.sh` 的前端测试、Playwright 清单和 OpenAPI check；`scripts/openapi-contract.sh` 生成/漂移检查；`scripts/smoke_public_site.sh` 独立公开主页烟测 | 移除或改写站点专属质量步骤和旧烟测；不得误删通用质量入口 |
-| 现行同步文档 | `README.md`、`docs/architecture/BACKEND_MODULES.md`、`docs/architecture/FRONTEND_STRUCTURE.md`；module-file/module-iam/module-audit 当前能力包中的跨模块边界说明 | 同步当前模块组合、剩余权限/依赖和入口；V0.1 需求、历史任务与历史证据仅保留，不改写 |
+| 现行同步文档 | `README.md`、`docs/architecture/BACKEND_MODULES.md`、`docs/architecture/FRONTEND_STRUCTURE.md`；module-file/module-iam/module-audit 当前能力包中的跨模块边界说明 | 同步当前模块组合、剩余权限/依赖和入口；已确认需求保持原意，历史任务过程只由 Git 追溯 |
 
 ### 需重新生成的产物
 
@@ -44,9 +44,9 @@
 - `frontend/src/generated/api-schema.ts`：由同一入口从当前 OpenAPI 生成；禁止手工编辑或保留已删除站点路径。
 - `frontend/dist/`、Maven `target/` 等构建输出：仅按既有质量入口产生，不作为源装配事实提交或手工修补。
 
-### 只保留的历史证据
+### 历史证据边界
 
-`docs/team/tasks/evidence/` 下已完成任务报告、验收记录、日志和历史快照用于追溯，不因裁剪删除；它们不参与当前模块扫描，也不能反向定义现行装配。裁剪结果应在当前任务记录中说明，不改写历史结论。
+0.1 固定 SHA 的发布事实只从 `docs/team/tasks/evidence/V0_1_RELEASE_ARCHIVE.md` 进入当前文档；逐轮任务、报告和失败过程由 Git 历史追溯，不参与当前模块扫描，也不能反向定义现行装配。后续裁剪结果只写入当前任务的最终交付或现行成熟度审计，不为每轮过程新增长期报告。
 
 ## 表清单
 

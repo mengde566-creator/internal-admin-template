@@ -22,7 +22,7 @@
 
 ## 1. 基线与证据状态
 
-- 已验证运行代码基线为 `90d4d313b3483f07237a6e0cf342953d980f20f5`。`V01-12_FULL_VALIDATION_REPORT.md` 记录该 SHA 在干净 worktree 的完整质量门禁、SQLite 迁移、开发生命周期、Chromium 3/3 和 GitHub Actions 成功。
+- 已验证运行代码基线为 `90d4d313b3483f07237a6e0cf342953d980f20f5`。[0.1 统一发布档案](V0_1_RELEASE_ARCHIVE.md)记录该 SHA 在干净 worktree 的完整质量门禁、SQLite 迁移、开发生命周期、Chromium 3/3 和 GitHub Actions 成功。
 - `bc674c2` 是发布证据收口提交，主要补充验收材料。未创建 `v0.1.0` tag 或 GitHub Release。
 - `bc674c2` 之后的流程、定位和成熟度整理，以及当前工作区未提交内容，均不倒推为 0.1 当时已有能力。
 - `requirements/V0_1_SCOPE.md`、`PROJECT_VISION.md` 与架构文档均为已确认依据；`WORKING_MODEL.md` 整体为草稿，仅将其明确标注“已收敛”的内容作为讨论背景，不作为新增事实。

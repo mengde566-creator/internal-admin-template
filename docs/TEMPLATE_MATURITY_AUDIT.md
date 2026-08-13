@@ -28,7 +28,7 @@
 
 ### 2.1 干净环境启动：通过
 
-`V01-12_FULL_VALIDATION_REPORT.md` 已对主模板固定 SHA
+0.1 [统一发布档案](team/tasks/evidence/V0_1_RELEASE_ARCHIVE.md)已对主模板固定 SHA
 `90d4d313b3483f07237a6e0cf342953d980f20f5` 证明：
 
 - 干净 worktree 与锁定依赖安装成功；

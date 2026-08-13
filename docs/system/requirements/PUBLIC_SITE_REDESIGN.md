@@ -2,7 +2,8 @@
 
 > 规模：大需求
 > 状态：已确认（2026-08-04）
-> 来源：需求引导漏斗（docs/ai/REQUIREMENT_GUIDE.md，真实需求验证）
+> 来源：[需求索引中的轻量需求漏斗](../../../requirements/README.md#8-需求漏斗只确认影响实现的差值)
+> 实施状态：已完成；当前行为与装配边界以 `module-site` 能力契约、OpenAPI 和自动化测试为准
 
 ## 一句话意图
 
@@ -69,5 +70,7 @@
 
 ## 后续衔接
 
-- 实现时：新增 Liquibase 变更集（加列 + 两张区块表）→ module-site 能力包 CONTRACT 同步；
-- 验收：ACCEPTANCE_GUIDE 落地后据此生成测试文档与验收清单。
+- 已通过 Liquibase 新增 `layout_code` 和两张区块快照表，未修改已发布变更集；
+- 草稿、发布、撤回、公开读取、失败原子性和公开文件边界均已进入 `module-site` 能力契约与自动化测试；
+- 管理端与公开端复用展示组件，固定布局、区块类型和双配色保持代码枚举，不建设插件化布局、主题系统或独立区块 CRUD；
+- 当前接口、数据与裁剪事实见 [`module-site` CONTRACT](../../../backend/modules/module-site/capability/CONTRACT.md)，机器契约见 [OpenAPI](../api/OPENAPI_CONTRACT.md)。

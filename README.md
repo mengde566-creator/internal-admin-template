@@ -87,10 +87,12 @@ cd backend
 按使用顺序阅读：
 
 1. **开始使用模板**：[快速开始](#快速开始)、[运行手册](docs/development/RUNBOOK.md)、[质量入口](scripts/quality.sh)；
-2. **理解模板边界**：[项目愿景](docs/PROJECT_VISION.md)、[后端模块架构](docs/architecture/BACKEND_MODULES.md)、[前端物理结构](docs/architecture/FRONTEND_STRUCTURE.md)、[认证架构](docs/architecture/AUTHENTICATION.md)；
-3. **基于模板开发**：[开发规范](AGENTS.md)、[工程实现约定](docs/development/ENGINEERING_CONVENTIONS.md)、[能力包通用规则](docs/development/CAPABILITY_COMMON.md)、[模板派生与可选模块裁剪指南](docs/development/TEMPLATE_DERIVATION_GUIDE.md)、[需求索引](requirements/README.md)；
-4. **查看参考实现**：[0.1 需求范围](requirements/V0_1_SCOPE.md)、[0.1 表结构](docs/database/V0_1_SCHEMA_PROPOSAL.md)、[0.1 前端方案](docs/frontend/V0_1_UI_PROPOSALS.md)；
-5. **查看历史证据**：[0.1 封版任务与验收档案](docs/team/tasks/README.md)。历史任务说明当时如何交付，不是新项目必须复制的流程。
+2. **理解模板边界**：[项目愿景](docs/PROJECT_VISION.md)、[模板成熟度审计](docs/TEMPLATE_MATURITY_AUDIT.md)、[后端模块架构](docs/architecture/BACKEND_MODULES.md)、[前端物理结构](docs/architecture/FRONTEND_STRUCTURE.md)、[认证架构](docs/architecture/AUTHENTICATION.md)；
+3. **基于模板开发**：[开发规范](AGENTS.md)、[需求索引与轻量漏斗](requirements/README.md)、[工程实现约定](docs/development/ENGINEERING_CONVENTIONS.md)、[能力包通用规则](docs/development/CAPABILITY_COMMON.md)、[模板派生与可选模块裁剪指南](docs/development/TEMPLATE_DERIVATION_GUIDE.md)；
+4. **查看参考实现**：[公开主页已确认需求](docs/system/requirements/PUBLIC_SITE_REDESIGN.md)、[OpenAPI 契约](docs/system/api/OPENAPI_CONTRACT.md)、[IAM 能力契约](backend/modules/module-iam/capability/CONTRACT.md)、[文件能力契约](backend/modules/module-file/capability/CONTRACT.md)、[Site 能力契约](backend/modules/module-site/capability/CONTRACT.md)、[审计能力契约](backend/modules/module-audit/capability/CONTRACT.md)；
+5. **查看 0.1 历史**：[已确认业务范围](requirements/V0_1_SCOPE.md)、[统一发布档案](docs/team/tasks/evidence/V0_1_RELEASE_ARCHIVE.md)、[成本复盘](docs/team/tasks/evidence/V0_1_COST_RETROSPECTIVE.md)、[独立项目评审](docs/team/tasks/evidence/V0_1_INDEPENDENT_PROJECT_REVIEW.md)。历史材料不定义新任务流程。
+
+项目治理入口为[版本交付协议](docs/team/VERSION_DELIVERY_PROTOCOL.md)和[团队角色目录](docs/team/ROLE_CATALOG.md)。`docs/planning/WORKING_MODEL.md` 保留项目哲学形成过程与草稿探索，按需查阅，不属于日常开发必读材料；已确认哲学以[项目愿景](docs/PROJECT_VISION.md)为准。
 
 > 权限升级提示：文件接口使用独立的 `file:manage`（“文件管理”）；既有自定义角色需由管理员在角色管理中手工勾选该权限，系统不会自动迁移，也不保留旧权限兼容。
 
