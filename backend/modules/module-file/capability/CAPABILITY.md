@@ -48,4 +48,4 @@
 
 ## 8. 素材与许可证
 
-WebP 样本来自 TwelveMonkeys `twelvemonkeys-3.14.0` 的 `small_1x1.webp`，SHA-256 `2f34799482dd5349b549d113fdaa188714d9737fe414e71541b752627bedbde3`；BSD-3-Clause 文本保留在测试源码。前端展示只能使用已批准素材并保留其许可证义务。
+WebP 样本来自 TwelveMonkeys `twelvemonkeys-3.14.0` 的 `small_1x1.webp`，SHA-256 `2f34799482dd5349b549d113fdaa188714d9737fe414e71541b752627bedbde3`；BSD-3-Clause 文本保留在测试源码。前端展示只能复用项目现有视觉基线或已登记、获准且保留许可证义务的外部素材。
