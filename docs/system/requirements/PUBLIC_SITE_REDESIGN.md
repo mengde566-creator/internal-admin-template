@@ -73,4 +73,4 @@
 - 已通过 Liquibase 新增 `layout_code` 和两张区块快照表，未修改已发布变更集；
 - 草稿、发布、撤回、公开读取、失败原子性和公开文件边界均已进入 `module-site` 能力契约与自动化测试；
 - 管理端与公开端复用展示组件，固定布局、区块类型和双配色保持代码枚举，不建设插件化布局、主题系统或独立区块 CRUD；
-- 当前接口、数据与裁剪事实见 [`module-site` CONTRACT](../../../backend/modules/module-site/capability/CONTRACT.md)，机器契约见 [OpenAPI](../api/OPENAPI_CONTRACT.md)。
+- 当前接口、数据与裁剪事实见 [`module-site` 能力包](../../../backend/modules/module-site/capability/CAPABILITY.md)，机器契约见 [OpenAPI](../api/OPENAPI_CONTRACT.md)。
