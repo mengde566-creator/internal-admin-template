@@ -8,6 +8,9 @@ export interface UserListItem {
   id: string
   username: string
   displayName: string
+  departmentId: string
+  departmentCode: string
+  departmentName: string
   roleNames: string[]
   roleIds: string[]
 }
@@ -25,6 +28,7 @@ export interface CreateUserPayload {
   username: string
   displayName: string
   password: string
+  departmentId: string
   roleIds: string[]
 }
 
@@ -32,6 +36,7 @@ export interface CreateUserPayload {
 export interface UpdateUserPayload {
   id: string
   displayName: string
+  departmentId: string
   roleIds: string[]
 }
 

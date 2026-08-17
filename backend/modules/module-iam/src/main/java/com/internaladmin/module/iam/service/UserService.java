@@ -3,12 +3,14 @@ package com.internaladmin.module.iam.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.internaladmin.module.iam.api.PermissionCodes;
+import com.internaladmin.module.iam.api.DepartmentQueryApi;
 import com.internaladmin.module.iam.mapper.DepartmentMapper;
 import com.internaladmin.module.iam.mapper.RoleMapper;
 import com.internaladmin.module.iam.mapper.UserMapper;
 import com.internaladmin.module.iam.mapper.UserRoleMapper;
-import com.internaladmin.module.iam.model.entity.DepartmentDO;
+import com.internaladmin.module.iam.api.DepartmentRefDTO;
 import com.internaladmin.module.iam.model.entity.RoleDO;
+import com.internaladmin.module.iam.model.entity.DepartmentDO;
 import com.internaladmin.module.iam.model.entity.UserDO;
 import com.internaladmin.module.iam.model.entity.UserRoleDO;
 import com.internaladmin.module.iam.model.dto.CreateUserDTO;
@@ -40,6 +42,7 @@ public class UserService {
     private final UserRoleMapper userRoleMapper;
     private final RoleMapper roleMapper;
     private final DepartmentMapper departmentMapper;
+    private final DepartmentQueryApi departmentQueryApi;
     private final PasswordEncoder passwordEncoder;
     private final AuditRecordApi auditRecordApi;
 
@@ -47,12 +50,14 @@ public class UserService {
                        UserRoleMapper userRoleMapper,
                        RoleMapper roleMapper,
                        DepartmentMapper departmentMapper,
+                       DepartmentQueryApi departmentQueryApi,
                        PasswordEncoder passwordEncoder,
                        AuditRecordApi auditRecordApi) {
         this.userMapper = userMapper;
         this.userRoleMapper = userRoleMapper;
         this.roleMapper = roleMapper;
         this.departmentMapper = departmentMapper;
+        this.departmentQueryApi = departmentQueryApi;
         this.passwordEncoder = passwordEncoder;
         this.auditRecordApi = auditRecordApi;
     }
@@ -62,11 +67,12 @@ public class UserService {
      *
      * <p>方法：{@code page}</p>
      *
-     * <p>执行链路（共 4 步）：</p>
+     * <p>执行链路（共 5 步）：</p>
      * 1. 按关键字（账号/显示名称模糊）分页查询 {@link UserDO}，按 ID 倒序；
      * 2. 收集用户 ID 批量查询角色关联，再批量查询角色，组装“用户 ID → 角色名列表”；
-     * 3. 组装 {@link UserListDTO} 列表；
-     * 4. 返回分页结果。
+     * 3. 按当前页去重后的部门 ID 批量查询并确认部门启用；
+     * 4. 组装 {@link UserListDTO} 列表；
+     * 5. 返回分页结果。
      *
      * @param query 分页查询条件
      * @return 分页用户列表
@@ -82,6 +88,7 @@ public class UserService {
         Page<UserDO> userPage = userMapper.selectPage(new Page<>(query.getPage(), query.getSize()), wrapper);
 
         Map<Long, UserRoles> userRolesMap = loadUserRoles(userPage.getRecords());
+        Map<Long, DepartmentDO> departmentsById = loadDepartments(userPage.getRecords());
 
         Page<UserListDTO> result = new Page<>(userPage.getCurrent(), userPage.getSize(), userPage.getTotal());
         result.setRecords(userPage.getRecords().stream().map(user -> {
@@ -89,12 +96,29 @@ public class UserService {
             dto.setId(user.getId());
             dto.setUsername(user.getUsername());
             dto.setDisplayName(user.getDisplayName());
+            DepartmentDO department = departmentsById.get(user.getDepartmentId());
+            if (department == null || !Integer.valueOf(1).equals(department.getEnabled())) {
+                throw new BusinessException(ErrorCode.BUSINESS_REJECTED, "用户所属部门不存在或已停用");
+            }
+            dto.setDepartmentId(department.getId());
+            dto.setDepartmentCode(department.getCode());
+            dto.setDepartmentName(department.getName());
             UserRoles userRoles = userRolesMap.get(user.getId());
             dto.setRoleNames(userRoles == null ? List.of() : userRoles.roleNames());
             dto.setRoleIds(userRoles == null ? List.of() : userRoles.roleIds());
             return dto;
         }).toList());
         return result;
+    }
+
+    /** 批量读取当前页部门，保证部门查询不会随页内用户数线性增加。 */
+    private Map<Long, DepartmentDO> loadDepartments(List<UserDO> users) {
+        if (users.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<Long> departmentIds = users.stream().map(UserDO::getDepartmentId).distinct().toList();
+        return departmentMapper.selectBatchIds(departmentIds).stream()
+                .collect(Collectors.toMap(DepartmentDO::getId, Function.identity(), (a, b) -> a));
     }
 
     /**
@@ -104,7 +128,7 @@ public class UserService {
      *
      * <p>执行链路（共 6 步）：</p>
      * 1. 校验账号唯一，重复时抛出业务异常；
-     * 2. 查询根部门（编码 ROOT）作为用户部门，缺失时抛出异常；
+     * 2. 校验请求指定的启用部门；
      * 3. 调用 {@link PasswordEncoder#encode(CharSequence)} 编码初始密码，写入 {@link UserDO}（passwordChanged=false）；
      * 4. 持久化用户；
      * 5. 批量建立用户与角色的关联（角色 ID 无效时抛出异常并回滚）；
@@ -121,13 +145,9 @@ public class UserService {
         if (exists > 0) {
             throw new BusinessException(ErrorCode.CONFLICT, "账号已存在");
         }
-        DepartmentDO rootDepartment = departmentMapper.selectOne(
-                new LambdaQueryWrapper<DepartmentDO>().eq(DepartmentDO::getCode, "ROOT"));
-        if (rootDepartment == null) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "根部门不存在，无法创建用户");
-        }
+        DepartmentRefDTO department = departmentQueryApi.requireEnabled(dto.getDepartmentId());
         UserDO user = new UserDO();
-        user.setDepartmentId(rootDepartment.getId());
+        user.setDepartmentId(department.getId());
         user.setUsername(dto.getUsername());
         user.setDisplayName(dto.getDisplayName());
         user.setPasswordHash(passwordEncoder.encode(dto.getPassword()));
@@ -157,7 +177,9 @@ public class UserService {
         if (user == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
         }
+        DepartmentRefDTO department = departmentQueryApi.requireEnabled(dto.getDepartmentId());
         user.setDisplayName(dto.getDisplayName());
+        user.setDepartmentId(department.getId());
         userMapper.updateById(user);
         // roleIds 为 null 表示不修改角色（AGENTS §6：更新 DTO 中 null=不修改）；显式传数组（可为空）才整体覆盖
         if (dto.getRoleIds() != null) {

@@ -100,6 +100,11 @@ const expectedPaths = [
   '/api/auth/change-password',
   '/api/users',
   '/api/users/{id}',
+  '/api/departments/tree',
+  '/api/departments/options',
+  '/api/departments',
+  '/api/departments/{id}',
+  '/api/departments/{id}/enabled',
   '/api/roles',
   '/api/roles/{id}',
   '/api/roles/permission-options',
@@ -111,7 +116,27 @@ const expectedPaths = [
   '/api/site/publish',
   '/api/site/withdraw',
   '/api/public/site',
-  '/api/public/files/{fileId}'
+  '/api/public/files/{fileId}',
+  '/api/warehouse/items',
+  '/api/warehouse/items/{id}',
+  '/api/warehouse/warehouses',
+  '/api/warehouse/warehouses/{id}',
+  '/api/warehouse/warehouses/options',
+  '/api/warehouse/locations',
+  '/api/warehouse/locations/{id}',
+  '/api/warehouse/locations/{warehouseId}',
+  '/api/warehouse/locations/options',
+  '/api/warehouse/stock/items/{itemId}',
+  '/api/warehouse/stock',
+  '/api/warehouse/stock/locations/{locationId}',
+  '/api/warehouse/movements/recent',
+  '/api/warehouse/operations',
+  '/api/warehouse/operations/{operationId}',
+  '/api/warehouse/operations/{operationId}/movements',
+  '/api/warehouse/inbound',
+  '/api/warehouse/outbound',
+  '/api/warehouse/transfer',
+  '/api/warehouse/stocktake'
 ]
 
 deepStrictEqual(Object.keys(specification.paths ?? {}).sort(), expectedPaths.slice().sort(),
@@ -119,9 +144,12 @@ deepStrictEqual(Object.keys(specification.paths ?? {}).sort(), expectedPaths.sli
 
 assertCreateId('/api/users')
 assertCreateId('/api/roles')
+assertCreateId('/api/warehouse/items')
+assertCreateId('/api/warehouse/warehouses')
+assertCreateId('/api/warehouse/locations')
 
 for (const [path, properties] of Object.entries({
-  '/api/users': ['username', 'displayName', 'password', 'roleIds'],
+  '/api/users': ['username', 'displayName', 'password', 'departmentId', 'roleIds'],
   '/api/roles': ['code', 'name', 'permissionCodes'],
   '/api/site/draft': ['siteName', 'introduction', 'heroFileId', 'contactText', 'colorScheme', 'layoutCode', 'sections']
 })) {
@@ -136,11 +164,46 @@ const createUser = requestSchema('/api/users', 'post')
 assert(dereference(createUser.properties.roleIds)?.items?.type === 'string',
   'POST /api/users 的 roleIds 元素必须是 string。')
 
+for (const path of ['/api/warehouse/inbound', '/api/warehouse/outbound', '/api/warehouse/transfer', '/api/warehouse/stocktake']) {
+  const schema = requestSchema(path, 'post')
+  assert(schema.required?.includes('requestId') && schema.required?.includes('lines'), `${path} 必须要求 requestId 与 lines。`)
+  const line = dereference(dereference(schema.properties?.lines)?.items)
+  assert(line && dereference(line.properties?.quantity)?.type === 'string', `${path} 数量必须按字符串传输。`)
+}
+
+for (const [path, method] of [
+  ['/api/departments', 'post'],
+  ['/api/departments/{id}', 'put'],
+  ['/api/departments/{id}/enabled', 'put']
+]) {
+  const schema = requestSchema(path, method)
+  assert(schema.required?.includes('version'), `${method.toUpperCase()} ${path} 的 version 必须是必填字段。`)
+}
+const deleteDepartment = specification.paths?.['/api/departments/{id}']?.delete
+const deleteVersion = deleteDepartment?.parameters?.find((parameter) => parameter.name === 'version')
+assert(deleteVersion?.required === true, 'DELETE /api/departments/{id} 的 version 必须是必填参数。')
+
 const userPage = concreteSchema(property(responseSchema('/api/users', 'get'), 'data', 'GET /api/users 响应'))
 const records = property(userPage, 'records', '用户分页 data')
 assert(records.type === 'array' && records.items, '用户分页 records 必须是数组。')
 assert(property(records.items, 'id', '用户分页 records 元素').type === 'string',
   '用户列表 ID 必须是 string。')
+
+const stockPage = concreteSchema(property(responseSchema('/api/warehouse/stock', 'get'), 'data', 'GET /api/warehouse/stock 响应'))
+const stockRecords = property(stockPage, 'records', '库存分页 data')
+assert(stockRecords.type === 'array' && stockRecords.items, '库存分页 records 必须是数组。')
+for (const propertyName of ['itemId', 'warehouseId', 'locationId']) {
+  assert(property(stockRecords.items, propertyName, '库存分页 records 元素').type === 'string',
+    `库存分页 ${propertyName} 必须是 string。`)
+}
+for (const propertyName of ['itemName', 'baseUnit', 'warehouseName', 'locationName', 'quantity']) {
+  assert(property(stockRecords.items, propertyName, '库存分页 records 元素').type === 'string',
+    `库存分页 ${propertyName} 必须是 string。`)
+}
+for (const propertyName of ['total', 'current', 'size']) {
+  assert(property(stockPage, propertyName, '库存分页 data').type === 'integer',
+    `库存分页 ${propertyName} 必须是 integer。`)
+}
 
 const emptyData = property(responseSchema('/api/users', 'put'), 'data', 'PUT /api/users 响应')
 assert(hasNull(emptyData), '空成功响应的 data 必须允许 null。')

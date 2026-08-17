@@ -1,7 +1,6 @@
 package com.internaladmin.app.config;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.jdbc.DataSourceBuilder;
+import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -25,20 +24,21 @@ public class AppDataSourceConfig {
      * <p>方法：{@code dataSource}</p>
      *
      * <p>执行链路（共 4 步）：</p>
-     * 1. 读取 {@code spring.datasource.url}；
+     * 1. 读取已由 Spring Boot 绑定的 {@link DataSourceProperties}；
      * 2. 若为 SQLite 连接，解析文件路径并调用 {@link #ensureDataDirectory(String)} 创建父目录；
-     * 3. 通过 {@link DataSourceBuilder} 构建数据源；
+     * 3. 通过 {@link DataSourceProperties#initializeDataSourceBuilder()} 使用 URL、用户名、密码和驱动构建数据源；
      * 4. 返回数据源。
      *
-     * @param url 数据源 JDBC URL
+     * @param properties Spring Boot 数据源属性（支持环境变量覆盖）
      * @return 数据源
      */
     @Bean
-    public DataSource dataSource(@Value("${spring.datasource.url}") String url) {
+    public DataSource dataSource(DataSourceProperties properties) {
+        String url = properties.determineUrl();
         if (url.startsWith("jdbc:sqlite:")) {
             ensureDataDirectory(url);
         }
-        return DataSourceBuilder.create().url(url).build();
+        return properties.initializeDataSourceBuilder().build();
     }
 
     /**

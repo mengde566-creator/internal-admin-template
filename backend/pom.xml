@@ -27,6 +27,7 @@
         <module>modules/module-file</module>
         <module>modules/module-site</module>
         <module>modules/module-audit</module>
+        <module>modules/module-warehouse</module>
         <module>apps/app-server</module>
     </modules>
 

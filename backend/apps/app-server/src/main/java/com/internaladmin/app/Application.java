@@ -15,7 +15,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
         "com.internaladmin.module.iam.mapper",
         "com.internaladmin.module.file.mapper",
         "com.internaladmin.module.site.mapper",
-        "com.internaladmin.module.audit.mapper"
+        "com.internaladmin.module.audit.mapper",
+        "com.internaladmin.module.warehouse.mapper"
 })
 public class Application {
 

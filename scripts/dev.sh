@@ -18,6 +18,9 @@ BACKEND_LOG="$LOGS/backend.log"
 FRONTEND_LOG="$LOGS/frontend.log"
 BACKEND_PORT=8080
 FRONTEND_PORT=5173
+LOCAL_ENV_FILE="$ROOT/.env.local"
+BACKEND_ENV=()
+BACKEND_DATABASE_MODE="SQLite"
 
 mkdir -p "$LOGS"
 
@@ -159,8 +162,44 @@ check_node() {
     fi
 }
 
+load_backend_local_env() {
+    BACKEND_ENV=()
+    BACKEND_DATABASE_MODE="SQLite"
+    [ -f "$LOCAL_ENV_FILE" ] || return 0
+
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        [ -z "$line" ] && continue
+        [[ "$line" == \#* ]] && continue
+        if [[ "$line" != *=* ]]; then
+            echo "错误：.env.local 存在无效行，拒绝加载后端本地环境。" >&2
+            return 1
+        fi
+        key="${line%%=*}"
+        value="${line#*=}"
+        if [[ ! "$key" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+            echo "错误：.env.local 存在无效变量名，拒绝加载后端本地环境。" >&2
+            return 1
+        fi
+        BACKEND_ENV+=("$key=$value")
+        if [ "$key" = "SPRING_DATASOURCE_URL" ]; then
+            case "$value" in
+                jdbc:postgresql:*) BACKEND_DATABASE_MODE="PostgreSQL 本地配置" ;;
+                jdbc:sqlite:*) BACKEND_DATABASE_MODE="SQLite 本地配置" ;;
+                *) BACKEND_DATABASE_MODE="外部数据源本地配置" ;;
+            esac
+        fi
+    done < "$LOCAL_ENV_FILE"
+}
+
 check_database() {
-    # SQLite 零配置：文件库存在且非空；未来切换外部数据库时在此追加连接检查
+    load_backend_local_env
+    if [ "$BACKEND_DATABASE_MODE" != "SQLite" ]; then
+        echo "database: ${BACKEND_DATABASE_MODE} 已加载（敏感连接信息未显示）"
+        return 0
+    fi
+    # SQLite 零配置：文件库存在且非空。
     local db="$ROOT/backend/data/internal-admin.db"
     if [ -f "$db" ]; then
         echo "database: SQLite 就绪（${db}）"
@@ -206,6 +245,7 @@ start_backend() {
         return 1
     fi
     check_backend_artifact
+    load_backend_local_env
     local java_bin
     if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
         java_bin="$JAVA_HOME/bin/java"
@@ -214,7 +254,11 @@ start_backend() {
     fi
     cd "$ROOT/backend"
     local pid
-    pid=$(launch_background "$BACKEND_LOG" "$java_bin" -jar apps/app-server/target/app-server-0.1.0-SNAPSHOT.jar)
+    if [ "${#BACKEND_ENV[@]}" -gt 0 ]; then
+        pid=$(launch_background "$BACKEND_LOG" env "${BACKEND_ENV[@]}" "$java_bin" -jar apps/app-server/target/app-server-0.1.0-SNAPSHOT.jar)
+    else
+        pid=$(launch_background "$BACKEND_LOG" "$java_bin" -jar apps/app-server/target/app-server-0.1.0-SNAPSHOT.jar)
+    fi
     echo "$pid" > "$BACKEND_PID_FILE"
     echo "后端启动中（PID ${pid}，日志 logs/backend.log）"
 }

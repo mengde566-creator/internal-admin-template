@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-08-16-0001-create-warehouse-tables" author="template">
+        <createTable tableName="wh_item">
+            <column name="id" type="BIGINT"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="code" type="VARCHAR(64)"><constraints nullable="false" unique="true"/></column>
+            <column name="name" type="VARCHAR(120)"><constraints nullable="false"/></column>
+            <column name="base_unit" type="VARCHAR(32)"><constraints nullable="false"/></column>
+            <column name="enabled" type="INTEGER" defaultValueNumeric="1"><constraints nullable="false"/></column>
+            <column name="version" type="INTEGER" defaultValueNumeric="1"><constraints nullable="false"/></column>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="updated_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createTable tableName="wh_warehouse">
+            <column name="id" type="BIGINT"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="code" type="VARCHAR(64)"><constraints nullable="false" unique="true"/></column>
+            <column name="name" type="VARCHAR(120)"><constraints nullable="false"/></column>
+            <column name="department_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="enabled" type="INTEGER" defaultValueNumeric="1"><constraints nullable="false"/></column>
+            <column name="version" type="INTEGER" defaultValueNumeric="1"><constraints nullable="false"/></column>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="updated_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createTable tableName="wh_location">
+            <column name="id" type="BIGINT"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="warehouse_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="code" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="name" type="VARCHAR(120)"><constraints nullable="false"/></column>
+            <column name="enabled" type="INTEGER" defaultValueNumeric="1"><constraints nullable="false"/></column>
+            <column name="version" type="INTEGER" defaultValueNumeric="1"><constraints nullable="false"/></column>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="updated_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createIndex indexName="uk_wh_location_warehouse_code" tableName="wh_location" unique="true"><column name="warehouse_id"/><column name="code"/></createIndex>
+        <createTable tableName="wh_stock_balance">
+            <column name="id" type="BIGINT"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="location_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="item_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="quantity_scaled" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="version" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="updated_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createIndex indexName="uk_wh_balance_location_item" tableName="wh_stock_balance" unique="true"><column name="location_id"/><column name="item_id"/></createIndex>
+        <createTable tableName="wh_inventory_operation">
+            <column name="id" type="BIGINT"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="request_id" type="VARCHAR(128)"><constraints nullable="false" unique="true"/></column>
+            <column name="request_fingerprint" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <column name="operation_no" type="VARCHAR(64)"><constraints nullable="false" unique="true"/></column>
+            <column name="type" type="VARCHAR(16)"><constraints nullable="false"/></column>
+            <column name="operator_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="occurred_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="remark" type="VARCHAR(1000)"/>
+            <column name="corrected_operation_id" type="BIGINT"/>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createTable tableName="wh_inventory_movement">
+            <column name="id" type="BIGINT"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="operation_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="line_no" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="item_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="location_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="department_id_snapshot" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="movement_type" type="VARCHAR(16)"><constraints nullable="false"/></column>
+            <column name="delta_quantity" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="before_quantity" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="after_quantity" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="line_remark" type="VARCHAR(1000)"/>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createIndex indexName="idx_wh_movement_operation" tableName="wh_inventory_movement"><column name="operation_id"/><column name="line_no"/></createIndex>
+        <createIndex indexName="idx_wh_movement_item_location" tableName="wh_inventory_movement"><column name="item_id"/><column name="location_id"/><column name="created_at"/></createIndex>
+    </changeSet>
+</databaseChangeLog>

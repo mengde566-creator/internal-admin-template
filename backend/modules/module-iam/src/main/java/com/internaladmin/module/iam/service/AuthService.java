@@ -2,6 +2,7 @@ package com.internaladmin.module.iam.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.internaladmin.module.iam.mapper.RolePermissionMapper;
+import com.internaladmin.module.iam.mapper.DepartmentMapper;
 import com.internaladmin.module.iam.mapper.UserMapper;
 import com.internaladmin.module.iam.mapper.UserRoleMapper;
 import com.internaladmin.module.iam.model.entity.RolePermissionDO;
@@ -35,6 +36,7 @@ import java.util.List;
 public class AuthService {
 
     private final UserMapper userMapper;
+    private final DepartmentMapper departmentMapper;
     private final UserRoleMapper userRoleMapper;
     private final RolePermissionMapper rolePermissionMapper;
     private final PasswordEncoder passwordEncoder;
@@ -44,6 +46,7 @@ public class AuthService {
     private final LogoutHandler authLogoutHandler;
 
     public AuthService(UserMapper userMapper,
+                       DepartmentMapper departmentMapper,
                        UserRoleMapper userRoleMapper,
                        RolePermissionMapper rolePermissionMapper,
                        PasswordEncoder passwordEncoder,
@@ -52,6 +55,7 @@ public class AuthService {
                        SecurityContextRepository securityContextRepository,
                        LogoutHandler authLogoutHandler) {
         this.userMapper = userMapper;
+        this.departmentMapper = departmentMapper;
         this.userRoleMapper = userRoleMapper;
         this.rolePermissionMapper = rolePermissionMapper;
         this.passwordEncoder = passwordEncoder;
@@ -69,11 +73,12 @@ public class AuthService {
      * <p>执行链路（共 7 步）：</p>
      * 1. 按用户名查询 {@link UserDO}；
      * 2. 用户不存在或密码不匹配时抛出 {@link BusinessException}（统一提示“用户名或密码错误”，不泄露具体原因）；
-     * 3. 调用 {@link #loadPermissions(Long)} 加载当前用户权限编码；
-     * 4. 构建 {@link UsernamePasswordAuthenticationToken}，创建新 {@link SecurityContext} 并写入 {@link SecurityContextHolder}；
-     * 5. 调用 {@link SessionAuthenticationStrategy#onAuthentication(Authentication, HttpServletRequest, HttpServletResponse)} 执行标准 Session 固定防护；
-     * 6. 调用 {@link SecurityContextRepository#saveContext(SecurityContext, HttpServletRequest, HttpServletResponse)} 将认证上下文持久化到 Session；
-     * 7. 返回登录结果（含是否必须修改初始密码）。
+     * 3. 校验用户所属部门存在且启用；
+     * 4. 调用 {@link #loadPermissions(Long)} 加载当前用户权限编码；
+     * 5. 构建 {@link UsernamePasswordAuthenticationToken}，创建新 {@link SecurityContext} 并写入 {@link SecurityContextHolder}；
+     * 6. 调用 {@link SessionAuthenticationStrategy#onAuthentication(Authentication, HttpServletRequest, HttpServletResponse)} 执行标准 Session 固定防护；
+     * 7. 调用 {@link SecurityContextRepository#saveContext(SecurityContext, HttpServletRequest, HttpServletResponse)} 将认证上下文持久化到 Session；
+     * 8. 返回登录结果（含是否必须修改初始密码）。
      *
      * @param dto      登录请求
      * @param request  当前 HTTP 请求
@@ -87,6 +92,13 @@ public class AuthService {
         if (user == null || !passwordEncoder.matches(dto.getPassword(), user.getPasswordHash())) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "用户名或密码错误");
         }
+        var department = departmentMapper.selectById(user.getDepartmentId());
+        if (department == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "当前用户所属部门不存在");
+        }
+        if (!Integer.valueOf(1).equals(department.getEnabled())) {
+            throw new BusinessException(ErrorCode.BUSINESS_REJECTED, "当前用户所属部门已停用");
+        }
         List<String> permissions = loadPermissions(user.getId());
         UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                 user.getId(), null, permissions.stream().map(SimpleGrantedAuthority::new).toList());
@@ -97,6 +109,7 @@ public class AuthService {
         securityContextRepository.saveContext(context, request, response);
         boolean forcePasswordChange = systemConfigService.getBoolean(SystemConfigService.KEY_FORCE_PASSWORD_CHANGE);
         return new LoginResultDTO(user.getId(), user.getUsername(), user.getDisplayName(),
+                department.getId(), department.getCode(), department.getName(),
                 forcePasswordChange && !Boolean.TRUE.equals(user.getPasswordChanged()), permissions);
     }
 
@@ -120,11 +133,12 @@ public class AuthService {
      *
      * <p>方法：{@code currentUser}</p>
      *
-     * <p>执行链路（共 4 步）：</p>
+     * <p>执行链路（共 5 步）：</p>
      * 1. 从 {@link SecurityContextHolder} 取当前认证，解析用户 ID；
      * 2. 按 ID 查询 {@link UserDO}；用户已不存在时抛出 {@link BusinessException}（UNAUTHORIZED）；
-     * 3. 调用 {@link #loadPermissions(Long)} 加载权限编码；
-     * 4. 组装并返回 {@link CurrentUserDTO}（不含密码哈希）。
+     * 3. 校验用户所属部门存在且启用；
+     * 4. 调用 {@link #loadPermissions(Long)} 加载权限编码；
+     * 5. 组装并返回 {@link CurrentUserDTO}（不含密码哈希）。
      *
      * @return 当前用户信息
      * @throws BusinessException 未登录或用户不存在时抛出
@@ -142,6 +156,16 @@ public class AuthService {
         dto.setUserId(user.getId());
         dto.setUsername(user.getUsername());
         dto.setDisplayName(user.getDisplayName());
+        var department = departmentMapper.selectById(user.getDepartmentId());
+        if (department == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "当前用户所属部门不存在");
+        }
+        if (!Integer.valueOf(1).equals(department.getEnabled())) {
+            throw new BusinessException(ErrorCode.BUSINESS_REJECTED, "当前用户所属部门已停用");
+        }
+        dto.setDepartmentId(department.getId());
+        dto.setDepartmentCode(department.getCode());
+        dto.setDepartmentName(department.getName());
         boolean forcePasswordChange = systemConfigService.getBoolean(SystemConfigService.KEY_FORCE_PASSWORD_CHANGE);
         dto.setMustChangePassword(forcePasswordChange && !Boolean.TRUE.equals(user.getPasswordChanged()));
         dto.setPermissions(loadPermissions(userId));

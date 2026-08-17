@@ -6,6 +6,7 @@ import { isAxiosError } from 'axios'
 import { iamQueryKeys } from '../query-keys'
 import { fetchUsersApi, createUserApi, updateUserApi, deleteUserApi, type UserListItem } from '../api/user'
 import { fetchRolesApi } from '../api/role'
+import { fetchDepartmentOptionsApi, type DepartmentNode } from '../api/department'
 
 const queryClient = useQueryClient()
 
@@ -26,11 +27,27 @@ const rolesQuery = useQuery({
   queryFn: () => fetchRolesApi().then((r) => r.data.data)
 })
 
+/** 仅读取启用部门，供用户创建/编辑选择。 */
+const departmentOptionsQuery = useQuery({
+  queryKey: iamQueryKeys.departmentOptions(),
+  queryFn: () => fetchDepartmentOptionsApi().then((r) => r.data.data)
+})
+
+function flattenDepartments(nodes: DepartmentNode[], depth = 0): Array<{ id: string; label: string }> {
+  return nodes.flatMap((node) => [
+    { id: node.id, label: `${'　'.repeat(depth)}${node.name}（${node.code}）` },
+    ...flattenDepartments(node.children, depth + 1)
+  ])
+}
+
+const departmentOptions = computed(() => flattenDepartments(departmentOptionsQuery.data.value?.nodes ?? []))
+
 const dialogVisible = ref(false)
 const editing = ref<UserListItem | null>(null)
 const form = reactive({
   username: '',
   displayName: '',
+  departmentId: '',
   password: '',
   roleIds: [] as string[]
 })
@@ -48,6 +65,7 @@ function openCreate() {
   editing.value = null
   form.username = ''
   form.displayName = ''
+  form.departmentId = ''
   form.password = ''
   form.roleIds = []
   dialogVisible.value = true
@@ -57,6 +75,7 @@ function openEdit(row: UserListItem) {
   editing.value = row
   form.username = row.username
   form.displayName = row.displayName
+  form.departmentId = row.departmentId
   form.password = ''
   form.roleIds = [...row.roleIds]
   dialogVisible.value = true
@@ -65,9 +84,9 @@ function openEdit(row: UserListItem) {
 const saveMutation = useMutation({
   mutationFn: async () => {
     if (editing.value) {
-      await updateUserApi({ id: editing.value.id, displayName: form.displayName, roleIds: form.roleIds })
+      await updateUserApi({ id: editing.value.id, displayName: form.displayName, departmentId: form.departmentId, roleIds: form.roleIds })
     } else {
-      await createUserApi({ username: form.username, displayName: form.displayName, password: form.password, roleIds: form.roleIds })
+      await createUserApi({ username: form.username, displayName: form.displayName, password: form.password, departmentId: form.departmentId, roleIds: form.roleIds })
     }
   },
   onSuccess: () => {
@@ -93,7 +112,7 @@ const deleteMutation = useMutation({
 })
 
 async function onSubmit() {
-  if (!form.username || !form.displayName || (!editing.value && !form.password)) {
+  if (!form.username || !form.displayName || !form.departmentId || (!editing.value && !form.password)) {
     ElMessage.warning('请填写完整信息')
     return
   }
@@ -104,6 +123,8 @@ async function onSubmit() {
   submitting.value = true
   try {
     await saveMutation.mutateAsync()
+  } catch {
+    // useMutation.onError 已将后端原因展示给用户。
   } finally {
     submitting.value = false
   }
@@ -136,6 +157,7 @@ function onSearch() {
     <el-table v-loading="usersQuery.isLoading.value" :data="usersQuery.data.value?.records ?? []" border>
       <el-table-column prop="username" label="账号" min-width="140" />
       <el-table-column prop="displayName" label="显示名称" min-width="140" />
+      <el-table-column prop="departmentName" label="部门" min-width="160" />
       <el-table-column label="角色" min-width="180">
         <template #default="{ row }">
           <el-tag v-for="name in row.roleNames" :key="name" class="role-tag" size="small">
@@ -186,6 +208,16 @@ function onSearch() {
         </el-form-item>
         <el-form-item v-if="!editing" label="初始密码">
           <el-input v-model="form.password" type="password" show-password placeholder="至少 8 位" />
+        </el-form-item>
+        <el-form-item label="所属部门" required>
+          <el-select v-model="form.departmentId" placeholder="选择启用部门" style="width: 100%">
+            <el-option
+              v-for="department in departmentOptions"
+              :key="department.id"
+              :label="department.label"
+              :value="department.id"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="角色">
           <el-select v-model="form.roleIds" multiple placeholder="选择角色" style="width: 100%">

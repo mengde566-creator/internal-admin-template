@@ -38,7 +38,8 @@ backend/
 │  ├─ module-iam/
 │  ├─ module-file/
 │  ├─ module-site/
-│  └─ module-audit/
+│  ├─ module-audit/
+│  └─ module-warehouse/
 └─ apps/
    └─ app-server/
 ```
@@ -68,6 +69,7 @@ backend/
 | `module-file` | 通用模板能力 | 本地文件存储、元数据、访问约束和模块对外文件能力；0.1 以展示图片验证 |
 | `module-audit` | 通用模板能力 | 可被业务模块调用的最小操作审计；0.1 以 IAM 与站点动作验证 |
 | `module-site` | 参考业务模块 | 公开主页草稿、预览、发布、撤回和匿名读取，用于证明完整模块装配链 |
+| `module-warehouse` | 0.2 已确认业务模块 | 物品、仓库、库位、精确库存、人工库存操作和只读查询公开 API |
 
 `module-site` 不是模板身份的核心。当前已经通过长期派生样本证明：移除该模块、对应前端注册、迁移聚合与契约装配后，IAM、工作台、数据库质量入口和开发启动仍然成立。该证据只证明 `site` 的一次真实裁剪，不自动证明任意模块都可自由移除；其他模块仍以各自契约和真实调用关系为准。
 
@@ -147,8 +149,16 @@ Liquibase 是结构变更的唯一入口，迁移文件按数据归属放在拥�
 
 决定拆分后，再设计网络 API、服务发现、配置管理、容错、数据一致性和可观测性，并选择匹配版本的 Spring Cloud 组件。当前模块 API 和本地事件不承诺原样转换为远程调用。
 
-## 10. 已落地基线与仍待确认
+## 10. 已落地基线与0.2已确认方向
 
 已落地基线以父 POM、Maven Wrapper、锁文件和质量脚本为事实源：Java 25、Spring Boot 4.1.x、MyBatis-Plus 3.5.17、模块归属的 Liquibase 变更集及应用级聚合均已进入构建和测试。架构文档不再复制可能漂移的补丁版本与命令清单。
 
-仍待真实需求确认：第一个 Spring AI 业务用例、所属模块、模型提供商和数据安全边界；其余模块的裁剪与跨模块组合也须在实际派生时验证，不能由 `module-site` 的一次成功裁剪类推。
+0.2已经确认以仓储作为第一个AI业务用例，继续采用模块化单体，不转微服务。目标模块边界为：
+
+- `module-agent`：模型编排、会话、History、Memory和流式运行；
+- `module-knowledge`：模拟知识、版本、Embedding和pgvector检索；
+- `module-ai-observability`：run、step、反馈、评测和管理查询；
+- `module-warehouse`：仓储领域、人工写页面与公开只读查询API；
+- 仓储Agent适配模块：在Agent接入契约与仓储公开API之间做领域翻译。
+
+这些是已确认的0.2目标模块；当前仅 `module-warehouse` 已进入实现目录，其余模块仍不得提前创建空目录或占位实现。完整依赖方向、数据所有权和PoC Gate以[`AI_CAPABILITY_SYSTEM.md`](AI_CAPABILITY_SYSTEM.md)为准。其余模块的裁剪与跨模块组合仍须在实际派生时验证，不能由单个参考业务的成功类推。

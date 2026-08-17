@@ -20,6 +20,10 @@ public class UpdateUserDTO {
     @Size(max = 100, message = "显示名称长度不能超过 100")
     private String displayName;
 
+    /** 唯一所属部门；必须是当前启用部门。 */
+    @NotNull(message = "所属部门不能为空")
+    private Long departmentId;
+
     /** 分配的角色 ID 列表（整体覆盖） */
     private List<Long> roleIds;
 
@@ -37,6 +41,14 @@ public class UpdateUserDTO {
 
     public void setDisplayName(String displayName) {
         this.displayName = displayName;
+    }
+
+    public Long getDepartmentId() {
+        return departmentId;
+    }
+
+    public void setDepartmentId(Long departmentId) {
+        this.departmentId = departmentId;
     }
 
     public List<Long> getRoleIds() {

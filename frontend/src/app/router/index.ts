@@ -48,6 +48,26 @@ export const router = createRouter({
           meta: { title: '用户管理', permission: 'iam:user:manage' }
         },
         {
+          path: 'departments',
+          name: 'departments',
+          component: () => import('../../modules/iam/pages/DepartmentManagePage.vue'),
+          meta: { title: '部门管理', permission: 'iam:department:manage' }
+        },
+        {
+          path: 'warehouse',
+          name: 'warehouse',
+          component: () => import('../../modules/warehouse/pages/WarehouseManagePage.vue'),
+          meta: { title: '仓储', permission: 'warehouse:read' },
+          children: [
+            { path: '', name: 'warehouse-default', redirect: { name: 'warehouse-stock' } },
+            { path: 'stock', name: 'warehouse-stock', component: () => import('../../modules/warehouse/pages/WarehouseStockPage.vue'), meta: { title: '库存查询', permission: 'warehouse:read' } },
+            { path: 'operations', name: 'warehouse-operations', component: () => import('../../modules/warehouse/pages/WarehouseOperationsPage.vue'), meta: { title: '库存操作', permission: 'warehouse:inventory:operate' } },
+            { path: 'items', name: 'warehouse-items', component: () => import('../../modules/warehouse/pages/WarehouseItemsPage.vue'), meta: { title: '物品', permission: 'warehouse:master:manage' } },
+            { path: 'locations', name: 'warehouse-locations', component: () => import('../../modules/warehouse/pages/WarehouseLocationsPage.vue'), meta: { title: '仓库与库位', permission: 'warehouse:master:manage' } },
+            { path: 'records', name: 'warehouse-records', component: () => import('../../modules/warehouse/pages/WarehouseRecordsPage.vue'), meta: { title: '库存记录', permission: 'warehouse:read' } },
+          ]
+        },
+        {
           path: 'roles',
           name: 'roles',
           component: () => import('../../modules/iam/pages/RoleManagePage.vue'),

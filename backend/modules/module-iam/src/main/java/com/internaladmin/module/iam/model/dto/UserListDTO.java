@@ -19,6 +19,15 @@ public class UserListDTO {
     /** 展示名称 */
     private String displayName;
 
+    /** 所属部门 ID。 */
+    private Long departmentId;
+
+    /** 所属部门编码。 */
+    private String departmentCode;
+
+    /** 所属部门名称。 */
+    private String departmentName;
+
     /** 角色名称列表 */
     private List<String> roleNames;
 
@@ -48,6 +57,31 @@ public class UserListDTO {
 
     public void setDisplayName(String displayName) {
         this.displayName = displayName;
+    }
+
+    @JsonSerialize(using = ToStringSerializer.class)
+    public Long getDepartmentId() {
+        return departmentId;
+    }
+
+    public void setDepartmentId(Long departmentId) {
+        this.departmentId = departmentId;
+    }
+
+    public String getDepartmentCode() {
+        return departmentCode;
+    }
+
+    public void setDepartmentCode(String departmentCode) {
+        this.departmentCode = departmentCode;
+    }
+
+    public String getDepartmentName() {
+        return departmentName;
+    }
+
+    public void setDepartmentName(String departmentName) {
+        this.departmentName = departmentName;
     }
 
     public List<String> getRoleNames() {

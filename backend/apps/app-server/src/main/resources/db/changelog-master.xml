@@ -5,11 +5,13 @@
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-    <!-- Liquibase 主入口：按数据归属聚合各业务模块变更集（顺序：IAM → file → site → audit） -->
+    <!-- Liquibase 主入口：按数据归属聚合各业务模块变更集（顺序：IAM → file → site → audit → warehouse） -->
     <include file="db/changelog/2026-08-03-0001-create-iam-tables.xml"/>
+    <include file="db/changelog/2026-08-16-0001-add-department-tree-fields.xml"/>
     <include file="db/changelog/2026-08-03-0001-create-file-asset.xml"/>
     <include file="db/changelog/2026-08-03-0001-create-homepage-tables.xml"/>
     <include file="db/changelog/2026-08-04-0001-add-layout-and-sections.xml"/>
     <include file="db/changelog/2026-08-03-0001-create-audit-operation.xml"/>
+    <include file="db/changelog/2026-08-16-0001-create-warehouse-tables.xml"/>
 
 </databaseChangeLog>

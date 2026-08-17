@@ -5,16 +5,22 @@ import com.internaladmin.module.file.api.FileQueryApi;
 import com.internaladmin.module.file.controller.FileController;
 import com.internaladmin.module.file.service.FileStorageService;
 import com.internaladmin.module.iam.controller.AuthController;
+import com.internaladmin.module.iam.controller.DepartmentController;
 import com.internaladmin.module.iam.controller.RoleController;
 import com.internaladmin.module.iam.controller.SystemConfigController;
 import com.internaladmin.module.iam.controller.UserController;
 import com.internaladmin.module.iam.model.dto.SystemConfigDTO;
 import com.internaladmin.module.iam.service.AuthService;
+import com.internaladmin.module.iam.service.DepartmentService;
 import com.internaladmin.module.iam.service.RoleService;
 import com.internaladmin.module.iam.service.SystemConfigService;
 import com.internaladmin.module.iam.service.UserService;
 import com.internaladmin.module.site.controller.SiteController;
 import com.internaladmin.module.site.service.SiteService;
+import com.internaladmin.module.warehouse.controller.WarehouseController;
+import com.internaladmin.module.warehouse.controller.WarehouseQueryController;
+import com.internaladmin.module.warehouse.service.WarehouseService;
+import com.internaladmin.module.iam.api.IamActorApi;
 import com.internaladmin.platform.security.config.SecurityConfig;
 import com.internaladmin.platform.security.exception.SecurityExceptionHandler;
 import com.internaladmin.platform.web.exception.GlobalExceptionHandler;
@@ -157,7 +163,7 @@ class NoDatabaseOpenApiContractTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"contract-user\",\"displayName\":\"契约用户\","
-                                + "\"password\":\"ContractPass123\",\"roleIds\":[\"1\"]}"))
+                                + "\"departmentId\":\"1\",\"password\":\"ContractPass123\",\"roleIds\":[\"1\"]}"))
                 .andExpect(status().isOk())
                 .andReturn()
                 .getResponse()
@@ -266,11 +272,14 @@ class NoDatabaseOpenApiContractTest {
             GlobalExceptionHandler.class,
             SecurityExceptionHandler.class,
             AuthController.class,
+            DepartmentController.class,
             UserController.class,
             RoleController.class,
             SystemConfigController.class,
             FileController.class,
             SiteController.class,
+            WarehouseController.class,
+            WarehouseQueryController.class,
             ContractCollaborators.class
     })
     static class ContractApplication {
@@ -290,6 +299,11 @@ class NoDatabaseOpenApiContractTest {
         @Bean
         UserService userService() {
             return mock(UserService.class);
+        }
+
+        @Bean
+        DepartmentService departmentService() {
+            return mock(DepartmentService.class);
         }
 
         @Bean
@@ -315,6 +329,16 @@ class NoDatabaseOpenApiContractTest {
         @Bean
         SiteService siteService() {
             return mock(SiteService.class);
+        }
+
+        @Bean
+        WarehouseService warehouseService() {
+            return mock(WarehouseService.class);
+        }
+
+        @Bean
+        IamActorApi iamActorApi() {
+            return mock(IamActorApi.class);
         }
     }
 }

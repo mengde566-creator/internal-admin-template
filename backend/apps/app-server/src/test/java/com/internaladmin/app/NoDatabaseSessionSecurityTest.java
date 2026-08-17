@@ -2,6 +2,7 @@ package com.internaladmin.app;
 
 import com.internaladmin.module.iam.controller.AuthController;
 import com.internaladmin.module.iam.mapper.RolePermissionMapper;
+import com.internaladmin.module.iam.mapper.DepartmentMapper;
 import com.internaladmin.module.iam.mapper.SystemConfigMapper;
 import com.internaladmin.module.iam.mapper.UserMapper;
 import com.internaladmin.module.iam.mapper.UserRoleMapper;
@@ -185,6 +186,7 @@ class NoDatabaseSessionSecurityTest {
             PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
             UserDO user = new UserDO();
             user.setId(7L);
+            user.setDepartmentId(1L);
             user.setUsername("session-user");
             user.setDisplayName("会话测试用户");
             user.setPasswordHash(passwordEncoder.encode("SessionPass123"));
@@ -193,10 +195,11 @@ class NoDatabaseSessionSecurityTest {
             UserMapper userMapper = UserMapper.class.cast(Proxy.newProxyInstance(UserMapper.class.getClassLoader(),
                     new Class<?>[]{UserMapper.class}, (proxy, method, arguments) ->
                     method.getName().equals("selectOne") || method.getName().equals("selectById") ? user : null));
+            DepartmentMapper departmentMapper = mapperProxy(DepartmentMapper.class, "selectById", department());
             UserRoleMapper userRoleMapper = mapperProxy(UserRoleMapper.class, "selectList", List.of());
             RolePermissionMapper rolePermissionMapper = mapperProxy(RolePermissionMapper.class, "selectList", List.of());
             SystemConfigMapper systemConfigMapper = mapperProxy(SystemConfigMapper.class, "selectOne", falseConfig());
-            return new AuthService(userMapper, userRoleMapper, rolePermissionMapper, passwordEncoder,
+            return new AuthService(userMapper, departmentMapper, userRoleMapper, rolePermissionMapper, passwordEncoder,
                     new SystemConfigService(systemConfigMapper), sessionAuthenticationStrategy,
                     securityContextRepository, authLogoutHandler);
         }
@@ -206,6 +209,16 @@ class NoDatabaseSessionSecurityTest {
             config.setParamKey(SystemConfigService.KEY_FORCE_PASSWORD_CHANGE);
             config.setParamValue("false");
             return config;
+        }
+
+        private static com.internaladmin.module.iam.model.entity.DepartmentDO department() {
+            com.internaladmin.module.iam.model.entity.DepartmentDO department =
+                    new com.internaladmin.module.iam.model.entity.DepartmentDO();
+            department.setId(1L);
+            department.setCode("ROOT");
+            department.setName("根部门");
+            department.setEnabled(1);
+            return department;
         }
 
         private static <T> T mapperProxy(Class<T> mapperType, String supportedMethod, Object result) {

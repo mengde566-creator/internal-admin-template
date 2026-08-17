@@ -38,6 +38,7 @@
 | [PRODUCT_SCOPE.md](PRODUCT_SCOPE.md) | 草稿 | 产品目标、角色、场景、边界和首版候选范围 | 全项目 |
 | [PRODUCT_SURFACES.md](PRODUCT_SURFACES.md) | 已确认 | 公开站点、内部工作台、管理控制台及统一登录边界 | 全项目 |
 | [V0_1_SCOPE.md](V0_1_SCOPE.md) | 已确认 | 0.1 唯一业务闭环、AI 产出流水线、验收和非目标 | 全项目 |
+| [V0_2_AI_WAREHOUSE.md](V0_2_AI_WAREHOUSE.md) | 已确认 | 0.2 通用 AI 能力体系、仓储首个业务适配、交互与验收 | 全项目、AI 能力模块、仓储模块 |
 | [QUALITY_REQUIREMENTS.md](QUALITY_REQUIREMENTS.md) | 草稿 | 安全、可靠性、兼容性、性能、可维护性和测试目标 | 全项目 |
 | [iam/IDENTITY_AUTHORIZATION.md](iam/IDENTITY_AUTHORIZATION.md) | 已确认 | 0.1部门、用户、角色、权限点模型及最小管理边界 | `module-iam` |
 

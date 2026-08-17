@@ -27,7 +27,8 @@ import java.util.Set;
 public class OpenApiContractConfig {
 
     private static final Set<String> STRING_ID_PROPERTIES = Set.of(
-            "id", "userId", "fileId", "heroFileId", "roleIds"
+            "id", "userId", "fileId", "heroFileId", "roleIds",
+            "itemId", "warehouseId", "locationId", "operationId"
     );
 
     private static final Map<String, List<String>> ENUM_PROPERTIES = Map.of(

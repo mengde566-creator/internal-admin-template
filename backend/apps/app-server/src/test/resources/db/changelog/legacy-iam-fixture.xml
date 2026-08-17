@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- 通过 Liquibase 正常入口形成可升级的 0.1 IAM 历史结构。 -->
+    <include file="db/changelog/2026-08-03-0001-create-iam-tables.xml"/>
+    <!-- 既有用户事实也通过 Liquibase fixture 形成，不直接写数据库文件。 -->
+    <changeSet id="legacy-iam-fixture-user" author="test">
+        <insert tableName="iam_user">
+            <column name="id" valueNumeric="1001"/>
+            <column name="department_id" valueNumeric="1"/>
+            <column name="username" value="legacy-user"/>
+            <column name="display_name" value="历史用户"/>
+            <column name="password_hash" value="fixture-hash"/>
+            <column name="password_changed" valueBoolean="true"/>
+            <column name="deleted" valueNumeric="0"/>
+        </insert>
+    </changeSet>
+</databaseChangeLog>

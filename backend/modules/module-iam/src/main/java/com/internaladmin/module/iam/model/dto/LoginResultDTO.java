@@ -19,6 +19,15 @@ public class LoginResultDTO {
     /** 展示名称 */
     private String displayName;
 
+    /** 当前所属部门 ID。 */
+    private Long departmentId;
+
+    /** 当前所属部门编码。 */
+    private String departmentCode;
+
+    /** 当前所属部门名称。 */
+    private String departmentName;
+
     /** 是否必须修改初始密码（首次登录强制改密） */
     private boolean mustChangePassword;
 
@@ -29,10 +38,14 @@ public class LoginResultDTO {
     }
 
     public LoginResultDTO(Long userId, String username, String displayName,
+                          Long departmentId, String departmentCode, String departmentName,
                           boolean mustChangePassword, List<String> permissions) {
         this.userId = userId;
         this.username = username;
         this.displayName = displayName;
+        this.departmentId = departmentId;
+        this.departmentCode = departmentCode;
+        this.departmentName = departmentName;
         this.mustChangePassword = mustChangePassword;
         this.permissions = permissions;
     }
@@ -60,6 +73,31 @@ public class LoginResultDTO {
 
     public void setDisplayName(String displayName) {
         this.displayName = displayName;
+    }
+
+    @JsonSerialize(using = ToStringSerializer.class)
+    public Long getDepartmentId() {
+        return departmentId;
+    }
+
+    public void setDepartmentId(Long departmentId) {
+        this.departmentId = departmentId;
+    }
+
+    public String getDepartmentCode() {
+        return departmentCode;
+    }
+
+    public void setDepartmentCode(String departmentCode) {
+        this.departmentCode = departmentCode;
+    }
+
+    public String getDepartmentName() {
+        return departmentName;
+    }
+
+    public void setDepartmentName(String departmentName) {
+        this.departmentName = departmentName;
     }
 
     public boolean isMustChangePassword() {

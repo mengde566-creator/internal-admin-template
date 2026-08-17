@@ -8,9 +8,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import jakarta.servlet.http.HttpServletRequest;
 
 /**
  * 全局异常边界。
@@ -38,10 +40,12 @@ public class GlobalExceptionHandler {
      * @return 401/403/400 + 统一错误响应
      */
     @ExceptionHandler(BusinessException.class)
-    public ResponseEntity<ApiResponse<Void>> handleBusinessException(BusinessException ex) {
+    public ResponseEntity<ApiResponse<Void>> handleBusinessException(BusinessException ex, HttpServletRequest request) {
         HttpStatus status = switch (ex.getErrorCode()) {
             case UNAUTHORIZED -> HttpStatus.UNAUTHORIZED;
             case FORBIDDEN -> HttpStatus.FORBIDDEN;
+            case CONFLICT -> request.getRequestURI().startsWith("/api/warehouse")
+                    ? HttpStatus.CONFLICT : HttpStatus.BAD_REQUEST;
             default -> HttpStatus.BAD_REQUEST;
         };
         return ResponseEntity.status(status)
@@ -68,6 +72,13 @@ public class GlobalExceptionHandler {
                 .orElse(ErrorCode.PARAM_ERROR.getMessage());
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(ApiResponse.error(ErrorCode.PARAM_ERROR, message));
+    }
+
+    /** 将缺失的必填查询参数明确映射为 400 参数错误。 */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMissingRequestParameter(MissingServletRequestParameterException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.error(ErrorCode.PARAM_ERROR, ex.getParameterName() + " 参数不能为空"));
     }
 
     /**

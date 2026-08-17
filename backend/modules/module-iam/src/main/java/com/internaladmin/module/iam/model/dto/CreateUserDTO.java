@@ -1,6 +1,7 @@
 package com.internaladmin.module.iam.model.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 import java.util.List;
@@ -24,6 +25,10 @@ public class CreateUserDTO {
     @NotBlank(message = "初始密码不能为空")
     @Size(min = 8, max = 64, message = "初始密码长度需在 8-64 之间")
     private String password;
+
+    /** 唯一所属部门；必须是当前启用部门。 */
+    @NotNull(message = "所属部门不能为空")
+    private Long departmentId;
 
     /** 分配的角色 ID 列表 */
     private List<Long> roleIds;
@@ -50,6 +55,14 @@ public class CreateUserDTO {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public Long getDepartmentId() {
+        return departmentId;
+    }
+
+    public void setDepartmentId(Long departmentId) {
+        this.departmentId = departmentId;
     }
 
     public List<Long> getRoleIds() {

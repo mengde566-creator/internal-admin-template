@@ -5,6 +5,9 @@ export interface LoginResult {
   userId: string
   username: string
   displayName: string
+  departmentId: string
+  departmentCode: string
+  departmentName: string
   mustChangePassword: boolean
   permissions: string[]
 }
@@ -14,6 +17,9 @@ export interface CurrentUser {
   userId: string
   username: string
   displayName: string
+  departmentId: string
+  departmentCode: string
+  departmentName: string
   mustChangePassword: boolean
   permissions: string[]
 }

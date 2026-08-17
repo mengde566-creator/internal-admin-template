@@ -49,4 +49,16 @@ describe('应用路由守卫', () => {
     expect(auth.hasPermission).toHaveBeenCalledWith('site:homepage:edit')
     expect(router.currentRoute.value.name).toBe('workspace')
   })
+
+  it('仓储默认入口和五个子入口都登记在同一模块路由下', () => {
+    const names = router.getRoutes().map((route) => String(route.name))
+    expect(names).toEqual(expect.arrayContaining([
+      'warehouse',
+      'warehouse-stock',
+      'warehouse-operations',
+      'warehouse-items',
+      'warehouse-locations',
+      'warehouse-records',
+    ]))
+  })
 })

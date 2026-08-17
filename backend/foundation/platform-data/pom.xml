@@ -39,5 +39,11 @@
             <artifactId>sqlite-jdbc</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- PostgreSQL 本地运行时驱动；版本由父 POM 的 Spring Boot BOM 管理。 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
     </dependencies>
 </project>

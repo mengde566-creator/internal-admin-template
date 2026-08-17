@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- 0.2：部门树增量；不修改已执行的 0.1 变更集。 -->
+    <changeSet id="2026-08-16-0001-add-department-tree-fields" author="template">
+        <addColumn tableName="iam_department">
+            <column name="parent_id" type="BIGINT"/>
+            <column name="sort_order" type="INTEGER" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="enabled" type="INTEGER" defaultValueNumeric="1">
+                <constraints nullable="false"/>
+            </column>
+            <column name="deleted" type="INTEGER" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="version" type="INTEGER" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+        <update tableName="iam_department">
+            <column name="sort_order" valueNumeric="0"/>
+            <column name="enabled" valueNumeric="1"/>
+            <column name="deleted" valueNumeric="0"/>
+            <column name="version" valueNumeric="0"/>
+            <where>sort_order IS NULL OR enabled IS NULL OR deleted IS NULL OR version IS NULL</where>
+        </update>
+        <createIndex indexName="idx_iam_department_parent_sort_id" tableName="iam_department">
+            <column name="parent_id"/>
+            <column name="sort_order"/>
+            <column name="id"/>
+        </createIndex>
+    </changeSet>
+
+</databaseChangeLog>

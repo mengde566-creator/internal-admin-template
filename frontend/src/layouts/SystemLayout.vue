@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { HomeFilled, User, Avatar, Picture, Setting, SwitchButton } from '@element-plus/icons-vue'
+import { HomeFilled, User, Avatar, Picture, Setting, SwitchButton, OfficeBuilding, Box } from '@element-plus/icons-vue'
 import AdminShell from './AdminShell.vue'
 import AppTopbar from './AppTopbar.vue'
 import type { NavigationItem } from './types'
@@ -19,6 +19,8 @@ const navigation = computed<NavigationItem[]>(() => [
   { key: 'workspace', label: '工作台', icon: HomeFilled },
   ...(auth.hasPermission('site:homepage:edit') ? [{ key: 'site-manage', label: '主页内容', icon: Picture }] : []),
   ...(auth.hasPermission('iam:user:manage') ? [{ key: 'users', label: '用户管理', icon: User }] : []),
+  ...(auth.hasPermission('iam:department:manage') ? [{ key: 'departments', label: '部门管理', icon: OfficeBuilding }] : []),
+  ...(auth.hasPermission('warehouse:read') ? [{ key: 'warehouse', label: '仓储', icon: Box }] : []),
   ...(auth.hasPermission('iam:role:manage') ? [{ key: 'roles', label: '角色管理', icon: Avatar }] : []),
   ...(auth.hasPermission('system:config:manage') ? [{ key: 'system-config', label: '登录安全', icon: Setting }] : [])
 ])
