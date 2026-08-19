@@ -5,7 +5,7 @@
 > 更新日期：2026-08-16
 > 关联需求：[`requirements/V0_2_AI_WAREHOUSE.md`](../../requirements/V0_2_AI_WAREHOUSE.md)
 > 仓储基础设计：[`DEPARTMENT_WAREHOUSE_DESIGN.md`](DEPARTMENT_WAREHOUSE_DESIGN.md)
-> 当前阶段：架构已确认；生产实现须先完成PoC Gate并按角色路由
+> 当前阶段：架构已确认；IAM与仓储人工业务基础已实现，AI生产实现须先完成剩余PoC Gate并按角色路由
 > 本次变更：确认A+B产品交互与项目SSE事件契约；不代表确认具体Agent UI框架
 
 ## 1. 架构结论
@@ -377,6 +377,8 @@ AG-UI、CopilotKit和MCP Apps仅作为交互模式参考。只有出现第二前
 ## 10. 进入正式实现前的PoC Gate
 
 使用一个保留为真实纵向切片的PoC证明以下事项：
+
+其中部门树与仓储人工业务基础已经实现；下列清单继续作为AI纵向切片的完整验收边界，不把已完成基础误写为AI能力已经通过。
 
 1. Agent关闭且没有模型/知识配置时，现有SQLite模板正常启动；
 2. Agent启用时，独立知识PG与业务PG复用两条配置路径均确定，错误配置不会回退；

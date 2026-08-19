@@ -3,8 +3,8 @@
 > 状态：已确认
 > 版本：0.2
 > 适用模块：通用 AI 能力、IAM、仓储参考业务
-> 关联前端：`frontend/src/modules/` 下的 AI 通用交互与仓储业务资产；精确目录待实现设计确认
-> 关联后端：`module-agent`、`module-knowledge`、`module-ai-observability`、`module-warehouse`、仓储 Agent 适配模块；均待建立
+> 关联前端：仓储资产已建立于 `frontend/src/modules/warehouse/`；AI 通用交互待建立
+> 关联后端：`module-warehouse` 已建立；`module-agent`、`module-knowledge`、`module-ai-observability` 和仓储 Agent 适配模块待建立
 > 关联材料：[`docs/PROJECT_VISION.md`](../docs/PROJECT_VISION.md)、[`docs/architecture/AI_CAPABILITY_SYSTEM.md`](../docs/architecture/AI_CAPABILITY_SYSTEM.md)、[`docs/architecture/DEPARTMENT_WAREHOUSE_DESIGN.md`](../docs/architecture/DEPARTMENT_WAREHOUSE_DESIGN.md)、[`docs/frontend/WAREHOUSE_UI_DESIGN.md`](../docs/frontend/WAREHOUSE_UI_DESIGN.md)
 > 更新日期：2026-08-15
 
