@@ -3,6 +3,7 @@ package com.internaladmin.app.config;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 import javax.sql.DataSource;
 import java.io.IOException;
@@ -33,6 +34,7 @@ public class AppDataSourceConfig {
      * @return 数据源
      */
     @Bean
+    @Primary
     public DataSource dataSource(DataSourceProperties properties) {
         String url = properties.determineUrl();
         if (url.startsWith("jdbc:sqlite:")) {

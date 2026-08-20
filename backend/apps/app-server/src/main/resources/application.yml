@@ -29,6 +29,9 @@ server:
         secure: false
 
 app:
+  ai:
+    # Gate A 默认关闭；仅通过外部配置显式开启，不回退或自动创建 AI 基础设施。
+    enabled: false
   security:
     csrf-cookie:
       secure: false

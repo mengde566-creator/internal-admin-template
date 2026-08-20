@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <!-- A Liquibase-owned historical fixture; the production reservation changeSet is included unchanged. -->
+    <changeSet id="agent-concurrency-historical-fixture" author="test">
+        <createTable tableName="ai_conversation">
+            <column name="id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="user_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createTable tableName="ai_run">
+            <column name="run_id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="conversation_id" type="VARCHAR(36)"><constraints nullable="false"/></column>
+            <column name="user_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="client_request_id" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <column name="status" type="VARCHAR(24)"><constraints nullable="false"/></column>
+            <column name="error_code" type="VARCHAR(64)"/>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="completed_at" type="TIMESTAMP"/>
+        </createTable>
+        <createTable tableName="ai_message">
+            <column name="message_id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="conversation_id" type="VARCHAR(36)"><constraints nullable="false"/></column>
+            <column name="run_id" type="VARCHAR(36)"/>
+            <column name="role" type="VARCHAR(16)"><constraints nullable="false"/></column>
+            <column name="content" type="TEXT"><constraints nullable="false"/></column>
+            <column name="state" type="VARCHAR(24)"><constraints nullable="false"/></column>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+    </changeSet>
+    <include file="db/changelog/2026-08-20-0002-active-run-reservation.xml"/>
+</databaseChangeLog>

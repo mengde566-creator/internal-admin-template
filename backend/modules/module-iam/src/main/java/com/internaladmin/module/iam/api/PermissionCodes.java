@@ -44,6 +44,15 @@ public final class PermissionCodes {
     /** 仓储入库、出库、调拨和盘点权限。 */
     public static final String WAREHOUSE_INVENTORY_OPERATE = "warehouse:inventory:operate";
 
+    /** AI 知识固定样本导入与维护权限。 */
+    public static final String AI_KNOWLEDGE_MANAGE = "ai:knowledge:manage";
+
+    /** AI 运行观测查看权限（后续分片使用）。 */
+    public static final String AI_OBSERVABILITY_VIEW = "ai:observability:view";
+
+    /** AI 固定评测执行权限（后续分片使用）。 */
+    public static final String AI_EVALUATION_RUN = "ai:evaluation:run";
+
     /** 系统管理员角色初始拥有的全部权限编码。 */
     public static final String[] SYSTEM_ADMIN_PERMISSIONS = {
             USER_MANAGE,
@@ -55,7 +64,10 @@ public final class PermissionCodes {
             SYSTEM_CONFIG_MANAGE,
             WAREHOUSE_READ,
             WAREHOUSE_MASTER_MANAGE,
-            WAREHOUSE_INVENTORY_OPERATE
+            WAREHOUSE_INVENTORY_OPERATE,
+            AI_KNOWLEDGE_MANAGE,
+            AI_OBSERVABILITY_VIEW,
+            AI_EVALUATION_RUN
     };
 
     /** 全部已注册权限项（编码 → 说明），供前端权限选择器使用；顺序即展示顺序。 */
@@ -72,5 +84,8 @@ public final class PermissionCodes {
         REGISTERED_PERMISSIONS.put(WAREHOUSE_READ, "仓储查询");
         REGISTERED_PERMISSIONS.put(WAREHOUSE_MASTER_MANAGE, "仓储主数据管理");
         REGISTERED_PERMISSIONS.put(WAREHOUSE_INVENTORY_OPERATE, "仓储库存操作");
+        REGISTERED_PERMISSIONS.put(AI_KNOWLEDGE_MANAGE, "AI 知识管理");
+        REGISTERED_PERMISSIONS.put(AI_OBSERVABILITY_VIEW, "AI 观测查看");
+        REGISTERED_PERMISSIONS.put(AI_EVALUATION_RUN, "AI 评测执行");
     }
 }

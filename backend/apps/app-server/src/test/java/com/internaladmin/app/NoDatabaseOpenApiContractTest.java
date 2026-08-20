@@ -1,6 +1,8 @@
 package com.internaladmin.app;
 
 import com.internaladmin.app.config.OpenApiContractConfig;
+import com.internaladmin.module.agent.config.AgentConfiguration;
+import com.internaladmin.module.agent.controller.AiCapabilitiesController;
 import com.internaladmin.module.file.api.FileQueryApi;
 import com.internaladmin.module.file.controller.FileController;
 import com.internaladmin.module.file.service.FileStorageService;
@@ -85,6 +87,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         properties = {
                 "springdoc.api-docs.enabled=true",
                 "spring.liquibase.enabled=false",
+                "app.ai.enabled=false",
                 "app.storage-root=./build/no-database-contract-storage"
         })
 @AutoConfigureMockMvc
@@ -195,6 +198,26 @@ class NoDatabaseOpenApiContractTest {
         assertTrue(emptyResult.path("data").isNull(), "空成功响应的 data 必须是 JSON null");
     }
 
+    @Test
+    @DisplayName("Agent 关闭时能力发现仍受认证保护并返回空能力集合")
+    void capabilitiesEndpointIsProtectedAndDisabledWithoutDatabase() throws Exception {
+        mockMvc.perform(get("/api/ai/capabilities"))
+                .andExpect(status().isUnauthorized());
+
+        JsonNode response = objectMapper.readTree(mockMvc.perform(get("/api/ai/capabilities")
+                        .with(user("contract-user")))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+        assertTrue(response.path("data").path("enabled").isBoolean());
+        assertFalse(response.path("data").path("enabled").asBoolean());
+        assertTrue(response.path("data").path("availableAdapters").isArray());
+        assertTrue(response.path("data").path("availableAdapters").isEmpty());
+        assertTrue(response.path("data").path("uiModes").isEmpty());
+        assertTrue(response.path("data").path("features").isEmpty());
+    }
+
     /**
      * 机械验证数据库基础设施没有被装配。
      *
@@ -268,6 +291,8 @@ class NoDatabaseOpenApiContractTest {
     })
     @Import({
             OpenApiContractConfig.class,
+            AgentConfiguration.class,
+            AiCapabilitiesController.class,
             SecurityConfig.class,
             GlobalExceptionHandler.class,
             SecurityExceptionHandler.class,

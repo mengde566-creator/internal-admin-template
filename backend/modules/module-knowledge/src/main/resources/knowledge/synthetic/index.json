@@ -1,0 +1,30 @@
+[
+  {
+    "documentCode": "warehouse-rules",
+    "versionCode": "v0",
+    "title": "仓储操作规则（旧版）",
+    "status": "INACTIVE",
+    "resource": "knowledge/synthetic/warehouse-rules-v0.md"
+  },
+  {
+    "documentCode": "warehouse-rules",
+    "versionCode": "v1",
+    "title": "仓储操作规则",
+    "status": "ACTIVE",
+    "resource": "knowledge/synthetic/warehouse-rules-v1.md"
+  },
+  {
+    "documentCode": "item-codes",
+    "versionCode": "v1",
+    "title": "物品编码规则",
+    "status": "ACTIVE",
+    "resource": "knowledge/synthetic/item-codes-v1.md"
+  },
+  {
+    "documentCode": "warehouse-codes",
+    "versionCode": "v1",
+    "title": "仓库与库位编码规则",
+    "status": "ACTIVE",
+    "resource": "knowledge/synthetic/warehouse-codes-v1.md"
+  }
+]

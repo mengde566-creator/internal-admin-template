@@ -56,6 +56,26 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>com.internaladmin</groupId>
+            <artifactId>module-knowledge</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.internaladmin</groupId>
+            <artifactId>module-agent</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.internaladmin</groupId>
+            <artifactId>module-ai-observability</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.internaladmin</groupId>
+            <artifactId>module-agent-warehouse-adapter</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>

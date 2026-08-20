@@ -94,6 +94,7 @@ assert(typeof specification['x-generated-by'] === 'string'
   '规范缺少 springdoc 运行时生成标记。')
 
 const expectedPaths = [
+  '/api/ai/capabilities',
   '/api/auth/login',
   '/api/auth/logout',
   '/api/auth/me',

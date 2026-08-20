@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-08-20-0001-create-ai-knowledge-schema" author="template">
+        <sql dbms="postgresql">CREATE SCHEMA IF NOT EXISTS ai_knowledge</sql>
+        <sql dbms="postgresql">CREATE EXTENSION IF NOT EXISTS vector</sql>
+        <sql dbms="postgresql">CREATE EXTENSION IF NOT EXISTS hstore</sql>
+        <sql dbms="postgresql">CREATE EXTENSION IF NOT EXISTS &quot;uuid-ossp&quot;</sql>
+    </changeSet>
+
+    <changeSet id="2026-08-20-0002-create-ai-knowledge-tables" author="template">
+        <createTable schemaName="ai_knowledge" tableName="ai_knowledge_document">
+            <column name="id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="document_code" type="VARCHAR(120)"><constraints nullable="false" unique="true"/></column>
+            <column name="title" type="VARCHAR(240)"><constraints nullable="false"/></column>
+            <column name="synthetic" type="BOOLEAN"><constraints nullable="false"/></column>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="updated_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createTable schemaName="ai_knowledge" tableName="ai_knowledge_version">
+            <column name="id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="document_id" type="VARCHAR(36)"><constraints nullable="false"/></column>
+            <column name="version_code" type="VARCHAR(80)"><constraints nullable="false"/></column>
+            <column name="status" type="VARCHAR(16)"><constraints nullable="false"/></column>
+            <column name="content_hash" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <column name="embedding_model" type="VARCHAR(160)"><constraints nullable="false"/></column>
+            <column name="embedding_dimensions" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="indexed_at" type="TIMESTAMP"/>
+        </createTable>
+        <addUniqueConstraint schemaName="ai_knowledge" tableName="ai_knowledge_version"
+                             columnNames="document_id,version_code" constraintName="uk_ai_knowledge_version_code"/>
+        <sql dbms="postgresql">CREATE UNIQUE INDEX uk_ai_knowledge_active_version ON ai_knowledge.ai_knowledge_version(document_id) WHERE status = 'ACTIVE'</sql>
+        <createTable schemaName="ai_knowledge" tableName="ai_knowledge_vector">
+            <column name="id" type="UUID"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="content" type="TEXT"><constraints nullable="false"/></column>
+            <column name="metadata" type="JSONB"><constraints nullable="false"/></column>
+            <column name="embedding" type="vector(1024)"><constraints nullable="false"/></column>
+        </createTable>
+        <addForeignKeyConstraint baseTableSchemaName="ai_knowledge" baseTableName="ai_knowledge_version"
+                                 baseColumnNames="document_id" referencedTableSchemaName="ai_knowledge"
+                                 referencedTableName="ai_knowledge_document" referencedColumnNames="id"
+                                 constraintName="fk_ai_knowledge_version_document"/>
+        <createIndex schemaName="ai_knowledge" indexName="idx_ai_knowledge_vector_content" tableName="ai_knowledge_vector">
+            <column name="id"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>

@@ -2,11 +2,12 @@
 
 > 状态：已确认
 > 版本：0.2
-> 更新日期：2026-08-16
+> 更新日期：2026-08-20
 > 关联需求：[`requirements/V0_2_AI_WAREHOUSE.md`](../../requirements/V0_2_AI_WAREHOUSE.md)
 > 仓储基础设计：[`DEPARTMENT_WAREHOUSE_DESIGN.md`](DEPARTMENT_WAREHOUSE_DESIGN.md)
+> Agent设计入口：[`V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md`](../planning/V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md)（第一版场景、功能与模块分片已确认）
 > 当前阶段：架构已确认；IAM与仓储人工业务基础已实现，AI生产实现须先完成剩余PoC Gate并按角色路由
-> 本次变更：确认A+B产品交互与项目SSE事件契约；不代表确认具体Agent UI框架
+> 本次变更：研发前收敛Provider重试、DeepSeek思考续轮、Tool循环、知识事务与故障边界；不代表生产可行性Gate已通过
 
 ## 1. 架构结论
 
@@ -76,31 +77,35 @@ module-warehouse
 
 这些契约只暴露DTO，禁止暴露DO、Mapper、MyBatis分页对象和内部Service。
 
+应用保留一个不触发模型、知识连接或AI数据写入的受保护能力发现接口，只返回`enabled`和已登记交互能力，供前端决定是否展示Agent入口；Agent关闭时不注册对话与SSE入口。0.2新增权限仅为`ai:knowledge:manage`、`ai:observability:view`和`ai:evaluation:run`并默认授予SYSTEM_ADMIN；普通仓储Agent用户继续由登录态和`warehouse:read`决定，不额外引入`ai:agent:use`。
+
 ## 4. 后端技术组合
 
 ### 4.1 AI框架
 
-- 采用单一 Java AI 框架候选：Spring AI 2.0.x；
-- 使用 `ChatClient` 和框架默认工具调用循环，不重复注册同义Advisor；
+- 采用单一 Java AI 框架候选：Spring AI 2.0.0；
+- 使用 `ChatClient` 和恰好一个显式配置的`ToolCallingAdvisor`，关闭框架自动注册；一个位于循环内的窄Advisor只记录Model Iteration和执行单Run预算，不重复注册同义Tool Advisor，也不在首版手写完整循环；
 - 聊天供应商首选DeepSeek，使用Spring AI DeepSeek模型适配；
 - 聊天模型确定使用 `deepseek-v4-flash`；旧 `deepseek-chat`、`deepseek-reasoner` 别名不得进入新配置；
+- 锁定的Spring AI 2.0.0 DeepSeek适配器没有暴露`thinking`开关，因此首版不得伪称已关闭思考模式，也不得为此引入快照版本或自建Provider适配层；按DeepSeek V4默认思考模式执行首个真实Gate，`reasoning_content`只允许在同一Run的模型工具续轮中临时回传，禁止展示、写入History或Observability；若真实工具续轮失败，必须停止进入业务开发并重新审议适配方式；
 - 模型名称可能由供应商滚动更新，观测和评测必须记录实际配置、日期和版本指纹，不能把名称当不可变快照；
 - Embedding确定使用阿里云百炼`qwen3.7-text-embedding`，固定1024维；聊天与Embedding使用独立的模型配置和API凭据；
 - 通过百炼OpenAI兼容Embedding端点接入Spring AI的OpenAI Embedding实现，不引入第二套AI编排框架；
 - 模型或维度变更会产生不兼容的向量空间，必须新建索引版本并重新生成全部知识向量，禁止新旧向量混用；
 - 不同时引入LangChain4j、Spring AI Alibaba、ADK或Embabel。
 
+Spring AI与供应商客户端的内建隐藏重试必须关闭。项目层对每个模型或Embedding步骤在首次失败后最多自动重试2次，只有超时、限流、连接瞬断和明确5xx允许重试；配置、认证、参数、权限、Schema、业务拒绝、无数据和无证据不得重试。Tool已执行或前端已收到可见事件后，不得透明重跑整个Run。
+
 Embedding部署配置采用以下契约，具体workspace地址和密钥不进入模板默认值：
 
 ```text
-app.ai.embedding.provider = aliyun-bailian-openai-compatible
-app.ai.embedding.base-url = ${AI_EMBEDDING_BASE_URL}
-app.ai.embedding.api-key = ${AI_EMBEDDING_API_KEY}
-app.ai.embedding.model = qwen3.7-text-embedding
-app.ai.embedding.dimensions = 1024
+app.ai.embedding.qwen.base-url = ${APP_AI_EMBEDDING_QWEN_BASE_URL}
+app.ai.embedding.qwen.api-key = ${APP_AI_EMBEDDING_QWEN_API_KEY}
+app.ai.embedding.qwen.model = qwen3.7-text-embedding
+app.ai.embedding.qwen.dimensions = 1024
 ```
 
-当前部署提供的`openAiCompatible` HTTPS地址作为`AI_EMBEDDING_BASE_URL`；不使用HTTP `apiHost`，也不同时启用DashScope直连接口。workspace ID和workspace名称只属于部署识别信息，不作为模型请求参数。启动日志只允许记录provider、model、dimensions和脱敏后的host，不记录完整API Key。
+当前部署提供的`openAiCompatible` HTTPS地址作为`APP_AI_EMBEDDING_QWEN_BASE_URL`；不使用HTTP `apiHost`，也不同时启用DashScope直连接口。workspace已包含在兼容地址中，不建立第二个workspaceId配置，也不把workspace名称作为模型请求参数。启动日志只允许记录provider、model、dimensions和脱敏后的host，不记录完整API Key。
 
 ### 4.2 MVC与流式响应
 
@@ -166,7 +171,7 @@ else:
 
 禁止捕获失败后返回空知识结果或切换数据库。
 
-知识配置、连接、扩展或迁移在启动阶段失败时，Agent启用模式必须启动失败。启动成功后的运行期知识PG故障采用已确认的可见降级：知识问答返回“知识库不可用”，禁止无引用回答或把故障当零命中；仓储实时只读工具继续可用。健康状态标记降级，连接恢复并通过健康检查后恢复知识问答。
+知识配置、连接、扩展或迁移在启动阶段失败时，Agent启用模式必须启动失败。启动成功后，独立知识DataSource、Embedding或检索链路故障采用可见降级：知识问答返回“知识库不可用”，禁止无引用回答或把故障当零命中；仓储实时只读工具继续可用。若知识结构复用业务PostgreSQL且数据库整体不可用，则人工仓储与Agent事实查询都会失败，必须按业务主库故障处理，不能伪装成仅知识降级。
 
 ### 5.4 部门树与仓储归属
 
