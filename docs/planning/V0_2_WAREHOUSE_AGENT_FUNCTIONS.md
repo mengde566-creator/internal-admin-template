@@ -336,7 +336,7 @@ SCN-RU-01。
 
 不可任意配置：权限规则、工具白名单、澄清语义、Task状态、业务结果、卡片字段、routeKey和安全不变量。
 
-DeepSeek首版固定使用`deepseek-v4-flash`。锁定的Spring AI 2.0.0适配器不能显式关闭V4默认思考模式，因此`reasoning_content`只允许在同一Run的模型工具续轮中临时回传，禁止展示、写入History或Observability，也不作为运行时用户参数。真实流式Tool续轮未通过Gate前，不进入仓储Agent业务功能开发；失败后不得擅自升级快照依赖或增加自建Provider适配层。
+DeepSeek首版固定使用`deepseek-v4-flash`。锁定的Spring AI 2.0.0适配器不能显式关闭V4默认思考模式，因此`reasoning_content`只允许在同一Run的模型工具续轮中临时回传，禁止展示、写入History或Observability，也不作为运行时用户参数。SLICE-00 Gate B已通过真实流式Tool续轮验收；后续分片复用该基线，不得在没有回归证据时重开Provider协议改造，也不得升级快照依赖或增加自建Provider适配层。
 
 模型与Tool总预算数值必须通过真实场景PoC采样后确认；任务复杂度不能由模型自由声明后自动扩大权限或预算。
 

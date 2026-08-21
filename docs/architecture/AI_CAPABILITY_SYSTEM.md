@@ -212,7 +212,7 @@ History按消息创建时间保留180天且只对会话所有者可见。用户�
 
 A+B已经确认为同一条产品交互主路径：常驻业务侧栏可以收为轻量对话框，用户能够一边查看主页面，一边查询、复制并打开人工页面。该确认同时固定本节的项目事件语义，但**不代表确认AG-UI、CopilotKit、MCP Apps或其运行时**。
 
-首版继续采用现有Vue 3、TypeScript、Element Plus、Pinia、Vue Router和语义令牌，以受保护的POST `fetch`和标准SSE表达事件，不引入第二前端应用或Node Agent Runtime。SSE解析采用轻量依赖还是项目最小实现，仍由后续PoC依据UTF-8跨chunk、SSE跨chunk、CRLF、多行`data`、Abort和唯一终态验证后决定；不得因为产品契约已确认而把候选库写成已选技术。
+首版继续采用现有Vue 3、TypeScript、Element Plus、Pinia、Vue Router和语义令牌，以受保护的POST `fetch`和标准SSE表达事件，不引入第二前端应用或Node Agent Runtime。SLICE-01采用项目内最小SSE解析器，不新增前端AI运行时；解析器必须用确定性测试覆盖UTF-8跨chunk、SSE跨chunk、CRLF、多行`data`、Abort、顺序去重和唯一终态，正式验收仍通过真实Provider与真实页面入口完成。
 
 ### 7.2 容器状态
 

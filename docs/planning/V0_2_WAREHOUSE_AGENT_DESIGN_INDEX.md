@@ -37,7 +37,7 @@ MOD-* 模块责任与公开契约
 | 分片 | 研发目标 | 功能范围 | 模块范围 | 核心场景 | 完成后总设计师只验收 |
 | --- | --- | --- | --- | --- | --- |
 | `SLICE-00` | Agent启用、Provider与纵向技术Gate | FUN-00；其他功能只验证最小机制 | MOD-AGENT、MOD-KNOWLEDGE、MOD-OBSERVABILITY、MOD-ADAPTER、既有Warehouse/IAM API | SCN-CFG-*、SCN-K-01/02 | Gate A、Gate B均已通过：装配、模型、Embedding、知识库、SSE身份、只读Tool与最小观测链完成 |
-| `SLICE-01` | Conversation、Task与澄清闭环 | FUN-01、FUN-02 | MOD-AGENT | SCN-RP-01～07、SCN-I-03/04 | 多轮状态和澄清体验 |
+| `SLICE-01` | Conversation、Task、澄清与A+B最小可见入口 | FUN-01、FUN-02 | MOD-AGENT、现有Vue SPA | SCN-RP-01～07、SCN-I-03/04 | 仓储页面可展开或折叠Agent，并通过真实模型完成至少三轮澄清；宽屏DOCKED/COMPACT与窄屏DRAWER共用同一Conversation |
 | `SLICE-02` | 仓储只读Tool与结果卡 | FUN-03、FUN-04 | MOD-AGENT、MOD-ADAPTER、既有Warehouse/IAM API | SCN-N-01～03、SCN-D-01/02、SCN-B-01 | 事实、权限和卡片时效 |
 | `SLICE-03` | 异常输入与安全边界 | FUN-05 | MOD-AGENT、MOD-ADAPTER | SCN-I-01/02/05/06、SCN-AU-*、SCN-S-*、SCN-O-*、SCN-B-02 | 确定性拒绝、澄清和零越权 |
 | `SLICE-04` | 合成Knowledge与混合查询 | FUN-06 | MOD-KNOWLEDGE、MOD-AGENT | SCN-K-01～03、SCN-N-04、SCN-E-01/03 | 幂等导入、引用、零证据和可见降级 |
@@ -46,7 +46,26 @@ MOD-* 模块责任与公开契约
 
 前一分片未通过，不把其缺陷留给后续分片兜底。实现可以复用已确认的上一分片资产，但不得提前建设后续分片能力。
 
-### 4.1 已确认需求覆盖
+### 4.1 分片落地约束
+
+- SLICE-00是仅用于证明技术纵链的例外节点，完成时没有用户可见入口；从SLICE-01起，每个产品分片都必须交付至少一条页面可见、可操作、可真实验收的用户链路。
+- 开发前一次性冻结本分片的功能、场景、页面、API、持久化和观测验收项；复核只处理与已确认契约冲突或阻塞主链的问题，不在实现后逐项追加理想能力。
+- fake、mock和本地桩只用于确定性机制、异常分支和回归测试；纵向链达到可运行状态后，最终验收使用一次有预算的正式Provider调用，定位到明确实现缺陷后最多再复验一次。
+- 正式Provider调用不是浪费；无目标的重复调用、压力测试和为了修复fake自身协议而反复消耗时间才是浪费。任何验证路径连续两次未增加主链证据时立即止损并改用最近的真实入口。
+- 当前风险已被最低成本证据证明后即停止加码，不追求重复截图、重复抓包或多套等价证明。
+- SLICE-01前必须补齐启用态POST Run接口的OpenAPI和前端类型契约；不得让前端根据后端实现猜请求或SSE结构。
+- 每个分片收口必须明确列出“用户现在能看到和完成什么”以及“仍未包含什么”，避免把后端成功误报为产品功能已经落地。
+
+### 4.2 SLICE-01交付边界
+
+- 前端只在Agent已启用、`warehouse`适配可用且当前用户具有仓储查询权限时显示入口；关闭态不显示空壳按钮。
+- 宽屏交付DOCKED和COMPACT，窄屏交付DRAWER；三种形态复用同一Conversation、History、输入草稿和运行状态，折叠或切换仓储页面不取消Run。
+- 用户可以新建或选择本人Conversation、查看本人History、发送消息，并看到`run.started`、文本增量和唯一终态；网络或模型失败必须显示明确状态，不能显示成空回答。
+- Task至少支持连续三轮补充、纠正和重新澄清；本分片验收Task与Memory是否正确，不要求提前完成SLICE-02的四个仓储Tool和完整业务卡片集。
+- 允许把SLICE-00已有的单个库存Tool及`stock-summary`卡作为真实纵链回归和页面展示，不据此扩展其他Tool、复制、人工路由或知识引用能力。
+- 本分片不实现异常输入全集、Knowledge问答、反馈、观测管理页和完整History管理页；它们仍分别归SLICE-03、SLICE-04和SLICE-05。
+
+### 4.3 已确认需求覆盖
 
 | 已确认需求 | 落地分片 |
 | --- | --- |

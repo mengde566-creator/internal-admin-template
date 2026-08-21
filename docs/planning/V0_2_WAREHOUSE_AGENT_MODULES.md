@@ -22,6 +22,8 @@ app-server
 
 前三个AI模块和仓储适配只在Agent启用时装配。Agent关闭时不解析模型与知识配置、不连接知识PG，也不影响现有人工仓储页面。
 
+前端不是新的后端模块：A+B入口继续放在现有Vue SPA的仓储业务界面内，通过能力发现接口决定是否展示，只消费MOD-AGENT公开HTTP/SSE契约。Conversation、Task、权限、卡片可信状态和终态均以后端为准，前端不得维护第二套事实。
+
 ## 2. MOD-AGENT：对话与运行核心
 
 ### 拥有
@@ -258,6 +260,17 @@ features[] = CHAT | STREAM | BUSINESS_CARD | COPY | OPEN_ROUTE
 
 Agent关闭时返回`enabled=false`且数组为空；开启时`availableAdapters`只返回当前用户有权使用的适配，例如用户具有`warehouse:read`时返回`warehouse`。接口不创建Conversation、不连接模型和知识库，不返回Provider、模型、Base URL、密钥或内部权限码。对话与SSE入口只在Agent开启时注册。
 
+### SLICE-01最小HTTP契约
+
+| 方法与路径 | 用途 | 最小返回与约束 |
+| --- | --- | --- |
+| `POST /api/ai/conversations` | 首次发送或用户明确新建对话时创建 | 返回`conversationId`、状态和创建时间；只归当前用户，不因展开侧栏自动创建空对话 |
+| `GET /api/ai/conversations?page&size` | 在侧栏选择本人历史对话 | 只返回当前用户的有界分页摘要，按最后活动时间倒序；不提供跨用户查询 |
+| `GET /api/ai/conversations/{conversationId}/messages?page&size` | 加载所选对话History | 按稳定消息顺序返回`messageId`、`runId`、角色、状态、正文和时间；每次校验Conversation归属 |
+| `POST /api/ai/conversations/{conversationId}/runs` | 提交一轮消息并返回SSE | 使用下述请求字段和统一SSE信封；Session、CSRF、Conversation归属和`clientRequestId`幂等均由服务端校验 |
+
+上述四个接口必须通过真实Springdoc进入OpenAPI并生成前端类型后，才能开始页面联调。SLICE-01不增加对话删除、重命名、共享、导出和独立History管理页；Task不开放浏览器任意修改接口，普通文本和`clarificationSelection`都通过Run入口推进。
+
 ### 用户可提交
 
 ```text
@@ -267,6 +280,8 @@ text
 pageContext? = pageRouteKey + entityType + entityId
 clarificationSelection? = clarificationId + optionToken
 ```
+
+正式Run请求字段统一使用`text`。SLICE-00 Gate B Controller中的`message`只属于技术Gate临时实现，SLICE-01生成OpenAPI时直接改为`text`，不同时保留两个字段或增加兼容别名。
 
 ### 仅服务端生成
 
@@ -292,9 +307,9 @@ requestStartedAt
 
 | 数据 | 所有模块 | 主库/知识库 | 关键生命周期 |
 | --- | --- | --- | --- |
-| Conversation、Message、Memory Segment、Task | module-agent | 业务主库 | History 180天；Memory按TTL |
+| Conversation、Message、Memory Segment、Task、Run | module-agent | 业务主库 | History 180天；Memory按TTL；Run按Conversation幂等和互斥 |
 | 文档、版本、片段、Embedding和索引 | module-knowledge | 知识PostgreSQL/pgvector | 版本与生效状态控制 |
-| Run、Step | module-ai-observability | 业务主库 | 90天 |
+| Observation Run、Step、Attempt | module-ai-observability | 业务主库 | 90天 |
 | Feedback、Evaluation | module-ai-observability | 业务主库 | 180天 |
 | 仓储事实 | module-warehouse | 业务主库 | 按仓储既有合同 |
 | 用户、部门和权限 | module-iam | 业务主库 | 按IAM既有合同 |
@@ -305,13 +320,17 @@ requestStartedAt
 
 业务主库中的AI表必须继续使用四库可移植类型；扩展详情使用有大小上限的TEXT，核心筛选字段必须独立成列。知识库固定使用PostgreSQL和`vector(1024)`。
 
+下表是各分片完成后的目标合同。SLICE-00已创建的`ai_conversation`、`ai_run`和`ai_message`是现行事实；SLICE-01所需的新字段和`ai_task`必须通过后续Liquibase变更集增加，禁止修改已执行的SLICE-00变更集或另建`agent_*`平行表。
+
 | 表 | 关键字段 | 关键约束 |
 | --- | --- | --- |
-| `agent_conversation` | id、owner_user_id、status、active_memory_segment_no、active_run_id、last_memory_activity_at、version、created_at、updated_at | owner与更新时间索引；通过version CAS占用/释放active_run_id，保证同一Conversation只有一个活动Run |
-| `agent_message` | id、conversation_id、run_id、sequence_no、role、status、content、scope_fingerprint、created_at | conversation_id+sequence_no唯一；同一run的角色消息不得重复；仅COMPLETE助手消息进入Memory |
-| `agent_task` | id、conversation_id、memory_segment_no、intent_type、status、confirmed_slots_text、missing_fields_text、revision、scope_fingerprint、expires_at | 每个Segment最多一个活动Task；revision防过期选择 |
-| `ai_observation_run` | run_id、task_id、conversation_id、memory_segment_no、client_request_id、retry_of_run_id、user_message_id、assistant_message_id、user_id、scope_fingerprint、status、outcome、provider、model、started_at、first_event_at、finished_at、error_source、error_code | run_id唯一；user_id+conversation_id+client_request_id唯一；终态只能成功写入一次 |
-| `ai_observation_step` | step_id、run_id、parent_step_id、sequence、type、name、iteration_no、attempt_no、status、started_at、finished_at、token字段、error字段 | run_id+sequence唯一；step终态幂等 |
+| `ai_conversation` | id、user_id、active_memory_segment_no、active_run_id、last_memory_activity_at、created_at、updated_at | user_id与最后活动时间索引；通过`active_run_id IS NULL`条件更新占用，保证同一Conversation只有一个活动Run |
+| `ai_message` | message_id、conversation_id、run_id、sequence_no、role、state、content、scope_fingerprint、created_at | conversation_id+sequence_no唯一；同一run的角色消息不得重复；仅COMPLETE助手消息进入Memory |
+| `ai_run` | run_id、conversation_id、user_id、client_request_id、memory_segment_no、task_id、status、error_code、created_at、completed_at | conversation_id+client_request_id唯一；终态条件更新只允许首个合法终态生效 |
+| `ai_task` | task_id、conversation_id、memory_segment_no、intent_type、status、confirmed_slots_text、missing_fields_text、revision、scope_fingerprint、expires_at | 每个Segment最多一个活动Task；revision防过期选择 |
+| `ai_observation_run` | run_id、task_id、conversation_id、memory_segment_no、client_request_id、retry_of_run_id、user_message_id、assistant_message_id、user_id、scope_fingerprint、status、outcome、provider、model、started_at、first_event_at、completed_at、error_source、error_code | run_id唯一；user_id+conversation_id+client_request_id唯一；终态只能成功写入一次 |
+| `ai_observation_step` | step_id、run_id、parent_step_id、sequence_no、step_type、name、iteration_no、status、started_at、completed_at、duration_ms、token字段、error字段 | run_id+sequence_no唯一；step终态幂等 |
+| `ai_observation_attempt` | attempt_id、step_id、attempt_no、status、duration_ms、error_code、created_at | step_id+attempt_no唯一；一次外部传输尝试只记录一个终态 |
 | `ai_online_feedback` | id、run_id、assistant_message_id、conversation_id、user_id、rating、reason、comment、created_at、updated_at | user_id+assistant_message_id唯一；只能评价本人完整消息 |
 | `ai_evaluation_run` | id、dataset_code、dataset_version、provider、model、configuration_fingerprint、status、started_at、finished_at、aggregate_metrics_text | 一次评测固定所有版本指纹 |
 | `ai_evaluation_case_result` | id、evaluation_run_id、case_code、status、deterministic_pass、judge_score、failure_reason_code、run_id | evaluation_run_id+case_code唯一 |
@@ -319,7 +338,7 @@ requestStartedAt
 | `ai_knowledge_version` | id、document_id、version_code、status、content_hash、embedding_model、embedding_dimensions、indexed_at | document_id+version_code唯一；PostgreSQL部分唯一索引保证同文档最多一个ACTIVE版本 |
 | `ai_knowledge_vector` | id(UUID)、content、metadata(JSON)、embedding | 结构兼容PgVectorStore；id主键；embedding为vector(1024)；metadata只含documentId、versionId、documentCode、versionCode、chunkNo、contentHash、synthetic，不重复保存生效状态 |
 
-History正文只存在`agent_message`；Observation通过逻辑ID关联，不复制正文。`client_request_id`只在当前用户与Conversation范围内去重，重复请求返回既有Run状态，不再次调用模型或Tool；`retry_of_run_id`只表达用户主动重试关系。`active_run_id`只是跨模块逻辑标识，不建立表外键。知识正文只存在知识库版本资源和`ai_knowledge_vector.content`；Observation只保存文档、版本和向量片段ID。`ai_knowledge_version.status`是生效状态唯一事实源；检索先解析当前生效versionId集合，再以metadata过滤向量，禁止依赖可能漂移的向量状态副本。`ai_knowledge_vector`由PgVectorStore使用，文档与版本表负责来源、状态和幂等判断，禁止另建第二张重复向量表。
+History正文只存在`ai_message`；Observation通过逻辑ID关联，不复制正文。`client_request_id`只在当前用户与Conversation范围内去重，重复请求返回既有Run状态，不再次调用模型或Tool；`retry_of_run_id`只表达用户主动重试关系。`active_run_id`只是跨模块逻辑标识，不建立表外键。知识正文只存在知识库版本资源和`ai_knowledge_vector.content`；Observation只保存文档、版本和向量片段ID。`ai_knowledge_version.status`是生效状态唯一事实源；检索先解析当前生效versionId集合，再以metadata过滤向量，禁止依赖可能漂移的向量状态副本。`ai_knowledge_vector`由PgVectorStore使用，文档与版本表负责来源、状态和幂等判断，禁止另建第二张重复向量表。
 
 ## 11. 配置合同
 
