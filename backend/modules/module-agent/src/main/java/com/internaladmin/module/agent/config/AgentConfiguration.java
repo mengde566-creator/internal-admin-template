@@ -13,7 +13,7 @@ import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.core.retry.RetryPolicy;
 import org.springframework.core.retry.RetryTemplate;
 
-/** Gate A Agent configuration; provider beans are absent while the feature is disabled. */
+/** Agent configuration; provider beans are absent while the feature is disabled. */
 @Configuration
 @EnableConfigurationProperties(AiProperties.class)
 public class AgentConfiguration {

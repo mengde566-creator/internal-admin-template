@@ -94,6 +94,19 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void blankOrOverlongTextIsRejectedBeforePersistence() {
+        AgentStore store = mock(AgentStore.class);
+        AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
+                mock(AiObservationRecorder.class));
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ));
+
+        assertThrows(RuntimeException.class, () -> service.start("c-1", "client-1", "   ", actor));
+        assertThrows(RuntimeException.class, () -> service.start("c-1", "client-2", "x".repeat(4001), actor));
+        verifyNoInteractions(store);
+    }
+
+    @Test
     void streamedToolContinuationRestoresTransientDeepSeekReasoningOnly() {
         AssistantMessage aggregated = AssistantMessage.builder()
                 .content("")

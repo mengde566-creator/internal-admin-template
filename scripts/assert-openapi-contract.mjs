@@ -95,6 +95,9 @@ assert(typeof specification['x-generated-by'] === 'string'
 
 const expectedPaths = [
   '/api/ai/capabilities',
+  '/api/ai/conversations',
+  '/api/ai/conversations/{conversationId}/messages',
+  '/api/ai/conversations/{conversationId}/runs',
   '/api/auth/login',
   '/api/auth/logout',
   '/api/auth/me',
@@ -142,6 +145,61 @@ const expectedPaths = [
 
 deepStrictEqual(Object.keys(specification.paths ?? {}).sort(), expectedPaths.slice().sort(),
   'OpenAPI 路径集合必须与全部 0.1 Controller 路径完全一致。')
+
+function operation(path, method) {
+  const value = specification.paths?.[path]?.[method]
+  assert(value, `${method.toUpperCase()} ${path} 缺少 HTTP 方法定义`)
+  return value
+}
+
+function methods(path) {
+  return Object.keys(specification.paths?.[path] ?? {})
+    .filter((method) => ['get', 'post', 'put', 'patch', 'delete'].includes(method))
+    .sort()
+}
+
+operation('/api/ai/conversations', 'post')
+const conversationPage = operation('/api/ai/conversations', 'get')
+const messagePage = operation('/api/ai/conversations/{conversationId}/messages', 'get')
+operation('/api/ai/conversations/{conversationId}/runs', 'post')
+deepStrictEqual(methods('/api/ai/conversations'), ['get', 'post'],
+  'Conversation 路径必须同时且仅暴露 GET 列表与 POST 创建')
+deepStrictEqual(methods('/api/ai/conversations/{conversationId}/messages'), ['get'],
+  'History 路径必须仅暴露 GET')
+deepStrictEqual(methods('/api/ai/conversations/{conversationId}/runs'), ['post'],
+  'Run 路径必须仅暴露 POST')
+
+const runRequest = requestSchema('/api/ai/conversations/{conversationId}/runs', 'post')
+deepStrictEqual(Object.keys(runRequest.properties ?? {}).sort(), ['clientRequestId', 'text'],
+  'RunRequest 只能包含 clientRequestId 与 text')
+deepStrictEqual((runRequest.required ?? []).slice().sort(), ['clientRequestId', 'text'],
+  'RunRequest 必须同时要求 clientRequestId 与 text')
+assert(!runRequest.properties?.message, 'RunRequest 不得保留 message 兼容字段')
+
+const conversationData = concreteSchema(property(responseSchema('/api/ai/conversations', 'post'), 'data',
+  'POST /api/ai/conversations 响应'))
+assert(property(conversationData, 'conversationId', 'ConversationDTO').type === 'string',
+  'ConversationDTO.conversationId 必须是 string')
+assert(!conversationData.properties?.status, 'ConversationDTO 不得伪造不存在的 status 字段')
+
+for (const [path, operationValue, schemaName] of [
+  ['/api/ai/conversations', conversationPage, 'ConversationPageDTO'],
+  ['/api/ai/conversations/{conversationId}/messages', messagePage, 'MessagePageDTO']
+]) {
+  const response = concreteSchema(dereference(operationValue.responses?.['200']?.content?.['application/json']?.schema))
+  const data = concreteSchema(property(response, 'data', `${schemaName} 响应`))
+  for (const field of ['records', 'total', 'page', 'size']) {
+    assert(data.properties?.[field], `${schemaName} 缺少 ${field} 分页字段`)
+  }
+}
+
+const messagePageResponse = responseSchema('/api/ai/conversations/{conversationId}/messages', 'get')
+const messagePageData = concreteSchema(property(messagePageResponse, 'data', 'MessagePageDTO 响应'))
+const message = dereference(messagePageData.properties?.records?.items)
+assert(message, 'MessagePageDTO.records 必须包含 MessageDTO')
+for (const idField of ['messageId', 'runId']) {
+  assert(property(message, idField, 'MessageDTO').type === 'string', `MessageDTO.${idField} 必须是 string`)
+}
 
 assertCreateId('/api/users')
 assertCreateId('/api/roles')

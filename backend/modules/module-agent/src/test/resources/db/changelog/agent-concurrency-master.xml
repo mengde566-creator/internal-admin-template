@@ -28,6 +28,20 @@
             <column name="state" type="VARCHAR(24)"><constraints nullable="false"/></column>
             <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
         </createTable>
+        <insert tableName="ai_conversation">
+            <column name="id" value="legacy-conversation"/>
+            <column name="user_id" valueNumeric="99"/>
+            <column name="created_at" valueDate="2026-08-20T00:00:00"/>
+        </insert>
+        <insert tableName="ai_message">
+            <column name="message_id" value="legacy-message"/>
+            <column name="conversation_id" value="legacy-conversation"/>
+            <column name="role" value="USER"/>
+            <column name="content" value="历史消息"/>
+            <column name="state" value="COMPLETE"/>
+            <column name="created_at" valueDate="2026-08-20T00:00:01"/>
+        </insert>
     </changeSet>
     <include file="db/changelog/2026-08-20-0002-active-run-reservation.xml"/>
+    <include file="db/changelog/2026-08-21-0001-conversation-history-contract.xml"/>
 </databaseChangeLog>

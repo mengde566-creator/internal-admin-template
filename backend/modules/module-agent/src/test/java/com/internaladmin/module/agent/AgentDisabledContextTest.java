@@ -2,6 +2,7 @@ package com.internaladmin.module.agent;
 
 import com.internaladmin.module.agent.config.AgentConfiguration;
 import com.internaladmin.module.agent.controller.AiCapabilitiesController;
+import com.internaladmin.module.agent.controller.AgentConversationController;
 import com.internaladmin.module.knowledge.config.KnowledgeConfiguration;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
@@ -26,6 +27,7 @@ class AgentDisabledContextTest {
     void disabledModeHasCapabilitiesControllerButNoProviderOrKnowledgeBeans() {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(AiCapabilitiesController.class);
+            assertThat(context).doesNotHaveBean(AgentConversationController.class);
             assertThat(context).doesNotHaveBean(DeepSeekChatModel.class);
             assertThat(context).doesNotHaveBean(EmbeddingModel.class);
             assertThat(context).doesNotHaveBean(VectorStore.class);

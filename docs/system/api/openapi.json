@@ -48,6 +48,48 @@
         },
         "type": "object"
       },
+      "ApiResponseConversationDTO": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversationDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ApiResponseConversationPageDTO": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversationPageDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ApiResponseCurrentUserDTO": {
         "properties": {
           "code": {
@@ -246,6 +288,27 @@
         },
         "type": "object"
       },
+      "ApiResponseMessagePageDTO": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MessagePageDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ApiResponseObject": {
         "properties": {
           "code": {
@@ -353,6 +416,45 @@
           "newPassword",
           "oldPassword"
         ],
+        "type": "object"
+      },
+      "ConversationDTO": {
+        "properties": {
+          "conversationId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ConversationPageDTO": {
+        "properties": {
+          "page": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationDTO"
+            },
+            "type": "array"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
         "type": "object"
       },
       "CreateDepartmentDTO": {
@@ -896,6 +998,53 @@
         },
         "type": "object"
       },
+      "MessageDTO": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "MessagePageDTO": {
+        "properties": {
+          "page": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/MessageDTO"
+            },
+            "type": "array"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "OrderItem": {
         "properties": {
           "asc": {
@@ -990,6 +1139,34 @@
               "type": "string"
             },
             "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "RunRequest": {
+        "properties": {
+          "clientRequestId": {
+            "maxLength": 128,
+            "minLength": 0,
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 4000,
+            "minLength": 0,
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientRequestId",
+          "text"
+        ],
+        "type": "object"
+      },
+      "SseEmitter": {
+        "properties": {
+          "timeout": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -1294,6 +1471,156 @@
         },
         "tags": [
           "ai-capabilities-controller"
+        ]
+      }
+    },
+    "/api/ai/conversations": {
+      "get": {
+        "operationId": "page_1",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseConversationPageDTO"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "agent-conversation-controller"
+        ]
+      },
+      "post": {
+        "operationId": "create_3",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseConversationDTO"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "agent-conversation-controller"
+        ]
+      }
+    },
+    "/api/ai/conversations/{conversationId}/messages": {
+      "get": {
+        "operationId": "messages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseMessagePageDTO"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "agent-conversation-controller"
+        ]
+      }
+    },
+    "/api/ai/conversations/{conversationId}/runs": {
+      "post": {
+        "operationId": "run",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/SseEmitter"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "agent-conversation-controller"
         ]
       }
     },

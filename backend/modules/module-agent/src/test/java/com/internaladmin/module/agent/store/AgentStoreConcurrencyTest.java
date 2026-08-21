@@ -31,15 +31,15 @@ class AgentStoreConcurrencyTest {
         runLiquibase(dataSource);
         AgentStore first = new AgentStore(new JdbcTemplate(dataSource));
         AgentStore second = new AgentStore(new JdbcTemplate(dataSource));
-        first.ensureConversation("gate-b-concurrency", 7L);
+        String conversationId = first.createConversation(7L).conversationId();
 
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch go = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(2);
         try {
             List<Future<Object>> futures = List.of(
-                    submit(executor, first, "client-a", ready, go),
-                    submit(executor, second, "client-b", ready, go));
+                    submit(executor, first, conversationId, "client-a", ready, go),
+                    submit(executor, second, conversationId, "client-b", ready, go));
             ready.await();
             go.countDown();
             List<Object> outcomes = new ArrayList<>();
@@ -68,8 +68,8 @@ class AgentStoreConcurrencyTest {
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
         AgentStore first = new AgentStore(jdbc);
         AgentStore second = new AgentStore(jdbc);
-        first.ensureConversation("gate-b-terminal-race", 7L);
-        AgentStore.StartRun run = first.startRun("gate-b-terminal-race", "client-terminal", "库存", 7L);
+        String conversationId = first.createConversation(7L).conversationId();
+        AgentStore.StartRun run = first.startRun(conversationId, "client-terminal", "库存", 7L);
 
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch go = new CountDownLatch(1);
@@ -98,13 +98,13 @@ class AgentStoreConcurrencyTest {
         });
     }
 
-    private Future<Object> submit(ExecutorService executor, AgentStore store, String client,
+    private Future<Object> submit(ExecutorService executor, AgentStore store, String conversationId, String client,
                                   CountDownLatch ready, CountDownLatch go) {
         return executor.submit(() -> {
             ready.countDown();
             go.await();
             try {
-                return store.startRun("gate-b-concurrency", client, "库存", 7L);
+                return store.startRun(conversationId, client, "库存", 7L);
             }
             catch (com.internaladmin.platform.kernel.error.BusinessException exception) {
                 return new BusinessExceptionMarker(exception.getErrorCode().name());

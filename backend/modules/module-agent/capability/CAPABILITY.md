@@ -4,6 +4,8 @@
 
 SLICE-00 已通过 Gate A、Gate B，提供 Agent 默认关闭、DeepSeek 纵向链、一个仓储只读 Tool、Session+CSRF SSE、History、运行终态/有界重试和最小观测。多轮 Task、完整 Tool 集合、前端入口和管理页仍未实现。
 
+SLICE-01 第一开发块已落地服务端 Conversation/History 契约：Conversation ID 由服务端生成，提供本人有界分页与稳定顺序 History，Run 请求正式使用 `text`，运行必须引用已存在且归属当前用户的 Conversation，不再懒创建。Task、澄清、多轮 Memory 和 Vue 入口仍未实现。
+
 ## 2. 特有约束
 
 - Agent 默认关闭；关闭时不创建 ChatModel、EmbeddingModel、知识数据源或对话入口。
@@ -12,7 +14,7 @@ SLICE-00 已通过 Gate A、Gate B，提供 Agent 默认关闭、DeepSeek 纵向
 
 ## 3. 公开与跨模块契约
 
-`GET /api/ai/capabilities` 只返回 `enabled`、`availableAdapters`、`uiModes`、`features`；关闭时四项分别为 `false` 和空数组。接口需要已认证 Session，不返回 Provider、模型、地址、密钥或权限集合。
+`GET /api/ai/capabilities` 只返回 `enabled`、`availableAdapters`、`uiModes`、`features`；关闭时 `enabled=false` 且其余字段为空数组，开启后仅对具有 `warehouse:read` 的当前 Session 返回 `warehouse`、三种 UI 模式和本阶段已实现特性，其余已认证用户的能力数组为空。不返回 Provider、模型、地址、密钥或权限集合。
 
 ## 4. 数据所有权
 

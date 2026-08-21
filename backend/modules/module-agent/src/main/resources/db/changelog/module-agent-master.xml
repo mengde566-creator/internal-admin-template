@@ -6,4 +6,5 @@
     <include file="db/changelog/2026-08-20-0001-create-ai-observation.xml"/>
     <include file="db/changelog/2026-08-20-0002-ai-observation-run-step-attempt.xml"/>
     <include file="db/changelog/2026-08-20-0002-active-run-reservation.xml"/>
+    <include file="db/changelog/2026-08-21-0001-conversation-history-contract.xml"/>
 </databaseChangeLog>

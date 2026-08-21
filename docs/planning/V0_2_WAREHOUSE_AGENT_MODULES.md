@@ -264,10 +264,12 @@ Agent关闭时返回`enabled=false`且数组为空；开启时`availableAdapters
 
 | 方法与路径 | 用途 | 最小返回与约束 |
 | --- | --- | --- |
-| `POST /api/ai/conversations` | 首次发送或用户明确新建对话时创建 | 返回`conversationId`、状态和创建时间；只归当前用户，不因展开侧栏自动创建空对话 |
+| `POST /api/ai/conversations` | 首次发送或用户明确新建对话时创建 | 返回`conversationId`、`createdAt`、`updatedAt`；只归当前用户，不因展开侧栏自动创建空对话 |
 | `GET /api/ai/conversations?page&size` | 在侧栏选择本人历史对话 | 只返回当前用户的有界分页摘要，按最后活动时间倒序；不提供跨用户查询 |
 | `GET /api/ai/conversations/{conversationId}/messages?page&size` | 加载所选对话History | 按稳定消息顺序返回`messageId`、`runId`、角色、状态、正文和时间；每次校验Conversation归属 |
 | `POST /api/ai/conversations/{conversationId}/runs` | 提交一轮消息并返回SSE | 使用下述请求字段和统一SSE信封；Session、CSRF、Conversation归属和`clientRequestId`幂等均由服务端校验 |
+
+History 分页的 `page=1` 取最新一批消息，返回的 `records` 在当前页内仍按时间正序，供聊天渲染。
 
 上述四个接口必须通过真实Springdoc进入OpenAPI并生成前端类型后，才能开始页面联调。SLICE-01不增加对话删除、重命名、共享、导出和独立History管理页；Task不开放浏览器任意修改接口，普通文本和`clarificationSelection`都通过Run入口推进。
 

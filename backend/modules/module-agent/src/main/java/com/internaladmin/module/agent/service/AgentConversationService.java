@@ -1,6 +1,10 @@
 package com.internaladmin.module.agent.service;
 
 import com.internaladmin.module.agent.api.AgentRunContext;
+import com.internaladmin.module.agent.model.dto.ConversationDTO;
+import com.internaladmin.module.agent.model.dto.ConversationPageDTO;
+import com.internaladmin.module.agent.model.dto.MessageDTO;
+import com.internaladmin.module.agent.model.dto.MessagePageDTO;
 import com.internaladmin.module.agent.store.AgentStore;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.platform.kernel.error.BusinessException;
@@ -47,6 +51,69 @@ public class AgentConversationService {
             throw new BusinessException(ErrorCode.FORBIDDEN, "缺少仓储查询权限");
         }
         return store.startRun(conversationId, clientRequestId, userMessage, actor.userId());
+    }
+
+    /**
+     * 创建本人 Conversation。
+     *
+     * 方法：{@code createConversation}
+     *
+     * 执行链路（共 2 步）：
+     * 1. 调用 {@link AgentStore#createConversation(Long)} 由服务端生成 Conversation ID；
+     * 2. 将持久化摘要转换为 HTTP DTO 返回，避免暴露存储对象。
+     *
+     * @param userId 当前认证用户 ID
+     * @return 新建的本人 Conversation 摘要
+     */
+    public ConversationDTO createConversation(Long userId) {
+        return toConversation(store.createConversation(userId));
+    }
+
+    /**
+     * 查询本人 Conversation 分页。
+     *
+     * 方法：{@code pageConversations}
+     *
+     * 执行链路（共 2 步）：
+     * 1. 调用 {@link AgentStore#pageConversations(Long, long, long)} 执行有界、按最后活动时间倒序的查询；
+     * 2. 将存储行映射为公开分页 DTO，保留空结果与查询失败的区别。
+     *
+     * @param userId 当前认证用户 ID
+     * @param page   从 1 开始的页码
+     * @param size   每页条数
+     * @return 本人的 Conversation 分页
+     */
+    public ConversationPageDTO pageConversations(Long userId, long page, long size) {
+        AgentStore.ConversationPage result = store.pageConversations(userId, page, size);
+        return new ConversationPageDTO(result.records().stream().map(this::toConversation).toList(),
+                result.total(), result.page(), result.size());
+    }
+
+    /**
+     * 查询本人 Conversation History 分页。
+     *
+     * 方法：{@code pageMessages}
+     *
+     * 执行链路（共 2 步）：
+     * 1. 调用 {@link AgentStore#pageMessages(String, Long, long, long)} 先校验归属，再按稳定消息顺序分页；
+     * 2. 将消息行转换为只包含公开字段的 History DTO。
+     *
+     * @param conversationId 目标 Conversation ID
+     * @param userId         当前认证用户 ID
+     * @param page           从 1 开始的页码
+     * @param size           每页条数
+     * @return 本人可见的 History 分页
+     */
+    public MessagePageDTO pageMessages(String conversationId, Long userId, long page, long size) {
+        AgentStore.MessagePage result = store.pageMessages(conversationId, userId, page, size);
+        return new MessagePageDTO(result.records().stream()
+                        .map(row -> new MessageDTO(row.messageId(), row.runId(), row.role(), row.state(),
+                                row.content(), row.createdAt()))
+                        .toList(), result.total(), result.page(), result.size());
+    }
+
+    private ConversationDTO toConversation(AgentStore.ConversationRow row) {
+        return new ConversationDTO(row.conversationId(), row.createdAt(), row.updatedAt());
     }
 
     public void execute(AgentStore.StartRun run, AgentExecutionContext execution,

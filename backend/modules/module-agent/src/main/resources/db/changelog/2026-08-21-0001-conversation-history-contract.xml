@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-08-21-0001-conversation-history-contract" author="研发工程师">
+        <addColumn tableName="ai_conversation">
+            <column name="updated_at" type="TIMESTAMP" defaultValueDate="1970-01-01T00:00:00">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+        <sql>UPDATE ai_conversation SET updated_at = created_at</sql>
+        <sql dbms="sqlite">
+            CREATE TABLE ai_conversation_contract (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                active_run_id VARCHAR(36),
+                updated_at TIMESTAMP NOT NULL
+            );
+            INSERT INTO ai_conversation_contract(id, user_id, created_at, active_run_id, updated_at)
+                SELECT id, user_id, created_at, active_run_id, updated_at FROM ai_conversation;
+            DROP TABLE ai_conversation;
+            ALTER TABLE ai_conversation_contract RENAME TO ai_conversation;
+            CREATE INDEX idx_ai_conversation_active_run ON ai_conversation(active_run_id);
+        </sql>
+        <createIndex tableName="ai_conversation" indexName="idx_ai_conversation_owner_updated">
+            <column name="user_id"/>
+            <column name="updated_at" descending="true"/>
+        </createIndex>
+
+        <addColumn tableName="ai_message">
+            <column name="sequence_no" type="BIGINT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+        <sql dbms="sqlite,postgresql">
+            WITH ranked AS (
+                SELECT message_id,
+                       ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY created_at, message_id) AS sequence_no
+                FROM ai_message
+            )
+            UPDATE ai_message
+            SET sequence_no = (SELECT ranked.sequence_no FROM ranked WHERE ranked.message_id = ai_message.message_id)
+        </sql>
+        <sql dbms="mysql">
+            UPDATE ai_message AS target
+            JOIN (
+                SELECT message_id,
+                       ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY created_at, message_id) AS sequence_no
+                FROM ai_message
+            ) AS ranked ON ranked.message_id = target.message_id
+            SET target.sequence_no = ranked.sequence_no
+        </sql>
+        <sql dbms="oracle">
+            MERGE INTO ai_message target
+            USING (
+                SELECT message_id,
+                       ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY created_at, message_id) AS sequence_no
+                FROM ai_message
+            ) ranked ON (ranked.message_id = target.message_id)
+            WHEN MATCHED THEN UPDATE SET target.sequence_no = ranked.sequence_no
+            WHERE target.sequence_no = 0
+        </sql>
+        <sql dbms="sqlite">
+            CREATE TABLE ai_message_contract (
+                message_id VARCHAR(36) NOT NULL PRIMARY KEY,
+                conversation_id VARCHAR(36) NOT NULL,
+                run_id VARCHAR(36),
+                role VARCHAR(16) NOT NULL,
+                content TEXT NOT NULL,
+                state VARCHAR(24) NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                sequence_no BIGINT NOT NULL
+            );
+            INSERT INTO ai_message_contract(message_id, conversation_id, run_id, role, content, state, created_at, sequence_no)
+                SELECT message_id, conversation_id, run_id, role, content, state, created_at, sequence_no FROM ai_message;
+            DROP TABLE ai_message;
+            ALTER TABLE ai_message_contract RENAME TO ai_message;
+            CREATE INDEX idx_ai_message_conversation ON ai_message(conversation_id, created_at);
+        </sql>
+        <createIndex tableName="ai_message" indexName="uk_ai_message_conversation_sequence" unique="true">
+            <column name="conversation_id"/>
+            <column name="sequence_no"/>
+        </createIndex>
+    </changeSet>
+    <changeSet id="2026-08-21-0001-remove-temporary-conversation-history-defaults" author="研发工程师" dbms="mysql,postgresql,oracle">
+        <dropDefaultValue tableName="ai_conversation" columnName="updated_at" columnDataType="TIMESTAMP"/>
+        <dropDefaultValue tableName="ai_message" columnName="sequence_no" columnDataType="BIGINT"/>
+    </changeSet>
+</databaseChangeLog>

@@ -1,8 +1,10 @@
 package com.internaladmin.app;
 
 import com.internaladmin.app.config.OpenApiContractConfig;
-import com.internaladmin.module.agent.config.AgentConfiguration;
 import com.internaladmin.module.agent.controller.AiCapabilitiesController;
+import com.internaladmin.module.agent.controller.AgentConversationController;
+import com.internaladmin.module.agent.service.AgentActorResolver;
+import com.internaladmin.module.agent.service.AgentConversationService;
 import com.internaladmin.module.file.api.FileQueryApi;
 import com.internaladmin.module.file.controller.FileController;
 import com.internaladmin.module.file.service.FileStorageService;
@@ -23,6 +25,7 @@ import com.internaladmin.module.warehouse.controller.WarehouseController;
 import com.internaladmin.module.warehouse.controller.WarehouseQueryController;
 import com.internaladmin.module.warehouse.service.WarehouseService;
 import com.internaladmin.module.iam.api.IamActorApi;
+import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.platform.security.config.SecurityConfig;
 import com.internaladmin.platform.security.exception.SecurityExceptionHandler;
 import com.internaladmin.platform.web.exception.GlobalExceptionHandler;
@@ -137,6 +140,9 @@ class NoDatabaseOpenApiContractTest {
         assertTrue(specification.path("openapi").asText().startsWith("3."));
         assertTrue(specification.path("x-generated-by").asText().contains("springdoc-openapi 3.1.0"));
         assertFalse(specification.path("paths").isMissingNode());
+        assertTrue(specification.path("paths").has("/api/ai/conversations"));
+        assertTrue(specification.path("paths").has("/api/ai/conversations/{conversationId}/messages"));
+        assertTrue(specification.path("paths").has("/api/ai/conversations/{conversationId}/runs"));
 
         writeRawSpecification(json);
     }
@@ -218,6 +224,30 @@ class NoDatabaseOpenApiContractTest {
         assertTrue(response.path("data").path("features").isEmpty());
     }
 
+    @Test
+    @DisplayName("Conversation 创建入口仍受 CSRF 保护")
+    void conversationCreateRequiresCsrfWithoutDatabase() throws Exception {
+        mockMvc.perform(post("/api/ai/conversations").with(user("contract-user")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("Run 的 text 空白或超限在 HTTP 边界拒绝")
+    void runTextValidationIsEnforcedWithoutDatabase() throws Exception {
+        mockMvc.perform(post("/api/ai/conversations/not-owned/runs")
+                        .with(user("contract-user")).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"clientRequestId\":\"contract-blank\",\"text\":\"   \"}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/ai/conversations/not-owned/runs")
+                        .with(user("contract-user")).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"clientRequestId\":\"contract-long\",\"text\":\""
+                                + "x".repeat(4001) + "\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
     /**
      * 机械验证数据库基础设施没有被装配。
      *
@@ -291,7 +321,6 @@ class NoDatabaseOpenApiContractTest {
     })
     @Import({
             OpenApiContractConfig.class,
-            AgentConfiguration.class,
             AiCapabilitiesController.class,
             SecurityConfig.class,
             GlobalExceptionHandler.class,
@@ -364,6 +393,28 @@ class NoDatabaseOpenApiContractTest {
         @Bean
         IamActorApi iamActorApi() {
             return mock(IamActorApi.class);
+        }
+
+        @Bean
+        AiProperties aiProperties() {
+            return new AiProperties();
+        }
+
+        @Bean
+        AgentActorResolver agentActorResolver(IamActorApi iamActorApi) {
+            return new AgentActorResolver(iamActorApi);
+        }
+
+        @Bean
+        AgentConversationService agentConversationService() {
+            return new AgentConversationService(null, null, null);
+        }
+
+        /** Expose the real handler mappings for springdoc while leaving the production flag disabled. */
+        @Bean
+        AgentConversationController agentConversationController(AgentActorResolver actorResolver,
+                                                                 AgentConversationService conversationService) {
+            return new AgentConversationController(actorResolver, conversationService);
         }
     }
 }

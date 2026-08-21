@@ -20,6 +20,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ai/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["page_1"];
+        put?: never;
+        post: operations["create_3"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/conversations/{conversationId}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["messages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/conversations/{conversationId}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/change-password": {
         parameters: {
             query?: never;
@@ -723,6 +771,16 @@ export interface components {
             data?: components["schemas"]["AiCapabilitiesDTO"] | null;
             message?: string;
         };
+        ApiResponseConversationDTO: {
+            code?: string;
+            data?: components["schemas"]["ConversationDTO"] | null;
+            message?: string;
+        };
+        ApiResponseConversationPageDTO: {
+            code?: string;
+            data?: components["schemas"]["ConversationPageDTO"] | null;
+            message?: string;
+        };
         ApiResponseCurrentUserDTO: {
             code?: string;
             data?: components["schemas"]["CurrentUserDTO"] | null;
@@ -768,6 +826,11 @@ export interface components {
             data?: components["schemas"]["LoginResultDTO"] | null;
             message?: string;
         };
+        ApiResponseMessagePageDTO: {
+            code?: string;
+            data?: components["schemas"]["MessagePageDTO"] | null;
+            message?: string;
+        };
         ApiResponseObject: {
             code?: string;
             data?: null;
@@ -796,6 +859,22 @@ export interface components {
         ChangePasswordDTO: {
             newPassword: string;
             oldPassword: string;
+        };
+        ConversationDTO: {
+            conversationId?: string;
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        ConversationPageDTO: {
+            /** Format: int64 */
+            page?: number;
+            records?: components["schemas"]["ConversationDTO"][];
+            /** Format: int64 */
+            size?: number;
+            /** Format: int64 */
+            total?: number;
         };
         CreateDepartmentDTO: {
             code: string;
@@ -944,6 +1023,24 @@ export interface components {
             userId?: string;
             username?: string;
         };
+        MessageDTO: {
+            content?: string;
+            /** Format: date-time */
+            createdAt?: string;
+            messageId?: string;
+            role?: string;
+            runId?: string;
+            state?: string;
+        };
+        MessagePageDTO: {
+            /** Format: int64 */
+            page?: number;
+            records?: components["schemas"]["MessageDTO"][];
+            /** Format: int64 */
+            size?: number;
+            /** Format: int64 */
+            total?: number;
+        };
         OrderItem: {
             asc?: boolean;
             column?: string;
@@ -978,6 +1075,14 @@ export interface components {
             id?: string;
             name?: string;
             permissionCodes?: string[];
+        };
+        RunRequest: {
+            clientRequestId: string;
+            text: string;
+        };
+        SseEmitter: {
+            /** Format: int64 */
+            timeout?: number;
         };
         StockPageDTO: {
             /** Format: int64 */
@@ -1091,6 +1196,100 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseAiCapabilitiesDTO"];
+                };
+            };
+        };
+    };
+    page_1: {
+        parameters: {
+            query?: {
+                page?: number;
+                size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseConversationPageDTO"];
+                };
+            };
+        };
+    };
+    create_3: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseConversationDTO"];
+                };
+            };
+        };
+    };
+    messages: {
+        parameters: {
+            query?: {
+                page?: number;
+                size?: number;
+            };
+            header?: never;
+            path: {
+                conversationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseMessagePageDTO"];
+                };
+            };
+        };
+    };
+    run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["SseEmitter"];
                 };
             };
         };
