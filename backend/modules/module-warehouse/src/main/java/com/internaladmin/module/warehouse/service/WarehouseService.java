@@ -11,7 +11,12 @@ import com.internaladmin.module.iam.api.IamActorDTO;
 import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.iam.api.ScopeMode;
 import com.internaladmin.module.warehouse.api.WarehouseAccessScopeDTO;
+import com.internaladmin.module.warehouse.api.WarehouseMovementTaskResult;
+import com.internaladmin.module.warehouse.api.WarehouseMovementTaskRow;
 import com.internaladmin.module.warehouse.api.WarehouseQueryApi;
+import com.internaladmin.module.warehouse.api.WarehouseStockCandidate;
+import com.internaladmin.module.warehouse.api.WarehouseStockTaskResult;
+import com.internaladmin.module.warehouse.api.WarehouseStockTaskRow;
 import com.internaladmin.module.warehouse.mapper.InventoryMovementMapper;
 import com.internaladmin.module.warehouse.mapper.InventoryOperationMapper;
 import com.internaladmin.module.warehouse.mapper.ItemMapper;
@@ -32,6 +37,7 @@ import com.internaladmin.module.warehouse.model.dto.StockDTO;
 import com.internaladmin.module.warehouse.model.dto.StockPageDTO;
 import com.internaladmin.module.warehouse.model.dto.StockPageItemDTO;
 import com.internaladmin.module.warehouse.model.dto.StockPageRowDTO;
+import com.internaladmin.module.warehouse.model.dto.WarehouseMovementTaskRowDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseCreateDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseUpdateDTO;
@@ -54,6 +60,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -445,6 +452,73 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
     @Override public List<InventoryMovementDTO> queryRecentMovements(int limit, WarehouseAccessScopeDTO scope) {
         return queryRecentMovements(1, limit, scope);
     }
+
+    @Override
+    @Transactional(readOnly = true)
+    public WarehouseStockTaskResult queryCurrentStock(String itemKeyword, String warehouseKeyword,
+                                                      String locationKeyword, int limit,
+                                                      WarehouseAccessScopeDTO scope) {
+        scope = validateTrustedScope(scope);
+        int bounded = boundedTaskLimit(limit);
+        String itemPattern = likePattern(itemKeyword);
+        String warehousePattern = likePattern(warehouseKeyword);
+        String locationPattern = likePattern(locationKeyword);
+        Long departmentId = scope.allDepartments() ? null : scope.departmentId();
+        List<StockPageRowDTO> rows = balanceMapper.selectTaskStock(itemPattern, warehousePattern,
+                locationPattern, departmentId, bounded);
+        List<WarehouseStockTaskRow> resultRows = rows.stream().map(row -> new WarehouseStockTaskRow(
+                row.itemId(), row.itemCode(), row.itemName(), row.baseUnit(), row.warehouseId(),
+                row.warehouseCode(), row.warehouseName(), row.locationId(), row.locationCode(),
+                row.locationName(), QuantityCodec.format(row.quantityScaled()), row.version())).toList();
+        Set<Long> itemIds = rows.stream().map(StockPageRowDTO::itemId).collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        if (itemIds.size() > 1 && itemKeyword != null && !itemKeyword.isBlank()) {
+            List<WarehouseStockCandidate> candidates = rows.stream()
+                    .filter(row -> row.itemId() != null)
+                    .collect(java.util.stream.Collectors.toMap(StockPageRowDTO::itemId, row -> new WarehouseStockCandidate(
+                            row.itemCode(), row.itemName(), row.baseUnit()),
+                            (left, right) -> left, java.util.LinkedHashMap::new)).values().stream().toList();
+            return new WarehouseStockTaskResult("CANDIDATES", List.of(), candidates, Instant.now());
+        }
+        String status = resultRows.isEmpty()
+                ? (itemKeyword == null || itemKeyword.isBlank() ? "NO_STOCK" : "NO_MATCH")
+                : "STOCK_RESULT";
+        return new WarehouseStockTaskResult(status, resultRows, List.of(), Instant.now());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public WarehouseMovementTaskResult queryRecentMovementTask(int recentDays, String itemKeyword,
+                                                               String warehouseKeyword, String locationKeyword,
+                                                               int limit, WarehouseAccessScopeDTO scope) {
+        scope = validateTrustedScope(scope);
+        if (recentDays < 1 || recentDays > 30) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "近期天数必须在1到30天之间");
+        }
+        int bounded = boundedTaskLimit(limit);
+        Long departmentId = scope.allDepartments() ? null : scope.departmentId();
+        List<WarehouseMovementTaskRowDTO> rows = movementMapper.selectTaskMovements(
+                LocalDateTime.now().minusDays(recentDays), likePattern(itemKeyword),
+                likePattern(warehouseKeyword), likePattern(locationKeyword), departmentId, bounded);
+        List<WarehouseMovementTaskRow> result = rows.stream().map(row -> new WarehouseMovementTaskRow(
+                row.itemId(), row.itemCode(), row.itemName(), row.baseUnit(), row.warehouseId(),
+                row.warehouseCode(), row.warehouseName(), row.locationId(), row.locationCode(),
+                row.locationName(), row.movementType(), QuantityCodec.format(row.deltaQuantity()),
+                row.createdAt())).toList();
+        return new WarehouseMovementTaskResult(result.isEmpty() ? "NO_DATA" : "RESULT", result, Instant.now());
+    }
+
+    private int boundedTaskLimit(int limit) {
+        if (limit < 1 || limit > 20) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "查询条数必须在1到20之间");
+        }
+        return limit;
+    }
+
+    static String likePattern(String value) {
+        String keyword = value == null ? "" : value.trim();
+        return "%" + keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
+    }
+
     public List<InventoryMovementDTO> queryRecentMovements(int page, int size, WarehouseAccessScopeDTO scope) {
         scope = validateTrustedScope(scope);
         int bounded = Math.max(1, Math.min(size, MAX_PAGE_SIZE));

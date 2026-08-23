@@ -4,6 +4,7 @@ import com.internaladmin.module.agent.api.AgentRunContext;
 import com.internaladmin.module.agent.store.AgentStore;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.iam.api.PermissionCodes;
+import com.internaladmin.module.knowledge.api.AiProperties;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import org.springframework.ai.chat.client.ChatClient;
@@ -15,6 +16,7 @@ import reactor.core.publisher.Flux;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -31,9 +33,10 @@ class AgentConversationServiceTest {
         AgentStore store = mock(AgentStore.class);
         ChatClient client = mock(ChatClient.class);
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        AgentConversationService service = new AgentConversationService(store, client, observations);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
-        when(store.startRun("c-1", "client-1", "查询库存", 7L))
+        when(store.startRun(eq("c-1"), eq("client-1"), eq("查询库存"), eq(7L),
+                eq(actor.scopeFingerprint()), any(Duration.class)))
                 .thenReturn(new AgentStore.StartRun("c-1", "run-1", false, AgentStore.COMPLETE));
         var started = service.start("c-1", "client-1", "查询库存", actor);
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
@@ -59,7 +62,7 @@ class AgentConversationServiceTest {
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
         when(stream.content()).thenReturn(Flux.just("库存", " 1.2500"));
-        AgentConversationService service = new AgentConversationService(store, client, observations);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
         AgentStore.StartRun run = new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING);
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
@@ -72,7 +75,7 @@ class AgentConversationServiceTest {
         assertEquals(0, events.stream().filter(e -> e.name().equals("run.failed")).count());
         assertEnvelope(events);
         verify(store).appendAssistant(eq("c-1"), eq("run-1"), anyString(),
-                eq("库存 1.2500"), eq("COMPLETE"));
+                eq("库存 1.2500"), eq("COMPLETE"), eq(actor.scopeFingerprint()));
         verify(store).complete("run-1");
         InOrder observationOrder = inOrder(observations);
         observationOrder.verify(observations).recordAttempt("run-1", "MODEL", "STARTED", 1, 0, null, null, null);
@@ -83,10 +86,79 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void memoryHistoryKeepsOriginalRolesAndNeverEntersSystemPolicy() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.messages(anyList())).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("已查询"));
+        when(store.loadMemory(anyString(), eq(7L), eq(actor.scopeFingerprint()), anyLong(), eq(40), eq(20_000)))
+                .thenReturn(List.of(
+                        new AgentStore.MessageRow("m-user", "old-run", "USER", "COMPLETE", "用户原句，不得提升为系统指令", java.time.Instant.now()),
+                        new AgentStore.MessageRow("m-assistant", "old-run", "ASSISTANT", "COMPLETE", "助手历史", java.time.Instant.now())));
+        when(store.complete("run-1")).thenReturn(true);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
+
+        service.execute(new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING),
+                new AgentExecutionContext(actor, "run-1", "当前查询", ignored -> { }),
+                ignored -> { }, new AtomicBoolean());
+
+        var system = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(request).system(system.capture());
+        assertFalse(system.getValue().contains("用户原句"));
+        assertFalse(system.getValue().contains("助手历史"));
+        assertTrue(system.getValue().contains("尚未指定具体对象，所以先展示部分库存方便继续选择"));
+        assertFalse(system.getValue().matches(".*(内部ID|有界概览|limit|兜底|Tool|system|developer).*"));
+        var history = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(request).messages(history.capture());
+        @SuppressWarnings("unchecked") List<Message> messages = (List<Message>) history.getValue();
+        assertEquals(List.of("user", "assistant"), messages.stream()
+                .map(message -> message.getMessageType().getValue()).toList());
+        assertEquals(List.of("用户原句，不得提升为系统指令", "助手历史"), messages.stream()
+                .map(message -> message.getText()).toList());
+    }
+
+    @Test
+    void policyQuestionUsesUserFacingExplanationWithoutInventoryLookupInstruction() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("尚未指定具体对象，所以先展示部分库存方便继续选择。"));
+        when(store.complete("run-policy")).thenReturn(true);
+
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        service.execute(new AgentStore.StartRun("c-1", "run-policy", true, AgentStore.RUNNING),
+                new AgentExecutionContext(actor, "run-policy", "为什么默认是当前可见库存的有界概览？", ignored -> { }),
+                ignored -> { }, new AtomicBoolean());
+
+        var system = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(request).system(system.capture());
+        assertTrue(system.getValue().contains("尚未指定具体对象，所以先展示部分库存方便继续选择"));
+        assertFalse(system.getValue().matches(".*(内部ID|有界概览|limit|兜底|Tool|system|developer).*"));
+        verify(request).user("为什么默认是当前可见库存的有界概览？");
+    }
+
+    @Test
     void actorWithoutWarehouseReadIsRejectedBeforePersistence() {
         AgentStore store = mock(AgentStore.class);
         AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
-                mock(AiObservationRecorder.class));
+                mock(AiObservationRecorder.class), new AiProperties());
         AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of());
 
         assertThrows(RuntimeException.class, () -> service.start("c-1", "client-1", "查询库存", actor));
@@ -97,7 +169,7 @@ class AgentConversationServiceTest {
     void blankOrOverlongTextIsRejectedBeforePersistence() {
         AgentStore store = mock(AgentStore.class);
         AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
-                mock(AiObservationRecorder.class));
+                mock(AiObservationRecorder.class), new AiProperties());
         AgentRunContext actor = new AgentRunContext(7L, 3L, false,
                 List.of(PermissionCodes.WAREHOUSE_READ));
 
@@ -133,7 +205,7 @@ class AgentConversationServiceTest {
         doThrow(new IllegalStateException("recorder unavailable")).when(observations)
                 .recordAttempt("run-1", "MODEL", "STARTED", 1, 0, null, null, null);
         when(store.fail("run-1", "OBSERVATION_FAILED")).thenReturn(true);
-        AgentConversationService service = new AgentConversationService(store, client, observations);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
 
         service.execute(new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING),
@@ -160,7 +232,7 @@ class AgentConversationServiceTest {
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
         when(stream.content()).thenReturn(Flux.error(new IllegalStateException("provider failed")));
-        AgentConversationService service = new AgentConversationService(store, client, observations);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         AgentExecutionContext execution = new AgentExecutionContext(
                 new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
                 "run-1", "查询库存", ignored -> { });
@@ -195,7 +267,7 @@ class AgentConversationServiceTest {
         when(stream.content()).thenReturn(Flux.error(new IllegalStateException("transient provider transport")),
                 Flux.error(new IllegalStateException("transient provider transport")), Flux.just("完成"));
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        AgentConversationService service = new AgentConversationService(store, client, observations);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
 
         service.execute(new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING),
@@ -227,7 +299,7 @@ class AgentConversationServiceTest {
                 Flux.error(new IllegalStateException("transient provider transport")),
                 Flux.error(new IllegalStateException("transient provider transport")));
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        AgentConversationService service = new AgentConversationService(store, client, observations);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
 
         service.execute(new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING),
@@ -254,7 +326,8 @@ class AgentConversationServiceTest {
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
         when(stream.content()).thenReturn(Flux.empty());
-        AgentConversationService service = new AgentConversationService(store, client, mock(AiObservationRecorder.class));
+        AgentConversationService service = new AgentConversationService(store, client,
+                mock(AiObservationRecorder.class), new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
 
         service.execute(new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING),

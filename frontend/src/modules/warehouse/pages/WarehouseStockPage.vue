@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Refresh, Search, Setting } from '@element-plus/icons-vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { fetchStockPage, type StockPageItem } from '../api/warehouse'
 import {
   itemLabel,
@@ -12,6 +12,7 @@ import {
 } from '../composables/useWarehouseReferences'
 
 const router = useRouter()
+const route = useRoute()
 const {
   items,
   warehouseOptions,
@@ -30,6 +31,12 @@ const page = ref(1)
 const size = ref(20)
 const hasQueried = ref(false)
 const filtersOpen = ref(false)
+const routeItemApplied = ref(false)
+const canFixAction = ref(true)
+
+function checkFixAction() {
+  canFixAction.value = typeof window !== 'undefined' ? window.innerWidth >= 1200 : true
+}
 
 const selectedLocations = computed(() => locations.value.filter((location) => !selectedWarehouse.value || location.warehouseId === selectedWarehouse.value))
 const filteredStocks = computed(() => stocks.value)
@@ -37,7 +44,32 @@ const filteredStocks = computed(() => stocks.value)
 async function load() {
   const success = await loadReferences()
   if (!success) return
+  if (!routeItemApplied.value) {
+    routeItemApplied.value = true
+    if (await applyRouteItemFilter()) return
+  }
   if (hasQueried.value) await query()
+}
+
+function routeItemId() {
+  const value = route?.query?.item
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function routeItemKeyword() {
+  const value = route?.query?.keyword
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+async function applyRouteItemFilter() {
+  const requestedId = routeItemId()
+  const requestedKeyword = routeItemKeyword().toLowerCase()
+  const item = items.value.find((row) => row.id === requestedId && row.enabled)
+    ?? (requestedKeyword ? items.value.find((row) => row.enabled && (row.code.toLowerCase() === requestedKeyword || row.name.toLowerCase() === requestedKeyword)) : undefined)
+  if (!item) return false
+  selectedItem.value = item.id
+  await query()
+  return true
 }
 
 async function query() {
@@ -94,7 +126,32 @@ function viewItem(itemId: string) {
   void router.push({ name: 'warehouse-items', query: { item: itemId, keyword: item?.code ?? '' } })
 }
 
-onMounted(() => { void load() })
+onMounted(() => {
+  checkFixAction()
+  window.addEventListener('resize', checkFixAction)
+  void load()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkFixAction)
+})
+
+watch(() => [route?.query?.item, route?.query?.keyword], () => {
+  if (!routeItemApplied.value || !items.value.length) return
+  const requestedId = routeItemId()
+  const requestedKeyword = routeItemKeyword().toLowerCase()
+  const item = items.value.find((row) => row.id === requestedId && row.enabled)
+    ?? (requestedKeyword ? items.value.find((row) => row.enabled && (row.code.toLowerCase() === requestedKeyword || row.name.toLowerCase() === requestedKeyword)) : undefined)
+  if (item) {
+    selectedItem.value = item.id
+    void query()
+  } else if (selectedItem.value) {
+    selectedItem.value = ''
+    stocks.value = []
+    total.value = 0
+    hasQueried.value = false
+  }
+})
 </script>
 
 <template>
@@ -118,24 +175,26 @@ onMounted(() => { void load() })
     </el-alert>
 
     <div class="filter-panel desktop-filter">
-      <el-form inline @submit.prevent="applyFilters">
-        <el-form-item label="物品">
+      <el-form class="filter-form" @submit.prevent="applyFilters">
+        <el-form-item label="物品" class="filter-item--item">
           <el-select v-model="selectedItem" filterable clearable placeholder="选择物品" @change="applyFilters">
             <el-option v-for="item in items" :key="item.id" :label="`${item.code} / ${item.name}`" :value="item.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="仓库">
+        <el-form-item label="仓库" class="filter-item--warehouse">
           <el-select v-model="selectedWarehouse" clearable placeholder="全部仓库" @change="warehouseChanged">
             <el-option v-for="warehouse in warehouseOptions" :key="warehouse.id" :label="warehouse.name" :value="warehouse.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="库位">
+        <el-form-item label="库位" class="filter-item--location">
           <el-select v-model="selectedLocation" clearable placeholder="全部库位">
             <el-option v-for="location in selectedLocations" :key="location.id" :label="`${location.code} / ${location.name}`" :value="location.id" />
           </el-select>
         </el-form-item>
-        <el-button type="primary" :icon="Search" @click="applyFilters">查询库存</el-button>
-        <el-button @click="clearFilters">清除筛选</el-button>
+        <div class="filter-actions">
+          <el-button type="primary" :icon="Search" @click="applyFilters">查询库存</el-button>
+          <el-button @click="clearFilters">清除筛选</el-button>
+        </div>
       </el-form>
     </div>
 
@@ -171,18 +230,78 @@ onMounted(() => { void load() })
       <p>可按物品、仓库或库位筛选当前库存，查询结果会显示总条数。</p>
     </div>
     <el-card v-else class="data-card" shadow="never">
-      <div class="card-heading"><div><h3>当前库存</h3><span>共 {{ total }} 条库存记录</span></div><el-tag type="info">数量按业务精度展示</el-tag></div>
-      <el-table class="desktop-stock-table" :data="filteredStocks" stripe>
-        <el-table-column label="物品" min-width="190"><template #default="scope">{{ scope.row.itemCode }} / {{ itemName(scope.row.itemId, scope.row.itemName) }}</template></el-table-column>
-        <el-table-column label="所在仓库" min-width="150"><template #default="scope">{{ warehouseName(scope.row.warehouseId, scope.row.warehouseName) }}</template></el-table-column>
-        <el-table-column label="库位" min-width="170"><template #default="scope">{{ scope.row.locationCode }} / {{ locationName(scope.row.locationId, scope.row.locationName) }}</template></el-table-column>
-        <el-table-column prop="quantity" label="现有数量" min-width="130" />
-        <el-table-column label="单位" min-width="80"><template #default="scope">{{ scope.row.baseUnit }}</template></el-table-column>
-        <el-table-column label="操作" min-width="110" fixed="right"><template #default="scope"><el-button link type="primary" @click="viewItem(scope.row.itemId)">查看物品</el-button></template></el-table-column>
-      </el-table>
+      <div class="card-heading">
+        <div>
+          <h3>当前库存</h3>
+          <span>共 {{ total }} 条库存记录</span>
+        </div>
+        <el-tag type="info">数量按业务精度展示</el-tag>
+      </div>
+      <div class="stock-table-wrapper">
+        <el-table class="desktop-stock-table" :data="filteredStocks" stripe>
+          <el-table-column label="物品" min-width="210">
+            <template #default="scope">
+              <el-tooltip
+                :content="`${scope.row.itemCode} / ${itemName(scope.row.itemId, scope.row.itemName)}`"
+                placement="top"
+                :enterable="true"
+                :show-after="200"
+              >
+                <span class="stock-item-cell" tabindex="0" :aria-label="`物品：${scope.row.itemCode} / ${itemName(scope.row.itemId, scope.row.itemName)}`">
+                  <strong class="stock-item-code">{{ scope.row.itemCode }}</strong>
+                  <span class="stock-item-sep">/</span>
+                  <span class="stock-item-name">{{ itemName(scope.row.itemId, scope.row.itemName) }}</span>
+                </span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="所在仓库" min-width="150">
+            <template #default="scope">
+              <el-tooltip
+                :content="warehouseName(scope.row.warehouseId, scope.row.warehouseName)"
+                placement="top"
+                :enterable="true"
+                :show-after="200"
+              >
+                <span class="table-text-cell" tabindex="0">
+                  {{ warehouseName(scope.row.warehouseId, scope.row.warehouseName) }}
+                </span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="库位" min-width="170">
+            <template #default="scope">
+              <el-tooltip
+                :content="`${scope.row.locationCode} / ${locationName(scope.row.locationId, scope.row.locationName)}`"
+                placement="top"
+                :enterable="true"
+                :show-after="200"
+              >
+                <span class="table-text-cell" tabindex="0">
+                  {{ scope.row.locationCode }} / {{ locationName(scope.row.locationId, scope.row.locationName) }}
+                </span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column prop="quantity" label="现有数量" min-width="120" />
+          <el-table-column label="单位" min-width="80">
+            <template #default="scope">{{ scope.row.baseUnit }}</template>
+          </el-table-column>
+          <el-table-column label="操作" min-width="110" :fixed="canFixAction ? 'right' : false">
+            <template #default="scope">
+              <el-button link type="primary" @click="viewItem(scope.row.itemId)">查看物品</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
       <div class="stock-mobile-list" data-testid="stock-mobile-list">
         <article v-for="stock in filteredStocks" :key="`${stock.itemId}-${stock.locationId}`" class="stock-mobile-card">
-          <div class="stock-mobile-card__heading"><strong>{{ stock.itemCode }} / {{ itemName(stock.itemId, stock.itemName) }}</strong><el-button link type="primary" @click="viewItem(stock.itemId)">查看物品</el-button></div>
+          <div class="stock-mobile-card__heading">
+            <strong :title="`${stock.itemCode} / ${itemName(stock.itemId, stock.itemName)}`">
+              {{ stock.itemCode }} / {{ itemName(stock.itemId, stock.itemName) }}
+            </strong>
+            <el-button link type="primary" @click="viewItem(stock.itemId)">查看物品</el-button>
+          </div>
           <dl>
             <div><dt>仓库</dt><dd>{{ warehouseName(stock.warehouseId, stock.warehouseName) }}</dd></div>
             <div><dt>库位</dt><dd>{{ stock.locationCode }} / {{ locationName(stock.locationId, stock.locationName) }}</dd></div>
@@ -205,42 +324,304 @@ onMounted(() => { void load() })
 </template>
 
 <style scoped>
-.warehouse-view { min-width: 0; }
-.view-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 20px; }
-.view-kicker { margin: 0 0 5px; color: var(--ui-primary); font-size: .75rem; font-weight: 700; letter-spacing: .06em; }
-.view-heading h2 { margin: 0; color: var(--ui-text-strong); font-size: 1.55rem; }
-.view-heading p:last-child { margin: 7px 0 0; color: var(--ui-text-muted); }
-.view-actions { display: flex; gap: 8px; }
-.filter-panel, .data-card, .empty-state { border: 1px solid var(--ui-border); background: var(--ui-surface); box-shadow: var(--ui-shadow-soft); }
-.filter-panel { padding: 16px 18px 4px; border-radius: var(--ui-radius); margin-bottom: 18px; }
-.filter-panel :deep(.el-form-item) { margin-bottom: 12px; }
-.state-alert { margin-bottom: 18px; }
-.data-card { border-radius: var(--ui-radius); }
-.card-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
-.card-heading h3 { margin: 0 0 4px; color: var(--ui-text-strong); }
-.card-heading span { color: var(--ui-text-muted); font-size: .85rem; }
-.stock-pagination { margin-top: 18px; justify-content: flex-end; }
-.empty-state { display: grid; justify-items: center; gap: 8px; padding: 64px 20px; border-radius: var(--ui-radius); text-align: center; color: var(--ui-text-muted); }
-.empty-state .el-icon { color: var(--ui-primary); }
-.empty-state h3 { margin: 0; color: var(--ui-text-strong); }
-.empty-state p { max-width: 420px; margin: 0 0 8px; }
-.compact-empty { padding-block: 48px; }
-.mobile-filter-trigger, .mobile-filter-drawer { display: none; }
-.drawer-actions { display: flex; justify-content: flex-end; gap: 8px; }
-@media (max-width: 720px) {
-  .view-heading { flex-direction: column; }
-  .desktop-filter { display: none; }
-  .mobile-filter-trigger, .mobile-filter-drawer { display: inline-flex; }
-  .view-actions { width: 100%; justify-content: flex-end; }
-  .data-card { overflow: hidden; }
-  .desktop-stock-table { display: none; }
-  .stock-mobile-list { display: grid; gap: 10px; }
-  .stock-mobile-card { padding: 14px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); background: var(--ui-surface-muted); }
-  .stock-mobile-card__heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--ui-text-strong); }
-  .stock-mobile-card dl { display: grid; gap: 8px; margin: 12px 0 0; }
-  .stock-mobile-card dl > div { display: flex; justify-content: space-between; gap: 16px; }
-  .stock-mobile-card dt { color: var(--ui-text-muted); }
-  .stock-mobile-card dd { margin: 0; color: var(--ui-text); text-align: right; }
+.warehouse-view {
+  min-width: 0;
 }
-@media (min-width: 721px) { .stock-mobile-list { display: none; } }
+.stock-view {
+  container-type: inline-size;
+}
+.view-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.view-kicker {
+  margin: 0 0 5px;
+  color: var(--ui-primary);
+  font-size: .75rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+}
+.view-heading h2 {
+  margin: 0;
+  color: var(--ui-text-strong);
+  font-size: 1.55rem;
+}
+.view-heading p:last-child {
+  margin: 7px 0 0;
+  color: var(--ui-text-muted);
+}
+.view-actions {
+  display: flex;
+  gap: 8px;
+}
+.filter-panel, .data-card, .empty-state {
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  box-shadow: var(--ui-shadow-soft);
+}
+.filter-panel {
+  padding: 16px 18px 8px;
+  border-radius: var(--ui-radius);
+  margin-bottom: 18px;
+}
+.filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 16px;
+}
+.filter-form :deep(.el-form-item) {
+  margin-bottom: 8px;
+  margin-right: 0;
+}
+.filter-item--item {
+  flex: 1 1 220px;
+  min-width: 200px;
+}
+.filter-item--warehouse {
+  flex: 1 1 160px;
+  min-width: 140px;
+}
+.filter-item--location {
+  flex: 1 1 160px;
+  min-width: 140px;
+}
+.filter-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+.state-alert {
+  margin-bottom: 18px;
+}
+.data-card {
+  border-radius: var(--ui-radius);
+}
+.card-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.card-heading h3 {
+  margin: 0 0 4px;
+  color: var(--ui-text-strong);
+}
+.card-heading span {
+  color: var(--ui-text-muted);
+  font-size: .85rem;
+}
+.stock-table-wrapper {
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+  width: 100%;
+}
+.desktop-stock-table {
+  min-width: 820px;
+  width: 100%;
+}
+.desktop-stock-table :deep(.el-table__fixed-right),
+.desktop-stock-table :deep(.el-table__fixed-right-patch) {
+  background: var(--ui-surface) !important;
+  border-left: 1px solid var(--ui-border);
+  box-shadow: -4px 0 8px -2px rgba(0, 0, 0, 0.06);
+}
+.desktop-stock-table :deep(.el-table__row--striped .el-table__fixed-right-cell) {
+  background: var(--ui-surface-muted) !important;
+}
+.desktop-stock-table :deep(th.el-table__cell) {
+  background: var(--ui-surface-muted) !important;
+  color: var(--ui-text-muted);
+}
+.stock-item-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stock-item-code {
+  flex-shrink: 0;
+  color: var(--ui-text-strong);
+  font-weight: 600;
+}
+.stock-item-sep {
+  flex-shrink: 0;
+  color: var(--ui-text-muted);
+}
+.stock-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ui-text);
+}
+.table-text-cell {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stock-pagination {
+  margin-top: 18px;
+  justify-content: flex-end;
+}
+.empty-state {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 64px 20px;
+  border-radius: var(--ui-radius);
+  text-align: center;
+  color: var(--ui-text-muted);
+}
+.empty-state .el-icon {
+  color: var(--ui-primary);
+}
+.empty-state h3 {
+  margin: 0;
+  color: var(--ui-text-strong);
+}
+.empty-state p {
+  max-width: 420px;
+  margin: 0 0 8px;
+}
+.compact-empty {
+  padding-block: 48px;
+}
+.mobile-filter-trigger, .mobile-filter-drawer {
+  display: none;
+}
+.drawer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@container (max-width: 720px) {
+  .view-heading {
+    flex-direction: column;
+  }
+  .desktop-filter {
+    display: none;
+  }
+  .mobile-filter-trigger, .mobile-filter-drawer {
+    display: inline-flex;
+  }
+  .view-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .data-card {
+    overflow: hidden;
+  }
+  .stock-table-wrapper {
+    display: none;
+  }
+  .stock-mobile-list {
+    display: grid !important;
+    gap: 10px;
+  }
+  .stock-mobile-card {
+    padding: 14px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-sm);
+    background: var(--ui-surface-muted);
+  }
+  .stock-mobile-card__heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    color: var(--ui-text-strong);
+  }
+  .stock-mobile-card dl {
+    display: grid;
+    gap: 8px;
+    margin: 12px 0 0;
+  }
+  .stock-mobile-card dl > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .stock-mobile-card dt {
+    color: var(--ui-text-muted);
+  }
+  .stock-mobile-card dd {
+    margin: 0;
+    color: var(--ui-text);
+    text-align: right;
+  }
+}
+
+@media (max-width: 720px) {
+  .view-heading {
+    flex-direction: column;
+  }
+  .desktop-filter {
+    display: none;
+  }
+  .mobile-filter-trigger, .mobile-filter-drawer {
+    display: inline-flex;
+  }
+  .view-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .data-card {
+    overflow: hidden;
+  }
+  .stock-table-wrapper {
+    display: none;
+  }
+  .stock-mobile-list {
+    display: grid;
+    gap: 10px;
+  }
+  .stock-mobile-card {
+    padding: 14px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-sm);
+    background: var(--ui-surface-muted);
+  }
+  .stock-mobile-card__heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    color: var(--ui-text-strong);
+  }
+  .stock-mobile-card dl {
+    display: grid;
+    gap: 8px;
+    margin: 12px 0 0;
+  }
+  .stock-mobile-card dl > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .stock-mobile-card dt {
+    color: var(--ui-text-muted);
+  }
+  .stock-mobile-card dd {
+    margin: 0;
+    color: var(--ui-text);
+    text-align: right;
+  }
+}
+@media (min-width: 721px) {
+  .stock-mobile-list {
+    display: none;
+  }
+}
 </style>

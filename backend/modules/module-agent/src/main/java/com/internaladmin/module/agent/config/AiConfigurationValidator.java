@@ -3,6 +3,8 @@ package com.internaladmin.module.agent.config;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 
+import java.time.Duration;
+
 /**
  * Validates the complete enabled-mode configuration before provider or knowledge beans are used.
  */
@@ -22,6 +24,7 @@ public final class AiConfigurationValidator {
      * @param dataSourceProperties business data source properties
      */
     public static void validate(AiProperties properties, DataSourceProperties dataSourceProperties) {
+        validateMemory(properties.getMemory());
         if (!properties.isEnabled()) {
             return;
         }
@@ -46,6 +49,20 @@ public final class AiConfigurationValidator {
             requirePostgres(knowledge.getUrl(), "独立知识数据源");
         } else {
             requirePostgres(dataSourceProperties.determineUrl(), "业务数据源复用知识库");
+        }
+    }
+
+    private static void validateMemory(AiProperties.Memory memory) {
+        if (memory == null || memory.getIdleTtl() == null
+                || memory.getIdleTtl().compareTo(Duration.ofMinutes(1)) < 0
+                || memory.getIdleTtl().compareTo(Duration.ofDays(7)) > 0) {
+            throw invalid("记忆空闲TTL必须在1分钟至7天之间");
+        }
+        if (memory.getMaxMessages() < 2 || memory.getMaxMessages() > 100) {
+            throw invalid("记忆消息上限必须在2-100之间");
+        }
+        if (memory.getMaxChars() < 256 || memory.getMaxChars() > 100_000) {
+            throw invalid("记忆字符上限必须在256-100000之间");
         }
     }
 

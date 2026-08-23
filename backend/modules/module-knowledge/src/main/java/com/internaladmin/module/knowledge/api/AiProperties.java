@@ -2,6 +2,8 @@ package com.internaladmin.module.knowledge.api;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
+
 /**
  * Agent 与知识运行时的唯一强类型配置。
  *
@@ -14,6 +16,7 @@ public class AiProperties {
     private final Chat chat = new Chat();
     private final Embedding embedding = new Embedding();
     private final Knowledge knowledge = new Knowledge();
+    private final Memory memory = new Memory();
 
     public boolean isEnabled() {
         return enabled;
@@ -33,6 +36,41 @@ public class AiProperties {
 
     public Knowledge getKnowledge() {
         return knowledge;
+    }
+
+    public Memory getMemory() {
+        return memory;
+    }
+
+    /** Short-term model memory policy; page History remains independent of this budget. */
+    public static class Memory {
+        private Duration idleTtl = Duration.ofHours(4);
+        private int maxMessages = 40;
+        private int maxChars = 20_000;
+
+        public Duration getIdleTtl() {
+            return idleTtl;
+        }
+
+        public void setIdleTtl(Duration idleTtl) {
+            this.idleTtl = idleTtl;
+        }
+
+        public int getMaxMessages() {
+            return maxMessages;
+        }
+
+        public void setMaxMessages(int maxMessages) {
+            this.maxMessages = maxMessages;
+        }
+
+        public int getMaxChars() {
+            return maxChars;
+        }
+
+        public void setMaxChars(int maxChars) {
+            this.maxChars = maxChars;
+        }
     }
 
     public static class Chat {

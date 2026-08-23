@@ -92,7 +92,9 @@ function selectNavigation(key: string) {
   --current-sidebar-width: var(--ui-sidebar-width);
   display: grid;
   grid-template-columns: var(--current-sidebar-width) minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
   background: var(--ui-page-bg);
   transition: grid-template-columns var(--ui-enter) var(--ui-ease-out), background-color 240ms ease;
 }
@@ -109,10 +111,12 @@ function selectNavigation(key: string) {
   flex-direction: column;
   width: var(--current-sidebar-width);
   height: 100vh;
+  max-height: 100vh;
   color: var(--ui-sidebar-text);
   background: linear-gradient(180deg, var(--ui-sidebar) 0%, var(--ui-sidebar-deep) 100%);
   border-right: 1px solid rgba(255, 255, 255, 0.055);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   transition: width var(--ui-enter) var(--ui-ease-out), transform var(--ui-enter) var(--ui-ease-out);
 }
 
@@ -235,6 +239,11 @@ function selectNavigation(key: string) {
 
 .ui-shell-main {
   min-width: 0;
+  height: 100vh;
+  max-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .ui-shell-backdrop {

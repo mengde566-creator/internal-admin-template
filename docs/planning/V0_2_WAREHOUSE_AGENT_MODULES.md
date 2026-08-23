@@ -76,10 +76,9 @@ module-agent-warehouse-adapter
 
 ### Tool清单
 
-- 物品定位；
-- 按物品查库存；
-- 按仓库或库位查内容；
-- 查近期库存移动。
+- SLICE-01正式模型入口：按物品/仓库/库位业务关键词查当前库存、按真实最近天数查库存变化；
+- `warehouse_stock_by_item(itemId)` 仅保留为服务端内部精确事实能力，不注册给模型；
+- 物品定位、按库位查内容及其余仓储卡片留在SLICE-02。
 
 ### Tool输入边界
 
@@ -87,7 +86,7 @@ module-agent-warehouse-adapter
 
 ### Tool结果边界
 
-统一返回：
+当前库存任务统一返回 `STOCK_RESULT | CANDIDATES | NO_MATCH | NO_STOCK`，近期变化返回 `RESULT | NO_DATA`；其它任务继续使用：
 
 ```text
 RESOLVED | AMBIGUOUS | NO_DATA | NOT_FOUND
@@ -271,7 +270,7 @@ Agent关闭时返回`enabled=false`且数组为空；开启时`availableAdapters
 
 History 分页的 `page=1` 取最新一批消息，返回的 `records` 在当前页内仍按时间正序，供聊天渲染。
 
-上述四个接口必须通过真实Springdoc进入OpenAPI并生成前端类型后，才能开始页面联调。SLICE-01不增加对话删除、重命名、共享、导出和独立History管理页；Task不开放浏览器任意修改接口，普通文本和`clarificationSelection`都通过Run入口推进。
+上述四个接口必须通过真实Springdoc进入OpenAPI并生成前端类型后，才能开始页面联调。SLICE-01不增加对话删除、重命名、共享、导出和独立History管理页；持久化Task与`clarificationSelection`仍留待后续分片，当前仅通过Run入口推进关键词查询。
 
 ### 用户可提交
 
@@ -297,7 +296,7 @@ acceptedPageContext?
 requestStartedAt
 ```
 
-请求DTO和Tool Schema都不得接受可信身份字段。页面对象、候选令牌和业务ID在使用前重新加载和鉴权。
+请求DTO和Tool Schema都不得接受可信身份字段。页面对象、候选业务编码和业务ID在使用前重新加载和鉴权。
 
 ## 9. SSE与响应资产边界
 
@@ -322,7 +321,7 @@ requestStartedAt
 
 业务主库中的AI表必须继续使用四库可移植类型；扩展详情使用有大小上限的TEXT，核心筛选字段必须独立成列。知识库固定使用PostgreSQL和`vector(1024)`。
 
-下表是各分片完成后的目标合同。SLICE-00已创建的`ai_conversation`、`ai_run`和`ai_message`是现行事实；SLICE-01所需的新字段和`ai_task`必须通过后续Liquibase变更集增加，禁止修改已执行的SLICE-00变更集或另建`agent_*`平行表。
+下表是各分片完成后的目标合同。SLICE-00已创建的`ai_conversation`、`ai_run`和`ai_message`是现行事实；本轮以 scope 指纹隔离的四小时Memory选择闭环用户链路，持久化`ai_task`字段仍按后续分片的Liquibase变更增加，禁止修改已执行的SLICE-00变更集或另建`agent_*`平行表。
 
 | 表 | 关键字段 | 关键约束 |
 | --- | --- | --- |

@@ -37,7 +37,7 @@ class AiCapabilitiesControllerTest {
         assertThat(allowed.getData().enabled()).isTrue();
         assertThat(allowed.getData().availableAdapters()).containsExactly("warehouse");
         assertThat(allowed.getData().uiModes()).containsExactly("DOCKED", "COMPACT", "DRAWER");
-        assertThat(allowed.getData().features()).containsExactly("CHAT", "STREAM", "BUSINESS_CARD");
+        assertThat(allowed.getData().features()).containsExactly("CHAT", "STREAM", "BUSINESS_CARD", "COPY", "OPEN_ROUTE");
 
         ApiResponse<AiCapabilitiesController.AiCapabilitiesDTO> denied = controller.capabilities(
                 new TestingAuthenticationToken("warehouse-user", null));

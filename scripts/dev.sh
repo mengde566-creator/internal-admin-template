@@ -112,16 +112,18 @@ service_is_owned_and_listening() {
 }
 
 # 启动后台进程并脱离当前进程组（防止 shell 退出时被清理）。
-# 优先 setsid（Linux/macOS），Windows 下用 python DETACHED_PROCESS，最后回退 nohup。
+# 优先 setsid（Linux/macOS），否则用 Python 创建独立会话，最后回退 nohup。
 launch_background() {
     local log="$1"
     shift
     if command -v setsid >/dev/null 2>&1; then
         setsid "$@" < /dev/null > "$log" 2>&1 &
         echo $!
-    elif command -v python >/dev/null 2>&1; then
-        python - "$log" "$@" <<'PYEOF'
-import subprocess, sys, shutil
+    elif command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
+        local python_bin
+        python_bin="$(command -v python || command -v python3)"
+        "$python_bin" - "$log" "$@" <<'PYEOF'
+import os, subprocess, sys, shutil
 log = sys.argv[1]
 cmd = sys.argv[2:]
 exe = shutil.which(cmd[0]) or cmd[0]
@@ -133,7 +135,8 @@ if exe.lower().endswith(('.cmd', '.bat')):
         p = subprocess.Popen(full, shell=True, stdout=f, stderr=f, stdin=subprocess.DEVNULL, creationflags=flags)
 else:
     with open(log, 'ab') as f:
-        p = subprocess.Popen(cmd, stdout=f, stderr=f, stdin=subprocess.DEVNULL, creationflags=flags)
+        p = subprocess.Popen(cmd, stdout=f, stderr=f, stdin=subprocess.DEVNULL,
+                             creationflags=flags, start_new_session=(os.name != 'nt'))
 print(p.pid)
 PYEOF
     else

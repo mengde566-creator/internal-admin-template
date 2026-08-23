@@ -3,7 +3,13 @@ package com.internaladmin.module.agent;
 import com.internaladmin.module.agent.config.AiConfigurationValidator;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
+
+import java.time.Duration;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -64,6 +70,45 @@ class AiConfigurationValidatorTest {
         assertThatCode(() -> AiConfigurationValidator.validate(properties,
                 business("jdbc:sqlite:./data/internal-admin.db")))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void memoryPolicyRejectsIllegalValuesBeforeRuntimeStartup() {
+        AiProperties ttlProperties = new AiProperties();
+        ttlProperties.getMemory().setIdleTtl(Duration.ZERO);
+        assertThatThrownBy(() -> AiConfigurationValidator.validate(ttlProperties,
+                business("jdbc:sqlite:./data/internal-admin.db")))
+                .hasMessageContaining("空闲TTL");
+
+        AiProperties messageProperties = new AiProperties();
+        messageProperties.getMemory().setMaxMessages(1);
+        assertThatThrownBy(() -> AiConfigurationValidator.validate(messageProperties,
+                business("jdbc:sqlite:./data/internal-admin.db")))
+                .hasMessageContaining("消息上限");
+
+        AiProperties charProperties = new AiProperties();
+        charProperties.getMemory().setMaxChars(255);
+        assertThatThrownBy(() -> AiConfigurationValidator.validate(charProperties,
+                business("jdbc:sqlite:./data/internal-admin.db")))
+                .hasMessageContaining("字符上限");
+    }
+
+    @Test
+    void memoryPolicyBindsFromAppAiConfiguration() {
+        AiProperties properties = new AiProperties();
+        new Binder(new MapConfigurationPropertySource(Map.of(
+                "app.ai.memory.idle-ttl", "2h",
+                "app.ai.memory.max-messages", "12",
+                "app.ai.memory.max-chars", "4096")))
+                .bind("app.ai", Bindable.ofInstance(properties));
+
+        assertThatCode(() -> AiConfigurationValidator.validate(properties,
+                business("jdbc:sqlite:./data/internal-admin.db")))
+                .doesNotThrowAnyException();
+        org.assertj.core.api.Assertions.assertThat(properties.getMemory().getIdleTtl())
+                .isEqualTo(Duration.ofHours(2));
+        org.assertj.core.api.Assertions.assertThat(properties.getMemory().getMaxMessages()).isEqualTo(12);
+        org.assertj.core.api.Assertions.assertThat(properties.getMemory().getMaxChars()).isEqualTo(4096);
     }
 
     private static AiProperties validProperties() {

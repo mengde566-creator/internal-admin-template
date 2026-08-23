@@ -39,9 +39,11 @@ const emit = defineEmits<{
 <style scoped>
 .ui-app-topbar {
   z-index: 30;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  height: var(--ui-header-height);
   min-height: var(--ui-header-height);
   padding: 0 28px;
   gap: 20px;

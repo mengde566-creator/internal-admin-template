@@ -4,7 +4,7 @@
 
 SLICE-00 已通过 Gate A、Gate B，提供 Agent 默认关闭、DeepSeek 纵向链、一个仓储只读 Tool、Session+CSRF SSE、History、运行终态/有界重试和最小观测。多轮 Task、完整 Tool 集合、前端入口和管理页仍未实现。
 
-SLICE-01 第一开发块已落地服务端 Conversation/History 契约：Conversation ID 由服务端生成，提供本人有界分页与稳定顺序 History，Run 请求正式使用 `text`，运行必须引用已存在且归属当前用户的 Conversation，不再懒创建。Task、澄清、多轮 Memory 和 Vue 入口仍未实现。
+SLICE-01 已落地服务端 Conversation/History 契约和仓储 A+B 可见入口：Conversation ID 由服务端生成，提供本人有界分页与稳定顺序 History，Run 请求正式使用 `text`，运行必须引用已存在且归属当前用户的 Conversation；仓储助手可在 DOCKED/COMPACT/DRAWER 中创建/选择对话、流式显示文字与受控库存卡片。当前任务补充了关键词库存、近期变化工具和按当前 scope 隔离的短期有效 History；完整 Task 持久化、澄清协议、候选绑定、其余工具和知识问答仍未实现。
 
 ## 2. 特有约束
 

@@ -8,6 +8,8 @@ import org.sqlite.SQLiteDataSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -102,13 +104,70 @@ class AgentStoreConversationContractTest {
                 String.class);
         assertTrue(isNotNull(jdbc, "ai_conversation", "updated_at"), conversationSchema);
         assertTrue(isNotNull(jdbc, "ai_message", "sequence_no"), messageSchema);
+        assertTrue(hasColumn(jdbc, "ai_message", "scope_fingerprint"), messageSchema);
+        assertTrue(hasColumn(jdbc, "ai_conversation", "last_memory_activity_at"), conversationSchema);
+        assertTrue(hasColumn(jdbc, "ai_conversation", "active_memory_segment_no"), conversationSchema);
+        assertTrue(hasColumn(jdbc, "ai_message", "memory_segment_no"), messageSchema);
+    }
+
+    @Test
+    void memoryUsesOnlyCompletedRunsInCurrentOwnedConversation() throws Exception {
+        AgentStore store = store("conversation-memory");
+        String conversationId = store.createConversation(7L).conversationId();
+        appendCompletedRun(store, conversationId, "memory-complete", "轴承", "memory-assistant", "已确认物品", "scope-7");
+        AgentStore.StartRun failed = store.startRun(conversationId, "memory-failed", "不要注入", 7L, "scope-7");
+        assertTrue(store.fail(failed.runId(), "MODEL_FAILED"));
+
+        var memory = store.loadMemory(conversationId, 7L, "scope-7", 1L, 40, 2000);
+        assertEquals(2, memory.size());
+        assertEquals("轴承", memory.get(0).content());
+        assertEquals("已确认物品", memory.get(1).content());
+        assertTrue(store.loadMemory(conversationId, 7L, "scope-after-transfer", 1L, 40, 2000).isEmpty());
+        assertThrows(BusinessException.class, () -> store.loadMemory(conversationId, 8L, "scope-7",
+                1L, 40, 2000));
+    }
+
+    @Test
+    void memorySegmentsUseIdleTtlAndScopeChangeInsteadOfRollingMessageCutoff() throws Exception {
+        AgentStore store = store("conversation-memory-segments");
+        String conversationId = store.createConversation(7L).conversationId();
+        appendCompletedRun(store, conversationId, "segment-1", "旧段用户", "segment-assistant-1", "旧段助手", "scope-7");
+
+        AgentStore.StartRun idle = store.startRun(conversationId, "segment-2", "新段用户", 7L,
+                "scope-7", Duration.ZERO);
+        assertEquals(2L, idle.memorySegmentNo());
+        store.appendAssistant(conversationId, idle.runId(), "segment-assistant-2", "新段助手", "COMPLETE", "scope-7");
+        assertTrue(store.complete(idle.runId()));
+        assertTrue(store.loadMemory(conversationId, 7L, "scope-7", 2L, 40, 2000).stream()
+                .allMatch(row -> row.content().contains("新段")));
+
+        AgentStore.StartRun scope = store.startRun(conversationId, "segment-3", "换部门用户", 7L,
+                "scope-after-transfer", Duration.ofHours(4));
+        assertEquals(3L, scope.memorySegmentNo());
+    }
+
+    @Test
+    void latestCompleteTurnWinsCharacterBudgetOverOlderLongTurn() throws Exception {
+        AgentStore store = store("conversation-memory-budget");
+        String conversationId = store.createConversation(7L).conversationId();
+        appendCompletedRun(store, conversationId, "budget-old", "x".repeat(200), "budget-old-assistant", "旧回复".repeat(100), "scope-7");
+        appendCompletedRun(store, conversationId, "budget-new", "最新问题", "budget-new-assistant", "最新回答", "scope-7");
+
+        List<AgentStore.MessageRow> memory = store.loadMemory(conversationId, 7L, "scope-7", 1L, 40, 20);
+        assertEquals(List.of("最新问题", "最新回答"), memory.stream().map(AgentStore.MessageRow::content).toList());
     }
 
     private void appendCompletedRun(AgentStore store, String conversationId, String requestId,
                                     String userMessage, String assistantMessageId,
                                     String assistantMessage) {
-        AgentStore.StartRun run = store.startRun(conversationId, requestId, userMessage, 7L);
-        store.appendAssistant(conversationId, run.runId(), assistantMessageId, assistantMessage, "COMPLETE");
+        appendCompletedRun(store, conversationId, requestId, userMessage, assistantMessageId, assistantMessage, null);
+    }
+
+    private void appendCompletedRun(AgentStore store, String conversationId, String requestId,
+                                    String userMessage, String assistantMessageId,
+                                    String assistantMessage, String scopeFingerprint) {
+        AgentStore.StartRun run = store.startRun(conversationId, requestId, userMessage, 7L, scopeFingerprint);
+        store.appendAssistant(conversationId, run.runId(), assistantMessageId, assistantMessage, "COMPLETE", scopeFingerprint);
         assertEquals(true, store.complete(run.runId()));
     }
 
@@ -135,6 +194,13 @@ class AgentStoreConversationContractTest {
         };
         Integer count = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM pragma_table_info(" + pragma + ") WHERE name = ? AND \"notnull\" = 1",
+                Integer.class, columnName);
+        return count != null && count == 1;
+    }
+
+    private boolean hasColumn(JdbcTemplate jdbc, String tableName, String columnName) {
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM pragma_table_info('" + tableName + "') WHERE name = ?",
                 Integer.class, columnName);
         return count != null && count == 1;
     }

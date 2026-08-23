@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <!-- A memory segment is an idle-TTL/scope boundary; page History remains complete. -->
+    <changeSet id="2026-08-21-0003-memory-segment-sqlite" author="研发工程师" dbms="sqlite">
+        <sql>ALTER TABLE ai_conversation ADD COLUMN last_memory_activity_at TIMESTAMP</sql>
+        <sql>ALTER TABLE ai_conversation ADD COLUMN active_memory_segment_no BIGINT</sql>
+        <sql>ALTER TABLE ai_message ADD COLUMN memory_segment_no BIGINT</sql>
+        <sql>UPDATE ai_conversation SET active_memory_segment_no = 1 WHERE active_memory_segment_no IS NULL</sql>
+        <sql>UPDATE ai_message SET memory_segment_no = 1 WHERE memory_segment_no IS NULL</sql>
+    </changeSet>
+    <changeSet id="2026-08-21-0003-memory-segment-other" author="研发工程师" dbms="mysql,postgresql,oracle">
+        <addColumn tableName="ai_conversation">
+            <column name="last_memory_activity_at" type="TIMESTAMP"/>
+            <column name="active_memory_segment_no" type="BIGINT"/>
+        </addColumn>
+        <addColumn tableName="ai_message">
+            <column name="memory_segment_no" type="BIGINT"/>
+        </addColumn>
+        <update tableName="ai_conversation">
+            <column name="active_memory_segment_no" valueNumeric="1"/>
+            <where>active_memory_segment_no IS NULL</where>
+        </update>
+        <update tableName="ai_message">
+            <column name="memory_segment_no" valueNumeric="1"/>
+            <where>memory_segment_no IS NULL</where>
+        </update>
+    </changeSet>
+</databaseChangeLog>

@@ -70,7 +70,12 @@ async function onLogout() {
 
 <style scoped>
 .system-content {
-  min-height: calc(100vh - var(--ui-header-height));
+  flex: 1 1 0%;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 .topbar-user {
   color: var(--ui-text);

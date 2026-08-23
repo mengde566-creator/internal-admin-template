@@ -21,6 +21,26 @@ public interface StockBalanceMapper extends BaseMapper<StockBalanceDO> {
                     "w.id AS warehouse_id, w.code AS warehouse_code, w.name AS warehouse_name, " +
                     "l.id AS location_id, l.code AS location_code, l.name AS location_name, " +
                     "b.quantity_scaled, b.version, ROW_NUMBER() OVER (ORDER BY i.code, w.code, l.code, b.id) AS row_num " +
+                    "FROM wh_stock_balance b JOIN wh_item i ON i.id=b.item_id " +
+                    "JOIN wh_location l ON l.id=b.location_id JOIN wh_warehouse w ON w.id=l.warehouse_id " +
+                    "WHERE (i.code LIKE #{itemPattern} ESCAPE '!' OR i.name LIKE #{itemPattern} ESCAPE '!') " +
+                    "AND (w.code LIKE #{warehousePattern} ESCAPE '!' OR w.name LIKE #{warehousePattern} ESCAPE '!') " +
+                    "AND (l.code LIKE #{locationPattern} ESCAPE '!' OR l.name LIKE #{locationPattern} ESCAPE '!') " +
+                    "<if test='departmentId != null'> AND w.department_id=#{departmentId}</if>" +
+                    ") bounded WHERE row_num &lt;= #{limit}", "</script>"})
+    List<com.internaladmin.module.warehouse.model.dto.StockPageRowDTO> selectTaskStock(
+            @Param("itemPattern") String itemPattern, @Param("warehousePattern") String warehousePattern,
+            @Param("locationPattern") String locationPattern, @Param("departmentId") Long departmentId,
+            @Param("limit") int limit);
+    @Select({"<script>",
+            "SELECT item_id AS itemId, item_code AS itemCode, item_name AS itemName, base_unit AS baseUnit, " +
+                    "warehouse_id AS warehouseId, warehouse_code AS warehouseCode, warehouse_name AS warehouseName, " +
+                    "location_id AS locationId, location_code AS locationCode, location_name AS locationName, " +
+                    "quantity_scaled AS quantityScaled, version FROM (" +
+                    "SELECT b.item_id, i.code AS item_code, i.name AS item_name, i.base_unit, " +
+                    "w.id AS warehouse_id, w.code AS warehouse_code, w.name AS warehouse_name, " +
+                    "l.id AS location_id, l.code AS location_code, l.name AS location_name, " +
+                    "b.quantity_scaled, b.version, ROW_NUMBER() OVER (ORDER BY i.code, w.code, l.code, b.id) AS row_num " +
                     "FROM wh_stock_balance b " +
                     "JOIN wh_item i ON i.id=b.item_id " +
                     "JOIN wh_location l ON l.id=b.location_id " +

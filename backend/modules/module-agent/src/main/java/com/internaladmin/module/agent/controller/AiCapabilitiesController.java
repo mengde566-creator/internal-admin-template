@@ -18,7 +18,7 @@ public class AiCapabilitiesController {
 
     private static final List<String> WAREHOUSE_ADAPTERS = List.of("warehouse");
     private static final List<String> UI_MODES = List.of("DOCKED", "COMPACT", "DRAWER");
-    private static final List<String> FEATURES = List.of("CHAT", "STREAM", "BUSINESS_CARD");
+    private static final List<String> FEATURES = List.of("CHAT", "STREAM", "BUSINESS_CARD", "COPY", "OPEN_ROUTE");
 
     private final AiProperties properties;
 

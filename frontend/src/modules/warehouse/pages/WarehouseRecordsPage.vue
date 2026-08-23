@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Document, Loading, Refresh, Search } from '@element-plus/icons-vue'
 import { fetchOperation, fetchOperationMovements, fetchRecentMovements, fetchRecentOperations, type Movement, type Operation } from '../api/warehouse'
 import { itemLabel, locationLabel, messageOf, useWarehouseReferences, warehouseLabel } from '../composables/useWarehouseReferences'
@@ -16,6 +16,11 @@ const recordsLoading = ref(false)
 const drawerOpen = ref(false)
 const selectedOperation = ref<Operation | null>(null)
 const selectedMovements = ref<Movement[]>([])
+const canFixAction = ref(true)
+
+function checkFixAction() {
+  canFixAction.value = typeof window !== 'undefined' ? window.innerWidth >= 1200 : true
+}
 
 const typeLabels: Record<string, string> = { INBOUND: '入库', OUTBOUND: '出库', TRANSFER: '调拨', STOCKTAKE: '盘点' }
 function operationMovements(operationId: string) { return movements.value.filter((movement) => movement.operationId === operationId) }
@@ -71,38 +76,154 @@ function locationName(id: string) { return locationLabel(locations.value, id) }
 function warehouseName(id: string) { return warehouseLabel(warehouseOptions.value, locations.value.find((location) => location.id === id)?.warehouseId ?? '') }
 function movementLocation(id: string) { return `${warehouseName(id)} / ${locationName(id)}` }
 function clearFilters() { typeFilter.value = ''; warehouseFilter.value = ''; itemFilter.value = ''; dateFilter.value = ''; keyword.value = '' }
-onMounted(() => { void load() })
+
+onMounted(() => {
+  checkFixAction()
+  window.addEventListener('resize', checkFixAction)
+  void load()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkFixAction)
+})
 </script>
 
 <template>
   <section class="warehouse-view records-view">
-    <header class="view-heading"><div><p class="view-kicker">追溯库存变化</p><h2>库存记录</h2><p>入库、出库、调拨和盘点都会在这里留下不可修改的记录。</p></div><el-button :icon="Refresh" :loading="loading" @click="load">刷新记录</el-button></header>
-    <el-alert v-if="error" type="error" :closable="false" show-icon class="state-alert"><template #title>库存记录加载失败</template>{{ error }} <el-button link type="primary" @click="load">重新加载</el-button></el-alert>
+    <header class="view-heading">
+      <div>
+        <p class="view-kicker">追溯库存变化</p>
+        <h2>库存记录</h2>
+        <p>入库、出库、调拨和盘点都会在这里留下不可修改的记录。</p>
+      </div>
+      <el-button :icon="Refresh" :loading="loading" @click="load">刷新记录</el-button>
+    </header>
+    <el-alert v-if="error" type="error" :closable="false" show-icon class="state-alert">
+      <template #title>库存记录加载失败</template>
+      {{ error }}
+      <el-button link type="primary" @click="load">重新加载</el-button>
+    </el-alert>
     <el-card shadow="never" class="data-card">
       <div class="filter-bar" data-testid="records-filter-bar" data-mobile-layout="single-column">
         <el-input v-model="keyword" :prefix-icon="Search" clearable placeholder="搜索记录编号或备注" />
-        <el-select v-model="typeFilter" clearable placeholder="全部类型"><el-option label="入库" value="INBOUND" /><el-option label="出库" value="OUTBOUND" /><el-option label="调拨" value="TRANSFER" /><el-option label="盘点" value="STOCKTAKE" /></el-select>
-        <el-select v-model="itemFilter" clearable placeholder="全部物品"><el-option v-for="item in items" :key="item.id" :label="`${item.code} / ${item.name}`" :value="item.id" /></el-select>
-        <el-select v-model="warehouseFilter" clearable placeholder="全部仓库"><el-option v-for="warehouse in warehouseOptions" :key="warehouse.id" :label="warehouse.name" :value="warehouse.id" /></el-select>
+        <el-select v-model="typeFilter" clearable placeholder="全部类型">
+          <el-option label="入库" value="INBOUND" />
+          <el-option label="出库" value="OUTBOUND" />
+          <el-option label="调拨" value="TRANSFER" />
+          <el-option label="盘点" value="STOCKTAKE" />
+        </el-select>
+        <el-select v-model="itemFilter" clearable placeholder="全部物品">
+          <el-option v-for="item in items" :key="item.id" :label="`${item.code} / ${item.name}`" :value="item.id" />
+        </el-select>
+        <el-select v-model="warehouseFilter" clearable placeholder="全部仓库">
+          <el-option v-for="warehouse in warehouseOptions" :key="warehouse.id" :label="warehouse.name" :value="warehouse.id" />
+        </el-select>
         <el-date-picker v-model="dateFilter" type="date" value-format="YYYY-MM-DD" clearable placeholder="全部日期" />
         <el-button @click="clearFilters">清除筛选</el-button>
       </div>
-      <div v-if="recordsLoading" class="loading-state"><el-icon class="is-loading" :size="24"><Loading /></el-icon><h3>正在加载库存记录</h3><p>正在读取最近的库存变化。</p></div>
-      <div v-else-if="error && !operations.length" class="empty-state"><el-icon :size="30"><Document /></el-icon><h3>库存记录暂不可用</h3><p>请稍后重试，或重新加载记录。</p><el-button type="primary" @click="load">重新加载</el-button></div>
-      <div v-else-if="!operations.length" class="empty-state"><el-icon :size="30"><Document /></el-icon><h3>还没有库存记录</h3><p>完成一次库存操作后，记录会出现在这里。</p></div>
-      <div v-else-if="!visibleOperations.length" class="empty-state"><h3>没有找到符合条件的记录</h3><p>请更换筛选条件。</p><el-button @click="clearFilters">清除筛选</el-button></div>
-      <el-table v-else :data="visibleOperations" stripe>
-        <el-table-column prop="operationNo" label="记录编号" min-width="180" />
-        <el-table-column label="业务类型" min-width="110"><template #default="scope"><el-tag>{{ typeName(scope.row.type) }}</el-tag></template></el-table-column>
-        <el-table-column label="物品" min-width="180"><template #default="scope">{{ operationItemSummary(scope.row.id) }}</template></el-table-column>
-        <el-table-column label="位置" min-width="280"><template #default="scope">{{ operationLocationSummary(scope.row) }}</template></el-table-column>
-        <el-table-column label="数量变化" min-width="180"><template #default="scope">{{ operationQuantitySummary(scope.row.id) }}</template></el-table-column>
-        <el-table-column prop="occurredAt" label="发生时间" min-width="180" />
-        <el-table-column label="操作" fixed="right" min-width="110"><template #default="scope"><el-button link type="primary" @click="openDetail(scope.row)">查看详情</el-button></template></el-table-column>
-      </el-table>
+      <div v-if="recordsLoading" class="loading-state">
+        <el-icon class="is-loading" :size="24"><Loading /></el-icon>
+        <h3>正在加载库存记录</h3>
+        <p>正在读取最近的库存变化。</p>
+      </div>
+      <div v-else-if="error && !operations.length" class="empty-state">
+        <el-icon :size="30"><Document /></el-icon>
+        <h3>库存记录暂不可用</h3>
+        <p>请稍后重试，或重新加载记录。</p>
+        <el-button type="primary" @click="load">重新加载</el-button>
+      </div>
+      <div v-else-if="!operations.length" class="empty-state">
+        <el-icon :size="30"><Document /></el-icon>
+        <h3>还没有库存记录</h3>
+        <p>完成一次库存操作后，记录会出现在这里。</p>
+      </div>
+      <div v-else-if="!visibleOperations.length" class="empty-state">
+        <h3>没有找到符合条件的记录</h3>
+        <p>请更换筛选条件。</p>
+        <el-button @click="clearFilters">清除筛选</el-button>
+      </div>
+      <div v-else class="records-table-wrapper">
+        <el-table class="desktop-records-table" :data="visibleOperations" stripe>
+          <el-table-column label="记录编号" min-width="180">
+            <template #default="scope">
+              <el-tooltip :content="scope.row.operationNo" placement="top" :enterable="true" :show-after="200">
+                <span class="table-text-cell" tabindex="0" :aria-label="`记录编号：${scope.row.operationNo}`">{{ scope.row.operationNo }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="业务类型" min-width="110">
+            <template #default="scope"><el-tag>{{ typeName(scope.row.type) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="物品" min-width="180">
+            <template #default="scope">
+              <el-tooltip :content="operationItemSummary(scope.row.id)" placement="top" :enterable="true" :show-after="200">
+                <span class="table-text-cell" tabindex="0" :aria-label="`物品：${operationItemSummary(scope.row.id)}`">{{ operationItemSummary(scope.row.id) }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="位置" min-width="260">
+            <template #default="scope">
+              <el-tooltip :content="operationLocationSummary(scope.row)" placement="top" :enterable="true" :show-after="200">
+                <span class="table-text-cell" tabindex="0" :aria-label="`位置：${operationLocationSummary(scope.row)}`">{{ operationLocationSummary(scope.row) }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="数量变化" min-width="150">
+            <template #default="scope">
+              <el-tooltip :content="operationQuantitySummary(scope.row.id)" placement="top" :enterable="true" :show-after="200">
+                <span class="table-text-cell" tabindex="0" :aria-label="`数量变化：${operationQuantitySummary(scope.row.id)}`">{{ operationQuantitySummary(scope.row.id) }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="发生时间" min-width="170">
+            <template #default="scope">
+              <el-tooltip :content="scope.row.occurredAt" placement="top" :enterable="true" :show-after="200">
+                <span class="table-text-cell" tabindex="0" :aria-label="`发生时间：${scope.row.occurredAt}`">{{ scope.row.occurredAt }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" :fixed="canFixAction ? 'right' : false" min-width="110">
+            <template #default="scope"><el-button link type="primary" @click="openDetail(scope.row)">查看详情</el-button></template>
+          </el-table-column>
+        </el-table>
+      </div>
     </el-card>
     <el-drawer v-model="drawerOpen" title="库存记录详情" size="min(100%, 720px)">
-      <template v-if="selectedOperation"><div class="detail-head"><el-tag>{{ typeName(selectedOperation.type) }}</el-tag><h3>{{ selectedOperation.operationNo }}</h3><p>{{ selectedOperation.remark || '本次没有填写整单备注。' }}</p></div><el-table :data="selectedMovements" stripe><el-table-column label="物品" min-width="170"><template #default="scope">{{ itemName(scope.row.itemId) }}</template></el-table-column><el-table-column label="位置" min-width="190"><template #default="scope">{{ movementLocation(scope.row.locationId) }}</template></el-table-column><el-table-column prop="deltaQuantity" label="数量变化" min-width="120" /><el-table-column prop="beforeQuantity" label="发生前" min-width="120" /><el-table-column prop="afterQuantity" label="发生后" min-width="120" /><el-table-column prop="lineRemark" label="行备注" min-width="150" /></el-table></template>
+      <template v-if="selectedOperation">
+        <div class="detail-head">
+          <el-tag>{{ typeName(selectedOperation.type) }}</el-tag>
+          <h3>{{ selectedOperation.operationNo }}</h3>
+          <p>{{ selectedOperation.remark || '本次没有填写整单备注。' }}</p>
+        </div>
+        <div class="drawer-table-wrapper">
+          <el-table :data="selectedMovements" stripe class="drawer-movements-table">
+            <el-table-column label="物品" min-width="170">
+              <template #default="scope">
+                <el-tooltip :content="itemName(scope.row.itemId)" placement="top" :enterable="true" :show-after="200">
+                  <span class="table-text-cell" tabindex="0">{{ itemName(scope.row.itemId) }}</span>
+                </el-tooltip>
+              </template>
+            </el-table-column>
+            <el-table-column label="位置" min-width="190">
+              <template #default="scope">
+                <el-tooltip :content="movementLocation(scope.row.locationId)" placement="top" :enterable="true" :show-after="200">
+                  <span class="table-text-cell" tabindex="0">{{ movementLocation(scope.row.locationId) }}</span>
+                </el-tooltip>
+              </template>
+            </el-table-column>
+            <el-table-column prop="deltaQuantity" label="数量变化" min-width="120" />
+            <el-table-column prop="beforeQuantity" label="发生前" min-width="120" />
+            <el-table-column prop="afterQuantity" label="发生后" min-width="120" />
+            <el-table-column label="行备注" min-width="150">
+              <template #default="scope">
+                <el-tooltip :content="scope.row.lineRemark || '—'" placement="top" :enterable="true" :show-after="200">
+                  <span class="table-text-cell" tabindex="0">{{ scope.row.lineRemark || '—' }}</span>
+                </el-tooltip>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </template>
     </el-drawer>
   </section>
 </template>
@@ -127,6 +248,42 @@ onMounted(() => { void load() })
 .detail-head { margin-bottom: 20px; }
 .detail-head h3 { margin: 12px 0 6px; color: var(--ui-text-strong); }
 .detail-head p { margin: 0; color: var(--ui-text-muted); }
+
+.records-table-wrapper, .drawer-table-wrapper {
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+  width: 100%;
+}
+.desktop-records-table {
+  min-width: 980px;
+  width: 100%;
+}
+.drawer-movements-table {
+  min-width: 680px;
+  width: 100%;
+}
+.table-text-cell {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desktop-records-table :deep(.el-table__fixed-right),
+.desktop-records-table :deep(.el-table__fixed-right-patch) {
+  background: var(--ui-surface) !important;
+  border-left: 1px solid var(--ui-border);
+  box-shadow: -4px 0 8px -2px rgba(0, 0, 0, 0.06);
+}
+.desktop-records-table :deep(.el-table__row--striped .el-table__fixed-right-cell) {
+  background: var(--ui-surface-muted) !important;
+}
+.desktop-records-table :deep(th.el-table__cell),
+.drawer-movements-table :deep(th.el-table__cell) {
+  background: var(--ui-surface-muted) !important;
+  color: var(--ui-text-muted);
+}
+
 @media (max-width: 1100px) { .filter-bar { grid-template-columns: repeat(2, minmax(150px, 1fr)); }.filter-bar .el-input { grid-column: span 2; } }
-@media (max-width: 720px) { .view-heading { flex-direction: column; }.filter-bar { grid-template-columns: 1fr; }.filter-bar > * { width: 100% !important; grid-column: auto !important; }.data-card :deep(.el-table) { overflow-x: auto; } }
+@media (max-width: 720px) { .view-heading { flex-direction: column; }.filter-bar { grid-template-columns: 1fr; }.filter-bar > * { width: 100% !important; grid-column: auto !important; } }
 </style>

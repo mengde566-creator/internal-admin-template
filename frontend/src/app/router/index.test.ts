@@ -61,4 +61,11 @@ describe('应用路由守卫', () => {
       'warehouse-records',
     ]))
   })
+
+  it('库存查询子路由使用只读权限，适合助手受控跳转', () => {
+    const warehouse = router.getRoutes().find((route) => route.name === 'warehouse')
+    const stock = warehouse?.children.find((route) => route.name === 'warehouse-stock')
+    expect(stock?.path).toBe('stock')
+    expect(stock?.meta?.permission).toBe('warehouse:read')
+  })
 })

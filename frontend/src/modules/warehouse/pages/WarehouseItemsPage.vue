@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Edit, Plus, Refresh, Search, SwitchButton } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { createItem, fetchWarehouseItems, updateItem, type Item } from '../api/warehouse'
@@ -15,6 +15,11 @@ const focusItemId = computed(() => String(route?.query?.item ?? ''))
 const drawerOpen = ref(false)
 const editing = ref(false)
 const form = ref({ id: '', code: '', name: '', baseUnit: '', enabled: true, version: 0 })
+const canFixAction = ref(true)
+
+function checkFixAction() {
+  canFixAction.value = typeof window !== 'undefined' ? window.innerWidth >= 1200 : true
+}
 
 const filteredItems = computed(() => {
   const value = keyword.value.trim().toLowerCase()
@@ -52,40 +57,103 @@ async function toggle(item: Item) {
   try { await updateItem(item.id, { name: item.name, baseUnit: item.baseUnit, version: item.version, enabled: !item.enabled }); await load() } catch (cause: any) { error.value = messageOf(cause, '数据已被其他人更新，请刷新后重新操作') }
 }
 onMounted(async () => {
+  checkFixAction()
+  window.addEventListener('resize', checkFixAction)
   await load()
   if (focusItemId.value && !keyword.value) {
     const focused = items.value.find((item) => item.id === focusItemId.value)
     if (focused) keyword.value = focused.code
   }
 })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkFixAction)
+})
 </script>
 
 <template>
   <section class="warehouse-view master-view">
     <header class="view-heading">
-      <div><p class="view-kicker">物品资料</p><h2>物品</h2><p>物品编码创建后不可修改；停用后不能用于新的库存操作，历史记录仍会保留。</p></div>
-      <div class="view-actions"><el-button :icon="Refresh" :loading="loading" @click="load">重新加载</el-button><el-button type="primary" :icon="Plus" @click="openCreate">添加物品</el-button></div>
+      <div>
+        <p class="view-kicker">物品资料</p>
+        <h2>物品</h2>
+        <p>物品编码创建后不可修改；停用后不能用于新的库存操作，历史记录仍会保留。</p>
+      </div>
+      <div class="view-actions">
+        <el-button :icon="Refresh" :loading="loading" @click="load">重新加载</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">添加物品</el-button>
+      </div>
     </header>
     <el-alert v-if="error" type="error" :closable="false" show-icon class="state-alert">{{ error }}</el-alert>
     <el-card shadow="never" class="data-card">
-      <div class="filter-bar"><el-input v-model="keyword" clearable placeholder="搜索物品编码或名称" :prefix-icon="Search" @keyup.enter="load" /><el-button type="primary" :icon="Search" @click="load">搜索</el-button></div>
-      <div v-if="!loading && !items.length && !keyword" class="empty-state"><h3>还没有物品</h3><p>先添加物品，才能办理入库和查询库存。</p><el-button type="primary" @click="openCreate">添加第一个物品</el-button></div>
-      <div v-else-if="!loading && !filteredItems.length" class="empty-state"><h3>没有找到符合条件的物品</h3><p>请更换搜索条件。</p><el-button @click="keyword = ''; load()">清除搜索</el-button></div>
-      <el-table v-else :data="filteredItems" stripe>
-        <el-table-column prop="code" label="编码" min-width="150" />
-        <el-table-column prop="name" label="名称" min-width="180" />
-        <el-table-column prop="baseUnit" label="基本单位" min-width="120" />
-        <el-table-column label="状态" min-width="100"><template #default="scope"><el-tag :type="scope.row.enabled ? 'success' : 'info'">{{ scope.row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
-        <el-table-column label="操作" min-width="210" fixed="right"><template #default="scope"><el-button link type="primary" :icon="Edit" @click="openEdit(scope.row)">编辑</el-button><el-button link :type="scope.row.enabled ? 'danger' : 'success'" :icon="SwitchButton" @click="toggle(scope.row)">{{ scope.row.enabled ? '停用' : '启用' }}</el-button><el-button link @click="router.push({ name: 'warehouse-stock', query: { item: scope.row.id } })">查看库存</el-button></template></el-table-column>
-      </el-table>
+      <div class="filter-bar">
+        <el-input v-model="keyword" clearable placeholder="搜索物品编码或名称" :prefix-icon="Search" @keyup.enter="load" />
+        <el-button type="primary" :icon="Search" @click="load">搜索</el-button>
+      </div>
+      <div v-if="!loading && !items.length && !keyword" class="empty-state">
+        <h3>还没有物品</h3>
+        <p>先添加物品，才能办理入库和查询库存。</p>
+        <el-button type="primary" @click="openCreate">添加第一个物品</el-button>
+      </div>
+      <div v-else-if="!loading && !filteredItems.length" class="empty-state">
+        <h3>没有找到符合条件的物品</h3>
+        <p>请更换搜索条件。</p>
+        <el-button @click="keyword = ''; load()">清除搜索</el-button>
+      </div>
+      <div v-else class="items-table-wrapper">
+        <el-table class="desktop-items-table" :data="filteredItems" stripe>
+          <el-table-column label="编码" min-width="150">
+            <template #default="scope">
+              <el-tooltip :content="scope.row.code" placement="top" :enterable="true" :show-after="200">
+                <span class="table-text-cell" tabindex="0" :aria-label="`物品编码：${scope.row.code}`">{{ scope.row.code }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="名称" min-width="180">
+            <template #default="scope">
+              <el-tooltip :content="scope.row.name" placement="top" :enterable="true" :show-after="200">
+                <span class="table-text-cell" tabindex="0" :aria-label="`物品名称：${scope.row.name}`">{{ scope.row.name }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column prop="baseUnit" label="基本单位" min-width="120" />
+          <el-table-column label="状态" min-width="100">
+            <template #default="scope">
+              <el-tag :type="scope.row.enabled ? 'success' : 'info'">{{ scope.row.enabled ? '启用' : '停用' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" min-width="210" :fixed="canFixAction ? 'right' : false">
+            <template #default="scope">
+              <el-button link type="primary" :icon="Edit" @click="openEdit(scope.row)">编辑</el-button>
+              <el-button link :type="scope.row.enabled ? 'danger' : 'success'" :icon="SwitchButton" @click="toggle(scope.row)">
+                {{ scope.row.enabled ? '停用' : '启用' }}
+              </el-button>
+              <el-button link @click="router.push({ name: 'warehouse-stock', query: { item: scope.row.id } })">
+                查看库存
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
     </el-card>
     <el-drawer v-model="drawerOpen" :title="editing ? '编辑物品' : '添加物品'" size="min(100%, 520px)">
       <el-form label-position="top" @submit.prevent="save">
-        <el-form-item label="物品编码" required><el-input v-model="form.code" :disabled="editing" placeholder="例如 A100" /></el-form-item>
-        <el-form-item label="物品名称" required><el-input v-model="form.name" placeholder="填写物品名称" /></el-form-item>
-        <el-form-item label="基本单位" required><el-input v-model="form.baseUnit" placeholder="例如 件" /></el-form-item>
-        <el-form-item v-if="editing" label="状态"><el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" /></el-form-item>
-        <div class="drawer-actions"><el-button @click="drawerOpen = false">取消</el-button><el-button type="primary" @click="save">保存物品</el-button></div>
+        <el-form-item label="物品编码" required>
+          <el-input v-model="form.code" :disabled="editing" placeholder="例如 A100" />
+        </el-form-item>
+        <el-form-item label="物品名称" required>
+          <el-input v-model="form.name" placeholder="填写物品名称" />
+        </el-form-item>
+        <el-form-item label="基本单位" required>
+          <el-input v-model="form.baseUnit" placeholder="例如 件" />
+        </el-form-item>
+        <el-form-item v-if="editing" label="状态">
+          <el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" />
+        </el-form-item>
+        <div class="drawer-actions">
+          <el-button @click="drawerOpen = false">取消</el-button>
+          <el-button type="primary" @click="save">保存物品</el-button>
+        </div>
       </el-form>
     </el-drawer>
   </section>
@@ -106,5 +174,36 @@ onMounted(async () => {
 .empty-state h3 { margin: 0; color: var(--ui-text-strong); }
 .empty-state p { margin: 0 0 8px; }
 .drawer-actions { justify-content: flex-end; margin-top: 24px; }
+
+.items-table-wrapper {
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+  width: 100%;
+}
+.desktop-items-table {
+  min-width: 720px;
+  width: 100%;
+}
+.table-text-cell {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desktop-items-table :deep(.el-table__fixed-right),
+.desktop-items-table :deep(.el-table__fixed-right-patch) {
+  background: var(--ui-surface) !important;
+  border-left: 1px solid var(--ui-border);
+  box-shadow: -4px 0 8px -2px rgba(0, 0, 0, 0.06);
+}
+.desktop-items-table :deep(.el-table__row--striped .el-table__fixed-right-cell) {
+  background: var(--ui-surface-muted) !important;
+}
+.desktop-items-table :deep(th.el-table__cell) {
+  background: var(--ui-surface-muted) !important;
+  color: var(--ui-text-muted);
+}
+
 @media (max-width: 640px) { .view-heading { flex-direction: column; } .view-actions, .filter-bar { width: 100%; } .filter-bar .el-input { max-width: none; flex: 1; } }
 </style>

@@ -44,4 +44,6 @@
     </changeSet>
     <include file="db/changelog/2026-08-20-0002-active-run-reservation.xml"/>
     <include file="db/changelog/2026-08-21-0001-conversation-history-contract.xml"/>
+    <include file="db/changelog/2026-08-21-0002-message-scope-fingerprint.xml"/>
+    <include file="db/changelog/2026-08-21-0003-memory-segment.xml"/>
 </databaseChangeLog>

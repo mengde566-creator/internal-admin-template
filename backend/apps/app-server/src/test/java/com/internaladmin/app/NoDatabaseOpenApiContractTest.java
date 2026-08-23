@@ -407,7 +407,7 @@ class NoDatabaseOpenApiContractTest {
 
         @Bean
         AgentConversationService agentConversationService() {
-            return new AgentConversationService(null, null, null);
+            return new AgentConversationService(null, null, null, new AiProperties());
         }
 
         /** Expose the real handler mappings for springdoc while leaving the production flag disabled. */

@@ -2,6 +2,7 @@ package com.internaladmin.module.agent.store;
 
 import com.internaladmin.platform.kernel.error.BusinessException;
 import com.internaladmin.platform.kernel.error.ErrorCode;
+import com.internaladmin.module.knowledge.api.AiProperties;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.transaction.annotation.Transactional;
@@ -11,7 +12,13 @@ import java.sql.Timestamp;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /** Narrow persistence boundary for Conversation, Message and Run owned by module-agent. */
@@ -40,14 +47,22 @@ public class AgentStore {
     public ConversationRow createConversation(Long userId) {
         String conversationId = UUID.randomUUID().toString();
         Timestamp now = Timestamp.from(Instant.now());
-        jdbc.update("INSERT INTO ai_conversation(id, user_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                conversationId, userId, now, now);
+        jdbc.update("INSERT INTO ai_conversation(id, user_id, created_at, updated_at, active_memory_segment_no) "
+                        + "VALUES (?, ?, ?, ?, ?)", conversationId, userId, now, now, 1L);
         return new ConversationRow(conversationId, now.toInstant(), now.toInstant());
     }
 
     @Transactional
     public StartRun startRun(String requestedConversationId, String clientRequestId,
-                             String userMessage, Long userId) {
+                             String userMessage, Long userId, String scopeFingerprint) {
+        return startRun(requestedConversationId, clientRequestId, userMessage, userId, scopeFingerprint,
+                new AiProperties().getMemory().getIdleTtl());
+    }
+
+    @Transactional
+    public StartRun startRun(String requestedConversationId, String clientRequestId,
+                             String userMessage, Long userId, String scopeFingerprint,
+                             Duration idleTtl) {
         ConversationRow conversation = requireConversation(requestedConversationId, userId);
         String conversationId = conversation.conversationId();
         List<RunRow> existing = jdbc.query("SELECT run_id, status FROM ai_run "
@@ -64,25 +79,40 @@ public class AgentStore {
                     (rs, resultSetRow) -> rs.getString(1), row.runId(), "ASSISTANT");
             String assistantMessageId = assistantMessages.isEmpty()
                     ? null : assistantMessages.getLast();
-            return new StartRun(conversationId, row.runId(), false, row.status(), assistantMessageId);
+            Long segment = jdbc.queryForObject("SELECT COALESCE(memory_segment_no, 1) FROM ai_message "
+                            + "WHERE run_id = ? AND role = ? ORDER BY sequence_no LIMIT 1",
+                    Long.class, row.runId(), "USER");
+            return new StartRun(conversationId, row.runId(), false, row.status(), assistantMessageId,
+                    segment == null ? 1L : segment);
         }
         String runId = UUID.randomUUID().toString();
         String assistantMessageId = UUID.randomUUID().toString();
+        MemorySegmentState memoryState = memorySegmentState(conversationId);
+        Timestamp now = Timestamp.from(Instant.now());
+        long segment = nextMemorySegment(memoryState, scopeFingerprint, idleTtl, now.toInstant());
         int reserved = jdbc.update("UPDATE ai_conversation SET active_run_id = ? "
                         + "WHERE id = ? AND active_run_id IS NULL", runId, conversationId);
         if (reserved != 1) {
             throw new BusinessException(ErrorCode.CONFLICT, "该对话已有进行中的运行");
         }
-        Timestamp now = Timestamp.from(Instant.now());
+        jdbc.update("UPDATE ai_conversation SET active_memory_segment_no = ? WHERE id = ?",
+                segment, conversationId);
         long sequence = nextMessageSequence(conversationId);
         jdbc.update("INSERT INTO ai_run(run_id, conversation_id, user_id, client_request_id, status, created_at) "
                         + "VALUES (?, ?, ?, ?, ?, ?)",
                 runId, conversationId, userId, clientRequestId, RUNNING, now);
-        jdbc.update("INSERT INTO ai_message(message_id, conversation_id, run_id, sequence_no, role, content, state, created_at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                UUID.randomUUID().toString(), conversationId, runId, sequence, "USER", userMessage, "COMPLETE", now);
+        jdbc.update("INSERT INTO ai_message(message_id, conversation_id, run_id, sequence_no, role, content, state, created_at, scope_fingerprint, memory_segment_no) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                UUID.randomUUID().toString(), conversationId, runId, sequence, "USER", userMessage, "COMPLETE", now,
+                scopeFingerprint, segment);
         jdbc.update("UPDATE ai_conversation SET updated_at = ? WHERE id = ?", now, conversationId);
-        return new StartRun(conversationId, runId, true, RUNNING, assistantMessageId);
+        return new StartRun(conversationId, runId, true, RUNNING, assistantMessageId, segment);
+    }
+
+    /** Isolated fixtures without an actor scope must never be eligible for model memory. */
+    public StartRun startRun(String requestedConversationId, String clientRequestId,
+                             String userMessage, Long userId) {
+        return startRun(requestedConversationId, clientRequestId, userMessage, userId, null);
     }
 
     /**
@@ -130,18 +160,85 @@ public class AgentStore {
         return new MessagePage(records, total, page, size);
     }
 
+    /**
+     * 为模型读取当前用户、当前 Conversation 的短期有效 History；失败/取消消息不会进入结果。
+     * 数据库负责归属和状态过滤，服务层再施加字符上限，避免把页面展示 History 当成模型上下文。
+     */
+    public List<MessageRow> loadMemory(String conversationId, Long userId, String scopeFingerprint,
+                                       long memorySegmentNo, int maxMessages, int maxChars) {
+        requireConversation(conversationId, userId);
+        int boundedMessages = Math.max(2, Math.min(maxMessages, 100));
+        int boundedChars = Math.max(256, Math.min(maxChars, 100_000));
+        int candidateLimit = Math.min(200, Math.max(2, boundedMessages * 2));
+        List<MessageRow> candidates = jdbc.query("SELECT m.message_id, m.run_id, m.role, m.state, m.content, m.created_at " +
+                        "FROM ai_message m JOIN ai_conversation c ON c.id=m.conversation_id " +
+                        "JOIN ai_run r ON r.run_id=m.run_id " +
+                        "WHERE m.conversation_id=? AND c.user_id=? AND m.scope_fingerprint=? AND r.status=? AND m.state=? " +
+                        "AND m.memory_segment_no=? AND m.role IN (?, ?) " +
+                        "ORDER BY m.sequence_no DESC, m.created_at DESC, m.message_id DESC LIMIT ?",
+                (rs, row) -> new MessageRow(rs.getString("message_id"), rs.getString("run_id"),
+                rs.getString("role"), rs.getString("state"), rs.getString("content"),
+                        readInstant(rs, "created_at")), conversationId, userId, scopeFingerprint, COMPLETE, "COMPLETE",
+                memorySegmentNo, "USER", "ASSISTANT", candidateLimit);
+
+        // Candidates are newest first. Select complete USER/ASSISTANT runs in that order,
+        // then restore chronological order for the model without allowing an old long row
+        // to evict the latest complete turn.
+        Map<String, List<MessageRow>> byRun = new LinkedHashMap<>();
+        for (MessageRow row : candidates) {
+            byRun.computeIfAbsent(row.runId(), ignored -> new ArrayList<>()).add(row);
+        }
+        List<List<MessageRow>> newestFirst = new ArrayList<>();
+        int usedChars = 0;
+        int usedMessages = 0;
+        for (List<MessageRow> runRows : byRun.values()) {
+            MessageRow user = runRows.stream().filter(row -> "USER".equals(row.role())).findFirst().orElse(null);
+            MessageRow assistant = runRows.stream().filter(row -> "ASSISTANT".equals(row.role())).findFirst().orElse(null);
+            if (user == null || assistant == null) {
+                continue;
+            }
+            int runChars = length(user.content()) + length(assistant.content());
+            if (usedMessages + 2 > boundedMessages || usedChars + runChars > boundedChars) {
+                continue;
+            }
+            newestFirst.add(List.of(user, assistant));
+            usedMessages += 2;
+            usedChars += runChars;
+        }
+        Collections.reverse(newestFirst);
+        List<MessageRow> selected = new ArrayList<>();
+        newestFirst.forEach(selected::addAll);
+        return selected;
+    }
+
+    /** Compatibility entry point for narrow store fixtures; production uses the segment overload. */
+    public List<MessageRow> loadMemory(String conversationId, Long userId, String scopeFingerprint,
+                                       Duration ignoredIdleTtl, int maxMessages, int maxChars) {
+        MemorySegmentState state = memorySegmentState(conversationId);
+        return loadMemory(conversationId, userId, scopeFingerprint,
+                state.segmentNo(), maxMessages, maxChars);
+    }
+
+    public void appendAssistant(String conversationId, String runId, String messageId,
+                                String content, String state, String scopeFingerprint) {
+        Timestamp now = Timestamp.from(Instant.now());
+        Long segment = jdbc.queryForObject("SELECT COALESCE(memory_segment_no, 1) FROM ai_message "
+                        + "WHERE run_id = ? AND role = ? ORDER BY sequence_no LIMIT 1", Long.class, runId, "USER");
+        jdbc.update("INSERT INTO ai_message(message_id, conversation_id, run_id, sequence_no, role, content, state, created_at, scope_fingerprint, memory_segment_no) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                messageId, conversationId, runId, nextMessageSequence(conversationId), "ASSISTANT", content, state, now,
+                scopeFingerprint, segment == null ? 1L : segment);
+        jdbc.update("UPDATE ai_conversation SET updated_at = ? WHERE id = ?", now, conversationId);
+    }
+
     public void appendAssistant(String conversationId, String runId, String messageId,
                                 String content, String state) {
-        Timestamp now = Timestamp.from(Instant.now());
-        jdbc.update("INSERT INTO ai_message(message_id, conversation_id, run_id, sequence_no, role, content, state, created_at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                messageId, conversationId, runId, nextMessageSequence(conversationId), "ASSISTANT", content, state, now);
-        jdbc.update("UPDATE ai_conversation SET updated_at = ? WHERE id = ?", now, conversationId);
+        appendAssistant(conversationId, runId, messageId, content, state, null);
     }
 
     /** Compatibility for narrow callers that do not own an assistant message id. */
     public void appendAssistant(String conversationId, String runId, String content, String state) {
-        appendAssistant(conversationId, runId, UUID.randomUUID().toString(), content, state);
+        appendAssistant(conversationId, runId, UUID.randomUUID().toString(), content, state, null);
     }
 
     @Transactional
@@ -171,11 +268,51 @@ public class AgentStore {
         if (updated != 1) {
             return false;
         }
-        jdbc.update("UPDATE ai_conversation SET active_run_id = NULL WHERE active_run_id = ?", runId);
-        jdbc.update("UPDATE ai_conversation SET updated_at = ? WHERE active_run_id IS NULL "
-                        + "AND id = (SELECT conversation_id FROM ai_run WHERE run_id = ?)",
-                Timestamp.from(Instant.now()), runId);
+        Timestamp completedAt = Timestamp.from(Instant.now());
+        if (COMPLETE.equals(status)) {
+            jdbc.update("UPDATE ai_conversation SET active_run_id = NULL, updated_at = ?, "
+                            + "last_memory_activity_at = ? WHERE active_run_id = ?",
+                    completedAt, completedAt, runId);
+        }
+        else {
+            jdbc.update("UPDATE ai_conversation SET active_run_id = NULL, updated_at = ? "
+                            + "WHERE active_run_id = ?", completedAt, runId);
+        }
         return true;
+    }
+
+    private MemorySegmentState memorySegmentState(String conversationId) {
+        List<MemorySegmentState> states = jdbc.query("SELECT active_memory_segment_no, last_memory_activity_at "
+                        + "FROM ai_conversation WHERE id = ?",
+                (rs, row) -> new MemorySegmentState(
+                        rs.getObject("active_memory_segment_no") == null ? 1L
+                                : rs.getLong("active_memory_segment_no"),
+                        rs.getObject("last_memory_activity_at") == null ? null
+                                : readInstant(rs, "last_memory_activity_at")), conversationId);
+        if (states.isEmpty()) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "对话不存在");
+        }
+        List<String> latestScopes = jdbc.query("SELECT m.scope_fingerprint FROM ai_message m "
+                        + "JOIN ai_run r ON r.run_id = m.run_id "
+                        + "WHERE m.conversation_id = ? AND m.state = ? AND r.status = ? "
+                        + "ORDER BY m.sequence_no DESC LIMIT 1",
+                (rs, row) -> rs.getString(1), conversationId, "COMPLETE", COMPLETE);
+        return states.getFirst().withLatestScope(latestScopes.isEmpty() ? null : latestScopes.getFirst(),
+                !latestScopes.isEmpty());
+    }
+
+    private long nextMemorySegment(MemorySegmentState state, String scopeFingerprint,
+                                   Duration idleTtl, Instant now) {
+        Duration ttl = idleTtl == null ? new AiProperties().getMemory().getIdleTtl() : idleTtl;
+        boolean scopeChanged = state.hasLatestMessage()
+                && !Objects.equals(state.latestScope(), scopeFingerprint);
+        boolean idle = state.lastActivity() != null
+                && now.isAfter(state.lastActivity().plus(ttl));
+        return scopeChanged || idle ? state.segmentNo() + 1 : state.segmentNo();
+    }
+
+    private static int length(String value) {
+        return value == null ? 0 : value.length();
     }
 
     private ConversationRow requireConversation(String conversationId, Long userId) {
@@ -258,7 +395,12 @@ public class AgentStore {
     }
 
     public record StartRun(String conversationId, String runId, boolean newRun, String status,
-                           String assistantMessageId) {
+                           String assistantMessageId, long memorySegmentNo) {
+        public StartRun(String conversationId, String runId, boolean newRun, String status,
+                        String assistantMessageId) {
+            this(conversationId, runId, newRun, status, assistantMessageId, 1L);
+        }
+
         public StartRun(String conversationId, String runId, boolean newRun, String status) {
             this(conversationId, runId, newRun, status, UUID.randomUUID().toString());
         }
@@ -278,6 +420,17 @@ public class AgentStore {
     }
 
     public record MessagePage(List<MessageRow> records, long total, long page, long size) {
+    }
+
+    private record MemorySegmentState(long segmentNo, Instant lastActivity, String latestScope,
+                                      boolean hasLatestMessage) {
+        private MemorySegmentState(long segmentNo, Instant lastActivity) {
+            this(segmentNo, lastActivity, null, false);
+        }
+
+        private MemorySegmentState withLatestScope(String scope, boolean hasMessage) {
+            return new MemorySegmentState(segmentNo, lastActivity, scope, hasMessage);
+        }
     }
 
     private record PageBounds(long offset, long size) {

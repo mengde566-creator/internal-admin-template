@@ -1,3 +1,5 @@
-# module-agent-warehouse-adapter Gate B 能力
+# module-agent-warehouse-adapter 仓储任务能力
 
-只注册 `warehouse_stock_by_item`。输入 schema 只允许字符串 `itemId`，禁止身份、部门、权限或任意额外字段。执行时按可信运行上下文的 userId 重新调用 `IamActorApi`，再构造 `WarehouseAccessScopeDTO` 调 `WarehouseQueryApi.queryStockByItem`；不依赖仓储内部 Service、Mapper 或表。
+正式模型入口只注册两个用户任务工具：`warehouse_current_stock`（物品、仓库、库位业务关键词和有界条数）与 `warehouse_recent_movements`（真实最近天数及可选业务关键词）。两个 schema 均 `additionalProperties=false`，不接受 itemId、locationId、userId、departmentId、权限、SQL 或排序字段。
+
+`warehouse_stock_by_item(itemId)` 仍是 WarehouseQueryApi 的内部精确事实能力，仅供服务端组合和既有 Gate 兼容，不再注册给模型。每次工具调用都按可信运行上下文重新解析 `IamActorApi`，构造 `WarehouseAccessScopeDTO`，再调用 WarehouseQueryApi；适配器不依赖仓储内部 Service、Mapper 或表。结果只输出业务名称、数量、单位、查询时间和明确状态；候选项仅携带业务编码与名称，下一次查询仍由服务端重新鉴权，不回显内部 ID。

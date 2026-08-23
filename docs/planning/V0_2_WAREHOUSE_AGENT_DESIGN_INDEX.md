@@ -37,7 +37,7 @@ MOD-* 模块责任与公开契约
 | 分片 | 研发目标 | 功能范围 | 模块范围 | 核心场景 | 完成后总设计师只验收 |
 | --- | --- | --- | --- | --- | --- |
 | `SLICE-00` | Agent启用、Provider与纵向技术Gate | FUN-00；其他功能只验证最小机制 | MOD-AGENT、MOD-KNOWLEDGE、MOD-OBSERVABILITY、MOD-ADAPTER、既有Warehouse/IAM API | SCN-CFG-*、SCN-K-01/02 | Gate A、Gate B均已通过：装配、模型、Embedding、知识库、SSE身份、只读Tool与最小观测链完成 |
-| `SLICE-01` | Conversation、Task、澄清与A+B最小可见入口 | FUN-01、FUN-02 | MOD-AGENT、现有Vue SPA | SCN-RP-01～07、SCN-I-03/04 | 仓储页面可展开或折叠Agent，并通过真实模型完成至少三轮澄清；宽屏DOCKED/COMPACT与窄屏DRAWER共用同一Conversation |
+| `SLICE-01` | Conversation、scope隔离的短期Memory、库存候选与A+B最小可见入口 | FUN-01、FUN-02 | MOD-AGENT、现有Vue SPA、WarehouseQueryApi | SCN-RP-01～07、SCN-I-03/04 | 仓储页面可展开或折叠Agent，并以业务关键词完成库存/近期变化查询；完整位置内容、其余工具与卡片保留在SLICE-02 |
 | `SLICE-02` | 仓储只读Tool与结果卡 | FUN-03、FUN-04 | MOD-AGENT、MOD-ADAPTER、既有Warehouse/IAM API | SCN-N-01～03、SCN-D-01/02、SCN-B-01 | 事实、权限和卡片时效 |
 | `SLICE-03` | 异常输入与安全边界 | FUN-05 | MOD-AGENT、MOD-ADAPTER | SCN-I-01/02/05/06、SCN-AU-*、SCN-S-*、SCN-O-*、SCN-B-02 | 确定性拒绝、澄清和零越权 |
 | `SLICE-04` | 合成Knowledge与混合查询 | FUN-06 | MOD-KNOWLEDGE、MOD-AGENT | SCN-K-01～03、SCN-N-04、SCN-E-01/03 | 幂等导入、引用、零证据和可见降级 |

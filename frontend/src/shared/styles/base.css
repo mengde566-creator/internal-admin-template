@@ -6,12 +6,13 @@ html,
 body,
 #app {
   min-width: 320px;
-  min-height: 100%;
+  height: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 body {
-  min-height: 100vh;
+  height: 100vh;
   color: var(--ui-text-strong);
   background: var(--ui-page-bg);
   transition: color 240ms ease, background-color 240ms ease;
