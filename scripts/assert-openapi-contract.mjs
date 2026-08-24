@@ -170,11 +170,25 @@ deepStrictEqual(methods('/api/ai/conversations/{conversationId}/runs'), ['post']
   'Run 路径必须仅暴露 POST')
 
 const runRequest = requestSchema('/api/ai/conversations/{conversationId}/runs', 'post')
-deepStrictEqual(Object.keys(runRequest.properties ?? {}).sort(), ['clientRequestId', 'text'],
-  'RunRequest 只能包含 clientRequestId 与 text')
-deepStrictEqual((runRequest.required ?? []).slice().sort(), ['clientRequestId', 'text'],
-  'RunRequest 必须同时要求 clientRequestId 与 text')
+deepStrictEqual(Object.keys(runRequest.properties ?? {}).sort(), ['clarificationSelection', 'clientRequestId', 'text'],
+  'RunRequest 只能包含 clientRequestId、text 与可选 clarificationSelection')
+deepStrictEqual((runRequest.required ?? []).slice().sort(), ['clientRequestId'],
+  'RunRequest 只要求 clientRequestId；text 与 clarificationSelection 由二选一请求校验')
 assert(!runRequest.properties?.message, 'RunRequest 不得保留 message 兼容字段')
+const clarification = concreteSchema(property(runRequest, 'clarificationSelection', 'RunRequest'))
+assert(property(clarification, 'clarificationId', 'clarificationSelection'), 'clarificationSelection 缺少 clarificationId')
+assert(property(clarification, 'optionToken', 'clarificationSelection'), 'clarificationSelection 缺少 optionToken')
+
+const runResponse = operation('/api/ai/conversations/{conversationId}/runs', 'post').responses?.['200']
+const eventSchema = runResponse?.content?.['text/event-stream']?.schema
+assert(eventSchema, 'Run SSE 必须使用明确的 text/event-stream 事件 schema')
+const event = dereference(eventSchema)
+assert(event.properties?.version && event.properties?.eventId && event.properties?.sequence
+  && event.properties?.occurredAt && event.properties?.runId && event.properties?.conversationId
+  && event.properties?.memorySegmentId && event.properties?.messageId && event.properties?.type
+  && event.properties?.payload, 'SSE 事件信封字段不完整')
+assert(eventSchema.$ref !== '#/components/schemas/SseEmitter', 'Run SSE 不得暴露 SseEmitter 框架 schema')
+assert(!specification.components?.schemas?.SseEmitter, 'OpenAPI 不得保留未使用的 SseEmitter 框架 schema')
 
 const conversationData = concreteSchema(property(responseSchema('/api/ai/conversations', 'post'), 'data',
   'POST /api/ai/conversations 响应'))

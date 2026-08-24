@@ -14,7 +14,7 @@ public interface ItemMapper extends BaseMapper<ItemDO> {
     @Select("SELECT id, code, name, base_unit, enabled, version, created_at, updated_at FROM (" +
             "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at, " +
             "ROW_NUMBER() OVER (ORDER BY code, id) AS row_num FROM wh_item " +
-            "WHERE code LIKE #{pattern} OR name LIKE #{pattern}) bounded " +
+            "WHERE enabled = 1 AND (code LIKE #{pattern} ESCAPE '!' OR name LIKE #{pattern} ESCAPE '!')) bounded " +
             "WHERE row_num > #{offset} AND row_num <= (#{offset} + #{size})")
     List<ItemDO> selectPageOptions(@Param("pattern") String pattern, @Param("offset") int offset, @Param("size") int size);
 

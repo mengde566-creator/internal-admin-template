@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-08-23-0001-task-links-sqlite" author="研发工程师" dbms="sqlite">
+        <sql>ALTER TABLE ai_conversation ADD COLUMN active_task_id VARCHAR(36)</sql>
+        <sql>ALTER TABLE ai_run ADD COLUMN task_id VARCHAR(36)</sql>
+    </changeSet>
+    <changeSet id="2026-08-23-0001-task-links-other" author="研发工程师" dbms="mysql,postgresql,oracle">
+        <addColumn tableName="ai_conversation"><column name="active_task_id" type="VARCHAR(36)"/></addColumn>
+        <addColumn tableName="ai_run"><column name="task_id" type="VARCHAR(36)"/></addColumn>
+    </changeSet>
+    <changeSet id="2026-08-23-0001-task-table-sqlite" author="研发工程师" dbms="sqlite">
+        <createTable tableName="ai_task">
+            <column name="task_id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="conversation_id" type="VARCHAR(36)"><constraints nullable="false"/></column>
+            <column name="memory_segment_no" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="adapter" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="intent" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="status" type="VARCHAR(24)"><constraints nullable="false"/></column>
+            <column name="revision" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="scope_fingerprint" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <column name="expires_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="confirmed_conditions" type="TEXT"/>
+            <column name="missing_fields" type="TEXT"/>
+            <column name="candidates" type="TEXT"/>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="updated_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createIndex tableName="ai_task" indexName="idx_task_conv_seg"><column name="conversation_id"/><column name="memory_segment_no"/><column name="status"/></createIndex>
+        <createIndex tableName="ai_task" indexName="idx_ai_task_scope_expiry"><column name="scope_fingerprint"/><column name="expires_at"/></createIndex>
+    </changeSet>
+    <changeSet id="2026-08-23-0001-task-table-other" author="研发工程师" dbms="mysql,postgresql,oracle">
+        <createTable tableName="ai_task">
+            <column name="task_id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="conversation_id" type="VARCHAR(36)"><constraints nullable="false"/></column>
+            <column name="memory_segment_no" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="adapter" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="intent" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="status" type="VARCHAR(24)"><constraints nullable="false"/></column>
+            <column name="revision" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="scope_fingerprint" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <column name="expires_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="confirmed_conditions" type="TEXT"/><column name="missing_fields" type="TEXT"/><column name="candidates" type="TEXT"/>
+            <column name="created_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+            <column name="updated_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <createIndex tableName="ai_task" indexName="idx_task_conv_seg"><column name="conversation_id"/><column name="memory_segment_no"/><column name="status"/></createIndex>
+        <createIndex tableName="ai_task" indexName="idx_ai_task_scope_expiry"><column name="scope_fingerprint"/><column name="expires_at"/></createIndex>
+    </changeSet>
+</databaseChangeLog>

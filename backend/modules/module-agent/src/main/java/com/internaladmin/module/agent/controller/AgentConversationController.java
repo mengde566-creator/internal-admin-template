@@ -13,6 +13,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.AssertTrue;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,6 +30,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Session + CSRF protected Gate B conversation and SSE entry; no SecurityContext access in async code. */
 @RestController
@@ -88,7 +91,7 @@ public class AgentConversationController {
      *
      * 执行链路（共 2 步）：
      * 1. 解析当前用户与有界分页参数；
-     * 2. 调用 {@link AgentConversationService#pageMessages(String, Long, long, long)} 校验归属后返回稳定顺序消息。
+     * 2. 重新解析当前 Actor 范围后，调用 {@link AgentConversationService#pageMessages(String, Long, String, long, long)} 校验归属并恢复仍有效的澄清任务。
      *
      * @param conversationId 目标 Conversation ID
      * @param page           从 1 开始的页码
@@ -101,7 +104,9 @@ public class AgentConversationController {
                                                  @RequestParam(defaultValue = "1") long page,
                                                  @RequestParam(defaultValue = "50") long size,
                                                  Authentication authentication) {
-        return ApiResponse.ok(service.pageMessages(conversationId, servletUserId(authentication), page, size));
+        Long userId = servletUserId(authentication);
+        AgentRunContext actor = actors.resolve(userId);
+        return ApiResponse.ok(service.pageMessages(conversationId, userId, actor.scopeFingerprint(), page, size));
     }
 
     @PostMapping(path = "/{conversationId}/runs", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -111,7 +116,12 @@ public class AgentConversationController {
                           HttpServletRequest httpRequest) {
         Long userId = servletUserId(authentication);
         AgentRunContext actor = actors.resolve(userId);
-        AgentStore.StartRun run = service.start(conversationId, request.clientRequestId(), request.text(), actor);
+        String clarificationId = request.clarificationSelection() == null ? null
+                : request.clarificationSelection().clarificationId();
+        String optionToken = request.clarificationSelection() == null ? null
+                : request.clarificationSelection().optionToken();
+        AgentStore.StartRun run = service.start(conversationId, request.clientRequestId(), request.text(), actor,
+                clarificationId, optionToken);
         SseEmitter emitter = new SseEmitter(120_000L);
         AtomicBoolean cancelled = new AtomicBoolean();
         emitter.onCompletion(() -> cancelled.set(true));
@@ -119,16 +129,22 @@ public class AgentConversationController {
         emitter.onError(error -> cancelled.set(true));
         AtomicLong eventSequence = new AtomicLong();
         String messageId = run.assistantMessageId();
-        AtomicBoolean cardSent = new AtomicBoolean();
-        AgentExecutionContext execution = new AgentExecutionContext(actor, run.runId(), request.text(),
+        Set<String> emittedCards = ConcurrentHashMap.newKeySet();
+        String effectiveMessage = run.effectiveUserMessage() == null ? request.text() : run.effectiveUserMessage();
+        AgentExecutionContext execution = new AgentExecutionContext(actor, run.runId(), effectiveMessage,
                 card -> {
-                    if (cardSent.compareAndSet(false, true)
-                            && !send(emitter, AgentConversationService.envelopedEvent(
-                            "card.replace", run, eventSequence, messageId, card))) {
-                        throw new IllegalStateException("SSE卡片发送失败");
+                    AgentConversationService.CardIdentity identity = service.inspectCard(card);
+                    String cardKey = identity.key();
+                    if (emittedCards.add(cardKey)) {
+                        AgentConversationService.PreparedCard prepared = service.recordCard(run, identity,
+                                actor.scopeFingerprint());
+                        if (!send(emitter, AgentConversationService.envelopedEvent(
+                                "card.replace", run, eventSequence, messageId, prepared.json()))) {
+                            throw new IllegalStateException("SSE卡片发送失败");
+                        }
                     }
                 },
-                new AtomicBoolean(), eventSequence, messageId);
+                new AtomicBoolean(), eventSequence, messageId, run.taskId(), run.taskRevision());
         CompletableFuture.runAsync(() -> service.execute(run, execution,
                 event -> send(emitter, event), cancelled));
         return emitter;
@@ -155,6 +171,22 @@ public class AgentConversationController {
     }
 
     public record RunRequest(@NotBlank @Size(max = 128) String clientRequestId,
-                             @NotBlank @Size(max = 4000) String text) {
+                             @Size(max = 4000) String text,
+                             @jakarta.validation.Valid ClarificationSelection clarificationSelection) {
+        public RunRequest(String clientRequestId, String text) {
+            this(clientRequestId, text, null);
+        }
+
+        @AssertTrue(message = "普通消息或候选选择必须且只能提供一种")
+        public boolean hasExactlyOneInput() {
+            boolean hasText = text != null && !text.isBlank();
+            boolean hasSelection = clarificationSelection != null;
+            return hasSelection ? !hasText : hasText;
+        }
     }
+
+    public record ClarificationSelection(@NotBlank @Size(max = 128) String clarificationId,
+                                         @NotBlank @Size(max = 256) String optionToken) {
+    }
+
 }

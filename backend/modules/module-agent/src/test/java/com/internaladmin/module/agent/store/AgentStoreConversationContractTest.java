@@ -1,22 +1,32 @@
 package com.internaladmin.module.agent.store;
 
 import com.internaladmin.platform.kernel.error.BusinessException;
+import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import liquibase.integration.spring.SpringLiquibase;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.sqlite.SQLiteDataSource;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 
 /** Contract evidence for server-generated Conversation IDs, ownership and stable History paging. */
 class AgentStoreConversationContractTest {
@@ -155,6 +165,104 @@ class AgentStoreConversationContractTest {
 
         List<AgentStore.MessageRow> memory = store.loadMemory(conversationId, 7L, "scope-7", 1L, 40, 20);
         assertEquals(List.of("最新问题", "最新回答"), memory.stream().map(AgentStore.MessageRow::content).toList());
+    }
+
+    @Test
+    void clarificationTaskSurvivesCandidateRunAndConsumesOnlyOneScopedToken() throws Exception {
+        AgentStore store = store("conversation-task-clarification");
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun candidateRun = store.startRun(conversationId, "task-candidates", "轴承", 7L, "scope-7");
+        assertNotNull(store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
+                Instant.now().plus(Duration.ofHours(1)), "轴承", "物品",
+                "[{\"optionToken\":\"option-a\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"},"
+                        + "{\"optionToken\":\"option-b\",\"code\":\"ITEM-B\",\"name\":\"轴承B\",\"baseUnit\":\"件\"}]"));
+        assertTrue(store.complete(candidateRun.runId()));
+        assertEquals(AgentStore.TASK_READY, store.task(candidateRun.taskId()).status(),
+                "候选卡所在的 Run 完成后仍须允许下一次选择");
+        AgentStore.TaskRow restored = store.activeClarification(conversationId, 7L, "scope-7");
+        assertNotNull(restored);
+        assertEquals(candidateRun.taskId(), restored.taskId());
+        assertEquals(candidateRun.taskRevision() + 1, restored.revision());
+        assertNull(store.activeClarification(conversationId, 7L, "scope-after-transfer"));
+        assertNull(store.activeClarification(conversationId, 8L, "scope-7"));
+        assertThrows(BusinessException.class, () -> store.selectClarification(conversationId, candidateRun.taskId(),
+                candidateRun.taskRevision() + 1, "scope-after-transfer", "option-a"));
+
+        AgentStore.StartRun selected = store.startRun(conversationId, "task-selected", "轴承A", 7L, "scope-7",
+                Duration.ofHours(1), candidateRun.taskId(), "option-a");
+        assertEquals(candidateRun.taskId(), selected.taskId());
+        assertEquals(AgentStore.TASK_COLLECTING, store.task(selected.taskId()).status());
+        assertNull(store.activeClarification(conversationId, 7L, "scope-7"),
+                "已消费候选不能在刷新后恢复");
+        assertTrue(selected.effectiveUserMessage().contains("轴承A"));
+        assertTrue(store.task(selected.taskId()).confirmedConditions().contains("ITEM-A"));
+        assertThrows(BusinessException.class, () -> store.startRun(conversationId, "task-stale", "轴承B", 7L,
+                "scope-after-transfer", Duration.ofHours(1), candidateRun.taskId(), "option-b"));
+    }
+
+    @Test
+    void correctionAndNewTopicInvalidateOldCandidateAndRevisionCasAllowsOneSelection() throws Exception {
+        AgentStore store = store("conversation-task-invalidation");
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun candidateRun = store.startRun(conversationId, "candidate-run", "轴承", 7L, "scope-7");
+        AgentStore.TaskRow ready = store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
+                Instant.now().plus(Duration.ofHours(1)), "{}", "ITEM",
+                "[{\"optionToken\":\"old-token\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"}]");
+        store.complete(candidateRun.runId());
+
+        AgentStore.StartRun correction = store.startRun(conversationId, "correction-run", "换一个物品", 7L, "scope-7");
+        assertThrows(BusinessException.class, () -> store.selectClarification(conversationId, ready.taskId(),
+                ready.revision(), "scope-7", "old-token"));
+        store.complete(correction.runId());
+
+        AgentStore.StartRun next = store.startRun(conversationId, "next-candidate", "轴承", 7L, "scope-7");
+        AgentStore.TaskRow nextReady = store.recordTaskCandidates(next.taskId(), next.taskRevision(), "scope-7",
+                Instant.now().plus(Duration.ofHours(1)), "{}", "ITEM",
+                "[{\"optionToken\":\"new-token\",\"code\":\"ITEM-B\",\"name\":\"轴承B\",\"baseUnit\":\"件\"}]");
+        store.complete(next.runId());
+        AgentStore.TaskSelection first = store.selectClarification(conversationId, nextReady.taskId(), nextReady.revision(),
+                "scope-7", "new-token");
+        assertEquals(AgentStore.TASK_COLLECTING, first.task().status());
+        assertThrows(BusinessException.class, () -> store.selectClarification(conversationId, nextReady.taskId(),
+                nextReady.revision(), "scope-7", "new-token"));
+    }
+
+    @Test
+    void successBoundaryRollsBackHistoryWhenObservationCannotClose() throws Exception {
+        JdbcTemplate jdbc = database("conversation-success-boundary");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, "success-boundary", "库存", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        doThrow(new IllegalStateException("observation unavailable")).when(observations)
+                .record(eq(run.runId()), eq("HISTORY"), eq("SUCCEEDED"), anyLong(), isNull(), isNull(), isNull());
+
+        TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
+        AgentStore.SuccessBoundaryException failure = assertThrows(AgentStore.SuccessBoundaryException.class,
+                () -> transaction.executeWithoutResult(status ->
+                store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(),
+                        "库存结果", "scope-7", 1L, observations)));
+        assertEquals(AgentStore.SuccessBoundaryFailure.OBSERVATION_FAILED, failure.failure());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM ai_message WHERE run_id = ? AND role = 'ASSISTANT'",
+                Integer.class, run.runId()));
+        assertEquals(AgentStore.RUNNING, jdbc.queryForObject("SELECT status FROM ai_run WHERE run_id = ?",
+                String.class, run.runId()));
+    }
+
+    @Test
+    void agentAndObservabilityFormalMastersRunOnOneSQLiteDataSource() throws Exception {
+        JdbcTemplate jdbc = database("agent-observability-combined");
+        assertNotNull(jdbc.getDataSource());
+        SpringLiquibase observability = new SpringLiquibase();
+        observability.setDataSource(jdbc.getDataSource());
+        observability.setChangeLog("classpath:/db/changelog/module-ai-observability-sqlite-master.xml");
+        observability.setShouldRun(true);
+        observability.afterPropertiesSet();
+
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_conversation'", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_task'", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_observation_run'", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_observation_attempt'", Integer.class));
     }
 
     private void appendCompletedRun(AgentStore store, String conversationId, String requestId,

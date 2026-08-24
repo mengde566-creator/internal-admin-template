@@ -19,7 +19,9 @@ import {
   runAgent,
   type AgentSseEvent,
   type AiCapabilities,
+  type ClarificationSelection,
   type Conversation,
+  type ClarificationTask,
   type Message
 } from '../ai/agentApi'
 
@@ -42,12 +44,14 @@ type StockRow = {
   occurredAt?: string
 }
 
-type StockCandidate = { code: string; name: string; baseUnit?: string }
+type StockCandidate = { code: string; name: string; baseUnit?: string; optionToken?: string }
 
 type StockSummaryCard = {
   cardId: string
   revision: number
-  cardType: 'stock-summary' | 'movement-list'
+  cardType: 'stock-summary' | 'movement-list' | 'clarification-choice'
+  outcome?: string
+  reasonCode?: string
   status?: string
   itemName?: string
   baseUnit?: string
@@ -113,6 +117,8 @@ const conversationsPage = ref(1)
 const historyPickerOpen = ref(false)
 const CONVERSATION_PAGE_SIZE = 10
 const conversationPageCount = computed(() => Math.max(1, Math.ceil(conversationsTotal.value / CONVERSATION_PAGE_SIZE)))
+const pendingClarification = ref<ClarificationSelection | null>(null)
+const pendingClarificationLabel = ref('')
 
 const DEFAULT_WIDTH = 420
 const MIN_WIDTH = 360
@@ -151,7 +157,7 @@ const clampedOverlayHeight = computed(() => {
 const canCopy = computed(() => capabilities.value?.features.includes('COPY') === true)
 const canOpenRoute = computed(() => capabilities.value?.features.includes('OPEN_ROUTE') === true)
 const cardList = computed(() => Object.values(cards.value))
-const sendDisabled = computed(() => isRunning.value || !draft.value.trim())
+const sendDisabled = computed(() => isRunning.value || (!draft.value.trim() && !pendingClarification.value))
 const panelStyle = computed(() => {
   const bounds = shellBounds.value
   const panelHeight = panelIsExpanded.value && bounds
@@ -428,9 +434,9 @@ function messageLabel(message: UiMessage) {
 }
 
 function cardEmptyText(card: StockSummaryCard) {
-  if (card.status === 'NO_MATCH') return '没有找到匹配的物品，请换一个业务名称或编码。'
-  if (card.status === 'NO_STOCK') return '当前可见范围内暂无库存。'
-  if (card.status === 'NO_DATA') return '所选时间范围内没有库存变化。'
+  if (card.reasonCode === 'NO_MATCHING_ITEM' || card.status === 'NO_MATCH') return '没有找到匹配的物品，请换一个业务名称或编码。'
+  if (card.reasonCode === 'ITEM_HAS_NO_STOCK' || card.status === 'NO_STOCK') return '当前可见范围内暂无库存。'
+  if (card.reasonCode === 'NO_MOVEMENT_IN_RANGE' || card.status === 'NO_DATA') return '所选时间范围内没有库存变化。'
   return '当前没有可展示的库存记录。'
 }
 
@@ -489,11 +495,32 @@ async function loadHistory(conversationId: string, clearCards = true, preserveLo
     } else {
       messages.value = loadedMessages
     }
-    if (clearCards) cards.value = {}
+    if (clearCards) {
+      cards.value = {}
+      restoreClarificationCard(page.activeClarification)
+    }
   } catch {
     conversationNotice.value = '这段对话暂时无法打开，请稍后再试。'
   } finally {
     loadingHistory.value = false
+  }
+}
+
+function restoreClarificationCard(task: ClarificationTask | null | undefined) {
+  if (!task || !task.clarificationId || !task.options?.length) return
+  cards.value[task.clarificationId] = {
+    cardId: task.clarificationId,
+    revision: task.revision,
+    cardType: 'clarification-choice',
+    status: 'CANDIDATES',
+    outcome: 'AMBIGUOUS',
+    candidates: task.options.map((option) => ({
+      code: option.code ?? '',
+      name: option.name ?? '',
+      baseUnit: option.baseUnit ?? '',
+      optionToken: option.optionToken ?? ''
+    })),
+    stocks: []
   }
 }
 
@@ -518,6 +545,8 @@ function startNewConversation() {
   messages.value = []
   cards.value = {}
   draft.value = ''
+  pendingClarification.value = null
+  pendingClarificationLabel.value = ''
   runState.value = 'idle'
   runNotice.value = ''
   conversationNotice.value = ''
@@ -529,6 +558,13 @@ function newRequestId() {
 
 function addUserMessage(text: string) {
   messages.value.push({ messageId: `local-${Date.now()}`, role: 'USER', content: text, createdAt: new Date().toISOString() })
+}
+
+function onDraftInput() {
+  if (pendingClarification.value) {
+    pendingClarification.value = null
+    pendingClarificationLabel.value = ''
+  }
 }
 
 function ensureAssistantMessage(messageId?: string | null) {
@@ -543,7 +579,7 @@ function ensureAssistantMessage(messageId?: string | null) {
 }
 
 function parseStockCard(payload: Record<string, unknown>): StockSummaryCard | null {
-  if (!['stock-summary', 'movement-list'].includes(String(payload.cardType))
+  if (!['stock-summary', 'movement-list', 'clarification-choice'].includes(String(payload.cardType))
     || typeof payload.cardId !== 'string' || !payload.cardId.trim() || typeof payload.revision !== 'number') return null
   const rawStocks = Array.isArray(payload.rows) ? payload.rows : (Array.isArray(payload.stocks) ? payload.stocks : [])
   const stocks = rawStocks.filter((row): row is Record<string, unknown> => Boolean(row && typeof row === 'object')).map((row) => ({
@@ -556,15 +592,18 @@ function parseStockCard(payload: Record<string, unknown>): StockSummaryCard | nu
     movementType: typeof row.movementType === 'string' ? row.movementType : undefined,
     occurredAt: typeof row.occurredAt === 'string' ? row.occurredAt : undefined
   }))
-  const candidates = (Array.isArray(payload.candidates) ? payload.candidates : [])
+  const candidateSource = Array.isArray(payload.options) ? payload.options : payload.candidates
+  const candidates = (Array.isArray(candidateSource) ? candidateSource : [])
     .filter((row): row is Record<string, unknown> => Boolean(row && typeof row === 'object'))
     .filter((row) => typeof row.name === 'string' && typeof row.code === 'string')
-    .map((row) => ({ code: row.code as string, name: row.name as string, baseUnit: typeof row.baseUnit === 'string' ? row.baseUnit as string : undefined }))
+    .map((row) => ({ code: row.code as string, name: row.name as string, baseUnit: typeof row.baseUnit === 'string' ? row.baseUnit as string : undefined, optionToken: typeof row.optionToken === 'string' ? row.optionToken as string : undefined }))
   return {
     cardId: payload.cardId,
     revision: payload.revision,
     cardType: payload.cardType as StockSummaryCard['cardType'],
     status: typeof payload.status === 'string' ? payload.status : undefined,
+    outcome: typeof payload.outcome === 'string' ? payload.outcome : undefined,
+    reasonCode: typeof payload.reasonCode === 'string' ? payload.reasonCode : undefined,
     itemName: typeof payload.itemName === 'string' ? payload.itemName : undefined,
     baseUnit: typeof payload.baseUnit === 'string' ? payload.baseUnit : undefined,
     queriedAt: typeof payload.queriedAt === 'string' ? payload.queriedAt : undefined,
@@ -612,12 +651,16 @@ function onEvent(event: AgentSseEvent) {
 
 async function sendMessage() {
   const text = draft.value.trim()
-  if (!text || isRunning.value) return
+  const selection = pendingClarification.value
+  const selectionLabel = pendingClarificationLabel.value
+  if ((!text && !selection) || isRunning.value) return
   isRunning.value = true
   runState.value = 'running'
   runNotice.value = ''
   conversationNotice.value = ''
   draft.value = ''
+  pendingClarification.value = null
+  pendingClarificationLabel.value = ''
   try {
     if (!selectedConversationId.value) {
       const conversation = await createConversation()
@@ -626,10 +669,10 @@ async function sendMessage() {
       conversationsTotal.value += 1
       conversationsPage.value = 1
     }
-    addUserMessage(text)
+    addUserMessage(selection ? `选择物品“${selectionLabel || '已选物品'}”` : text)
     const controller = new AbortController()
     abortController.value = controller
-    await runAgent(selectedConversationId.value, newRequestId(), text, controller.signal, onEvent)
+    await runAgent(selectedConversationId.value, newRequestId(), text, controller.signal, onEvent, selection ?? undefined)
     if (runState.value === 'running') {
       runState.value = 'failed'
       runNotice.value = '回复连接已结束，请稍后再试。'
@@ -677,7 +720,12 @@ function openItem(card: StockSummaryCard) {
 }
 
 function chooseCandidate(candidate: StockCandidate) {
-  draft.value = candidate.code
+  draft.value = ''
+  const card = Object.values(cards.value).find((value) => value.cardType === 'clarification-choice')
+  if (candidate.optionToken && card?.cardId) {
+    pendingClarification.value = { clarificationId: card.cardId, optionToken: candidate.optionToken }
+    pendingClarificationLabel.value = candidate.name
+  }
   runNotice.value = `已选择“${candidate.name}”，点击发送继续查询。`
 }
 
@@ -918,17 +966,17 @@ onBeforeUnmount(() => {
         <article v-for="card in cardList" :key="card.cardId" class="stock-card" data-testid="stock-summary-card">
           <div class="stock-card-heading">
             <div>
-              <span class="card-kicker">{{ card.cardType === 'movement-list' ? '近期库存变化' : card.status === 'CANDIDATES' ? '请选择物品' : '库存摘要' }}</span>
+              <span class="card-kicker">{{ card.cardType === 'movement-list' ? '近期库存变化' : card.cardType === 'clarification-choice' || card.status === 'CANDIDATES' ? '请从下面选择一个物品' : '库存摘要' }}</span>
               <strong>{{ card.itemName ?? card.stocks[0]?.itemName ?? '物品库存' }}</strong>
             </div>
             <span v-if="card.queriedAt" class="card-time">{{ card.queriedAt }}</span>
           </div>
-          <div v-if="card.status === 'CANDIDATES'" class="candidate-list">
+          <div v-if="card.cardType === 'clarification-choice' || card.status === 'CANDIDATES'" class="candidate-list">
             <button v-for="candidate in card.candidates" :key="`${candidate.code}-${candidate.name}`" type="button" class="candidate-button" @click="chooseCandidate(candidate)">
               <strong>{{ candidate.name }}</strong><small>{{ candidate.code }}<span v-if="candidate.baseUnit"> · {{ candidate.baseUnit }}</span></small>
             </button>
           </div>
-          <div v-if="!card.stocks.length && card.status !== 'CANDIDATES'" class="agent-muted">{{ cardEmptyText(card) }}</div>
+          <div v-if="!card.stocks.length && card.cardType !== 'clarification-choice' && card.status !== 'CANDIDATES'" class="agent-muted">{{ cardEmptyText(card) }}</div>
           <div v-for="(stock, index) in card.stocks" :key="`${card.cardId}-${index}`" class="stock-row">
             <span v-if="stock.warehouseName || stock.locationName" class="stock-place">{{ [stock.warehouseName, stock.locationName].filter(Boolean).join(' / ') }}</span>
             <span class="stock-quantity"><span>{{ stock.quantity ?? '暂无数量' }}</span><small v-if="stock.baseUnit ?? card.baseUnit">{{ stock.baseUnit ?? card.baseUnit }}</small></span>
@@ -942,7 +990,8 @@ onBeforeUnmount(() => {
 
       <p v-if="runNotice" class="agent-notice" :class="{ 'agent-notice--error': runState === 'failed' }">{{ runNotice }}</p>
       <div class="agent-composer">
-        <textarea v-model="draft" rows="3" maxlength="4000" :disabled="isRunning" aria-label="输入问题" placeholder="例如：物品 A100 现在有哪些库存？" @keydown.enter.exact.prevent="sendMessage" />
+        <p v-if="pendingClarificationLabel" class="agent-selection">已选择：{{ pendingClarificationLabel }}，点击发送继续查询。</p>
+        <textarea v-model="draft" rows="3" maxlength="4000" :disabled="isRunning" aria-label="输入问题" placeholder="例如：物品 A100 现在有哪些库存？" @input="onDraftInput" @keydown.enter.exact.prevent="sendMessage" />
         <div class="composer-footer">
           <span>{{ isRunning ? '正在查询…' : 'Enter 发送，Shift + Enter 换行' }}</span>
           <button v-if="isRunning" type="button" class="cancel-button" @click="cancelRun"><el-icon><Close /></el-icon>取消</button>

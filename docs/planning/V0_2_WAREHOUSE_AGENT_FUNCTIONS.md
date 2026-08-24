@@ -119,6 +119,8 @@ expiresAt
 
 点击选项只是一次新的受控提交，不能直接在浏览器推进Task。过期、revision不匹配或权限变化时必须重新澄清。
 
+该能力属于SLICE-01收口条件，不得延后到SLICE-02：浏览器提交`clarificationId + optionToken`，服务端以当前Task revision、范围指纹、有效期和状态校验后重新加载业务对象。业务编码只用于展示和自由文本，不是受信候选选择凭据。
+
 ### 非目标
 
 不做通用工作流、嵌套任务、跨天恢复、任务队列和任意自定义状态。
@@ -145,11 +147,11 @@ SLICE-01提供按用户可表达关键词查当前库存和按真实最近天数
 ### Tool结果语义
 
 ```text
-RESOLVED | AMBIGUOUS | NO_DATA | NOT_FOUND
+outcome = RESOLVED | AMBIGUOUS | NO_DATA | NOT_FOUND
 DENIED | INVALID | UNAVAILABLE
 ```
 
-DENIED不能泄露目标对象存在性；UNAVAILABLE不能伪装成空结果。
+仓储窄DTO可以用`reasonCode`区分`NO_MATCHING_ITEM`、`ITEM_HAS_NO_STOCK`和`NO_MOVEMENT_IN_RANGE`，但不得再建立一套与`outcome`竞争的结果状态。所有列表结果必须包含`schemaVersion=1`、`resultCount`、`truncated`和`queriedAt`；查询采用`limit + 1`或等价机制证明是否截断。`AMBIGUOUS`只进入FUN-02，已解析事实才生成库存卡片。DENIED不能泄露目标对象存在性；UNAVAILABLE不能伪装成空结果。
 
 ### 对应场景
 

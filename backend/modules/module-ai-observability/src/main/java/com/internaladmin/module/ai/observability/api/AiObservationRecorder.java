@@ -16,4 +16,13 @@ public interface AiObservationRecorder {
     default void finishRun(String runId, String status, String errorCode) {
         // Implementations that persist run summaries override this method.
     }
+
+    /**
+     * Closes the observation run only when its RUNNING row was won by this call.
+     * Implementations without a persistent run summary retain the historical no-op semantics.
+     */
+    default boolean finishRunChecked(String runId, String status, String errorCode) {
+        finishRun(runId, status, errorCode);
+        return true;
+    }
 }

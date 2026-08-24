@@ -11,6 +11,7 @@ import com.internaladmin.module.warehouse.api.WarehouseAccessScopeDTO;
 import com.internaladmin.module.warehouse.api.WarehouseMovementTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseMovementTaskRow;
 import com.internaladmin.module.warehouse.api.WarehouseQueryApi;
+import com.internaladmin.module.warehouse.api.WarehouseStockCandidate;
 import com.internaladmin.module.warehouse.api.WarehouseStockTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseStockTaskRow;
 import org.junit.jupiter.api.Test;
@@ -85,10 +86,26 @@ class WarehouseInventoryToolProviderTest {
         ToolCallback callback = provider(warehouse, iam).getToolCallbacks()[1];
         String output = callback.call("{\"recentDays\":7}", new ToolContext(Map.of("agent.execution", context)));
         assertTrue(output.contains("ITEM-01"));
-        assertTrue(output.contains("RESULT"));
+        assertTrue(output.contains("RESOLVED"));
         assertTrue(output.contains("queriedAt"));
         assertThrows(IllegalArgumentException.class, () -> callback.call(
                 "{\"recentDays\":7,\"itemId\":\"11\"}", new ToolContext(Map.of("agent.execution", context))));
+    }
+
+    @Test
+    void ambiguousStockUsesClarificationOptionsOnlyForControlledCard() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq("轴承"), isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("ITEM-A", "轴承A", "件")), java.time.Instant.now(), false));
+        AtomicReference<String> card = new AtomicReference<>();
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(
+                "{\"itemKeyword\":\"轴承\"}", new ToolContext(Map.of("agent.execution", context(card))));
+        assertTrue(card.get().contains("\"cardType\":\"clarification-choice\""));
+        assertTrue(card.get().contains("\"options\""));
+        assertFalse(output.contains("optionToken"), "模型工具结果不应携带浏览器候选凭据");
     }
 
     private WarehouseInventoryToolProvider provider(WarehouseQueryApi warehouse, IamActorApi iam) {

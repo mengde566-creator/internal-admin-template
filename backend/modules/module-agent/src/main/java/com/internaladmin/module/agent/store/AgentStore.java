@@ -2,11 +2,14 @@ package com.internaladmin.module.agent.store;
 
 import com.internaladmin.platform.kernel.error.BusinessException;
 import com.internaladmin.platform.kernel.error.ErrorCode;
+import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Component;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.sql.Timestamp;
 import java.sql.ResultSet;
@@ -30,8 +33,39 @@ public class AgentStore {
     public static final String FAILED = "FAILED";
     public static final String CANCELLED = "CANCELLED";
     public static final String PARTIAL = "PARTIAL";
+    public static final String TASK_COLLECTING = "COLLECTING";
+    public static final String TASK_READY = "READY";
+    public static final String TASK_COMPLETED = "COMPLETED";
+    public static final String TASK_CANCELLED = "CANCELLED";
+    public static final String TASK_REPLACED = "REPLACED";
+    public static final String TASK_EXPIRED = "EXPIRED";
+
+    /** Narrow failure classification for the History/Observation/terminal success boundary. */
+    public enum SuccessBoundaryFailure {
+        HISTORY_FAILED,
+        OBSERVATION_FAILED,
+        TERMINAL_CONFLICT
+    }
+
+    public static final class SuccessBoundaryException extends RuntimeException {
+        private final SuccessBoundaryFailure failure;
+
+        public SuccessBoundaryException(SuccessBoundaryFailure failure, Throwable cause) {
+            super(failure.name(), cause);
+            this.failure = failure;
+        }
+
+        public SuccessBoundaryException(SuccessBoundaryFailure failure) {
+            this(failure, null);
+        }
+
+        public SuccessBoundaryFailure failure() {
+            return failure;
+        }
+    }
 
     private final JdbcTemplate jdbc;
+    private static final tools.jackson.databind.ObjectMapper JSON = JsonMapper.builder().build();
 
     public AgentStore(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
@@ -63,8 +97,41 @@ public class AgentStore {
     public StartRun startRun(String requestedConversationId, String clientRequestId,
                              String userMessage, Long userId, String scopeFingerprint,
                              Duration idleTtl) {
+        return startRun(requestedConversationId, clientRequestId, userMessage, userId, scopeFingerprint,
+                idleTtl, null, null);
+    }
+
+    /**
+     * 原子创建一次 Run，并在同一事务中建立或推进当前 Memory Segment 的 Task。
+     *
+     * 方法：{@code startRun}
+     *
+     * 执行链路（共 6 步）：
+     * 1. 校验 Conversation 属于当前用户；
+     * 2. 检查 clientRequestId 幂等记录，已有记录只返回既有 Run；
+     * 3. 以当前 scope、Segment 和过期时间校验澄清选择；
+     * 4. 通过 CAS 预留 Conversation 的 active_run_id，并创建或替换 Task；
+     * 5. 写入带 Task 绑定的 Run 与用户消息；
+     * 6. 更新 Conversation 活动时间并返回服务端生成的运行标识。
+     *
+     * @param requestedConversationId 归属校验用 Conversation ID
+     * @param clientRequestId 客户端幂等键
+     * @param userMessage 本轮用户消息
+     * @param userId 当前用户 ID
+     * @param scopeFingerprint 当前权限范围指纹
+     * @param idleTtl Memory Segment 空闲有效期
+     * @param clarificationId 可选澄清 Task ID
+     * @param optionToken 可选且一次性的候选令牌
+     * @return 新建或已存在的 Run 摘要
+     * @throws BusinessException Conversation、Task 或澄清选择不合法时抛出
+     */
+    @Transactional
+    public StartRun startRun(String requestedConversationId, String clientRequestId,
+                             String userMessage, Long userId, String scopeFingerprint,
+                             Duration idleTtl, String clarificationId, String optionToken) {
         ConversationRow conversation = requireConversation(requestedConversationId, userId);
         String conversationId = conversation.conversationId();
+        String effectiveScopeFingerprint = scopeFingerprint == null ? "" : scopeFingerprint;
         List<RunRow> existing = jdbc.query("SELECT run_id, status FROM ai_run "
                         + "WHERE conversation_id = ? AND user_id = ? AND client_request_id = ?",
                 (rs, row) -> new RunRow(rs.getString(1), rs.getString(2)),
@@ -87,26 +154,31 @@ public class AgentStore {
         }
         String runId = UUID.randomUUID().toString();
         String assistantMessageId = UUID.randomUUID().toString();
-        MemorySegmentState memoryState = memorySegmentState(conversationId);
-        Timestamp now = Timestamp.from(Instant.now());
-        long segment = nextMemorySegment(memoryState, scopeFingerprint, idleTtl, now.toInstant());
         int reserved = jdbc.update("UPDATE ai_conversation SET active_run_id = ? "
                         + "WHERE id = ? AND active_run_id IS NULL", runId, conversationId);
         if (reserved != 1) {
             throw new BusinessException(ErrorCode.CONFLICT, "该对话已有进行中的运行");
         }
+        MemorySegmentState memoryState = memorySegmentState(conversationId);
+        Timestamp now = Timestamp.from(Instant.now());
+        long segment = nextMemorySegment(memoryState, effectiveScopeFingerprint, idleTtl, now.toInstant());
+        TaskResolution taskResolution = ensureTask(conversationId, segment, effectiveScopeFingerprint, idleTtl, now.toInstant(),
+                clarificationId, optionToken, userMessage);
+        TaskRow task = taskResolution.task();
+        String effectiveUserMessage = taskResolution.effectiveUserMessage();
         jdbc.update("UPDATE ai_conversation SET active_memory_segment_no = ? WHERE id = ?",
                 segment, conversationId);
         long sequence = nextMessageSequence(conversationId);
-        jdbc.update("INSERT INTO ai_run(run_id, conversation_id, user_id, client_request_id, status, created_at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?)",
-                runId, conversationId, userId, clientRequestId, RUNNING, now);
+        jdbc.update("INSERT INTO ai_run(run_id, conversation_id, user_id, client_request_id, task_id, status, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                runId, conversationId, userId, clientRequestId, task.taskId(), RUNNING, now);
         jdbc.update("INSERT INTO ai_message(message_id, conversation_id, run_id, sequence_no, role, content, state, created_at, scope_fingerprint, memory_segment_no) "
                         + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                UUID.randomUUID().toString(), conversationId, runId, sequence, "USER", userMessage, "COMPLETE", now,
-                scopeFingerprint, segment);
+                UUID.randomUUID().toString(), conversationId, runId, sequence, "USER", effectiveUserMessage, "COMPLETE", now,
+                effectiveScopeFingerprint, segment);
         jdbc.update("UPDATE ai_conversation SET updated_at = ? WHERE id = ?", now, conversationId);
-        return new StartRun(conversationId, runId, true, RUNNING, assistantMessageId, segment);
+        return new StartRun(conversationId, runId, true, RUNNING, assistantMessageId, segment,
+                task.taskId(), task.revision(), effectiveUserMessage);
     }
 
     /** Isolated fixtures without an actor scope must never be eligible for model memory. */
@@ -241,6 +313,277 @@ public class AgentStore {
         appendAssistant(conversationId, runId, UUID.randomUUID().toString(), content, state, null);
     }
 
+    /**
+     * 在同一个业务数据库事务内形成助手 History、观测成功和 Run COMPLETE 的边界。
+     * 任一步失败都会回滚，调用方只有返回 true 才能发送成功终态事件。
+     */
+    @Transactional
+    public boolean completeSuccess(String conversationId, String runId, String assistantMessageId,
+                                   String content, String scopeFingerprint, long durationMillis,
+                                   AiObservationRecorder observations) {
+        try {
+            appendAssistant(conversationId, runId, assistantMessageId, content, "COMPLETE", scopeFingerprint);
+        }
+        catch (RuntimeException failure) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_FAILED, failure);
+        }
+        try {
+            observations.record(runId, "HISTORY", "SUCCEEDED", durationMillis, null, null, null);
+            if (!observations.finishRunChecked(runId, "SUCCESS", null)) {
+                throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_FAILED);
+            }
+        }
+        catch (SuccessBoundaryException failure) {
+            throw failure;
+        }
+        catch (RuntimeException failure) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_FAILED, failure);
+        }
+        try {
+            if (!transition(runId, COMPLETE, null)) {
+                throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CONFLICT);
+            }
+        }
+        catch (SuccessBoundaryException failure) {
+            throw failure;
+        }
+        catch (RuntimeException failure) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CONFLICT, failure);
+        }
+        return true;
+    }
+
+    /**
+     * 保存候选澄清卡的受控令牌，并以 Task revision 做 CAS。
+     *
+     * 方法：{@code recordTaskCandidates}
+     *
+     * 执行链路（共 2 步）：
+     * 1. 用 Task ID、revision、scope 和 expiresAt 锁定仍有效的活动 Task；
+     * 2. 更新有界候选文本和缺失字段，revision 成功递增后返回 true。
+     *
+     * @param taskId 当前活动 Task
+     * @param revision 调用方持有的 Task revision
+     * @param scopeFingerprint 当前权限范围指纹
+     * @param expiresAt 新的候选有效期
+     * @param confirmedConditions 已确认条件的有界文本
+     * @param missingFields 当前缺失字段
+     * @param candidates 受控令牌与展示字段的有界文本
+     * @return 只有首个匹配 revision 的更新返回 true
+     */
+    @Transactional
+    public TaskRow recordTaskCandidates(String taskId, long revision, String scopeFingerprint,
+                                        Instant expiresAt, String confirmedConditions,
+                                        String missingFields, String candidates) {
+        String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
+        int updated = jdbc.update("UPDATE ai_task SET revision = revision + 1, status = ?, "
+                        + "scope_fingerprint = ?, expires_at = ?, intent = ?, confirmed_conditions = ?, "
+                        + "missing_fields = ?, candidates = ?, updated_at = ? "
+                        + "WHERE task_id = ? AND revision = ? AND status IN (?, ?) "
+                        + "AND scope_fingerprint = ? AND expires_at > ?",
+                TASK_READY, effectiveScope, Timestamp.from(expiresAt), "CURRENT_STOCK", confirmedConditions,
+                missingFields, candidates, Timestamp.from(Instant.now()), taskId, revision,
+                TASK_COLLECTING, TASK_READY, effectiveScope, Timestamp.from(Instant.now()));
+        if (updated != 1) {
+            throw new BusinessException(ErrorCode.CONFLICT, "候选已失效，请重新查询");
+        }
+        return task(taskId);
+    }
+
+    /**
+     * 校验并消费一次澄清选择。
+     *
+     * 方法：{@code selectClarification}
+     *
+     * 执行链路（共 3 步）：
+     * 1. 读取当前 Task 并校验归属 Conversation、revision、scope、状态和有效期；
+     * 2. 在服务端保存的候选文本中匹配 optionToken，禁止以业务编码直接作为凭据；
+     * 3. 使用 CAS 递增 revision 并清空候选，返回推进后的 Task。
+     *
+     * @param conversationId 当前 Conversation
+     * @param taskId 当前 Task
+     * @param revision 调用方持有的 revision
+     * @param scopeFingerprint 当前权限范围指纹
+     * @param optionToken 浏览器提交的受控候选令牌
+     * @return 推进后的 Task
+     * @throws BusinessException 令牌过期、越权、重复或 revision 冲突时抛出
+     */
+    @Transactional
+    public TaskSelection selectClarification(String conversationId, String taskId, long revision,
+                                       String scopeFingerprint, String optionToken) {
+        TaskRow task = task(taskId);
+        String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
+        if (!conversationId.equals(task.conversationId()) || !effectiveScope.equals(task.scopeFingerprint())
+                || !TASK_READY.equals(task.status()) || task.expiresAt().isBefore(Instant.now())) {
+            throw new BusinessException(ErrorCode.CONFLICT, "候选已失效，请重新选择");
+        }
+        TaskSelection selection = parseSelection(task, optionToken);
+        int updated = jdbc.update("UPDATE ai_task SET revision = revision + 1, status = ?, "
+                        + "confirmed_conditions = ?, missing_fields = ?, candidates = NULL, updated_at = ? "
+                        + "WHERE task_id = ? AND revision = ? AND status = ? AND scope_fingerprint = ? "
+                        + "AND expires_at > ?",
+                TASK_COLLECTING, selection.confirmedConditions(), task.missingFields(), Timestamp.from(Instant.now()),
+                taskId, revision, TASK_READY, effectiveScope, Timestamp.from(Instant.now()));
+        if (updated != 1) {
+            throw new BusinessException(ErrorCode.CONFLICT, "候选已被其他请求使用，请重新选择");
+        }
+        TaskRow selected = task(taskId);
+        return new TaskSelection(selected, selection.confirmedConditions(), selection.effectiveUserMessage());
+    }
+
+    /** Complete a resolved task only after a trusted result card was built. */
+    @Transactional
+    public TaskRow completeTask(String taskId, long revision, String scopeFingerprint, String intent) {
+        String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
+        int updated = jdbc.update("UPDATE ai_task SET status = ?, intent = ?, revision = revision + 1, "
+                        + "missing_fields = NULL, candidates = NULL, updated_at = ? "
+                        + "WHERE task_id = ? AND revision = ? AND status IN (?, ?) AND scope_fingerprint = ?",
+                TASK_COMPLETED, intent, Timestamp.from(Instant.now()), taskId, revision,
+                TASK_COLLECTING, TASK_READY, effectiveScope);
+        if (updated != 1) {
+            throw new BusinessException(ErrorCode.CONFLICT, "任务已被其他请求更新，请重新查询");
+        }
+        return task(taskId);
+    }
+
+    public TaskRow task(String taskId) {
+        List<TaskRow> rows = jdbc.query("SELECT task_id, conversation_id, memory_segment_no, adapter, intent, status, "
+                        + "revision, scope_fingerprint, expires_at, confirmed_conditions, missing_fields, candidates "
+                        + "FROM ai_task WHERE task_id = ?",
+                (rs, row) -> new TaskRow(rs.getString("task_id"), rs.getString("conversation_id"),
+                        rs.getLong("memory_segment_no"), rs.getString("adapter"), rs.getString("intent"),
+                        rs.getString("status"), rs.getLong("revision"), rs.getString("scope_fingerprint"),
+                        readInstant(rs, "expires_at"), rs.getString("confirmed_conditions"),
+                        rs.getString("missing_fields"), rs.getString("candidates")), taskId);
+        if (rows.isEmpty()) throw new BusinessException(ErrorCode.NOT_FOUND, "任务不存在");
+        return rows.getFirst();
+    }
+
+    /**
+     * 返回本人当前 Segment 中仍可交互的澄清任务快照。
+     * 归属、范围、Segment、状态和有效期全部在数据库查询边界内复核。
+     */
+    public TaskRow activeClarification(String conversationId, Long userId, String scopeFingerprint) {
+        String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
+        List<TaskRow> rows = jdbc.query("SELECT t.task_id, t.conversation_id, t.memory_segment_no, t.adapter, t.intent, t.status, "
+                        + "t.revision, t.scope_fingerprint, t.expires_at, t.confirmed_conditions, t.missing_fields, t.candidates "
+                        + "FROM ai_task t JOIN ai_conversation c ON c.active_task_id = t.task_id "
+                        + "WHERE c.id = ? AND c.user_id = ? AND t.conversation_id = c.id "
+                        + "AND c.active_memory_segment_no = t.memory_segment_no AND t.scope_fingerprint = ? "
+                        + "AND t.status = ? AND t.expires_at > ? AND t.candidates IS NOT NULL",
+                (rs, row) -> new TaskRow(rs.getString("task_id"), rs.getString("conversation_id"),
+                        rs.getLong("memory_segment_no"), rs.getString("adapter"), rs.getString("intent"),
+                        rs.getString("status"), rs.getLong("revision"), rs.getString("scope_fingerprint"),
+                        readInstant(rs, "expires_at"), rs.getString("confirmed_conditions"),
+                        rs.getString("missing_fields"), rs.getString("candidates")),
+                conversationId, userId, effectiveScope, TASK_READY, Timestamp.from(Instant.now()));
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    private TaskResolution ensureTask(String conversationId, long segment, String scopeFingerprint, Duration idleTtl,
+                               Instant now, String clarificationId, String optionToken, String userMessage) {
+        List<TaskRow> active = jdbc.query("SELECT task_id, conversation_id, memory_segment_no, adapter, intent, status, "
+                        + "revision, scope_fingerprint, expires_at, confirmed_conditions, missing_fields, candidates "
+                        + "FROM ai_task t JOIN ai_conversation c ON c.active_task_id=t.task_id "
+                        + "WHERE t.conversation_id=? AND c.id=?",
+                (rs, row) -> new TaskRow(rs.getString("task_id"), rs.getString("conversation_id"),
+                        rs.getLong("memory_segment_no"), rs.getString("adapter"), rs.getString("intent"),
+                        rs.getString("status"), rs.getLong("revision"), rs.getString("scope_fingerprint"),
+                        readInstant(rs, "expires_at"), rs.getString("confirmed_conditions"),
+                        rs.getString("missing_fields"), rs.getString("candidates")), conversationId, conversationId);
+        if (clarificationId != null && !clarificationId.isBlank()) {
+            if (active.isEmpty() || active.getFirst().memorySegmentNo() != segment
+                    || !clarificationId.equals(active.getFirst().taskId())) {
+                throw new BusinessException(ErrorCode.CONFLICT, "澄清任务已失效，请重新澄清");
+            }
+            TaskSelection selection = selectClarification(conversationId, clarificationId, active.getFirst().revision(),
+                    scopeFingerprint, optionToken);
+            return new TaskResolution(selection.task(), selection.effectiveUserMessage());
+        }
+        if (!active.isEmpty()) {
+            TaskRow current = active.getFirst();
+            if (current.memorySegmentNo() == segment && scopeFingerprint.equals(current.scopeFingerprint())
+                    && current.expiresAt().isAfter(now)
+                    && TASK_COLLECTING.equals(current.status())) {
+                return new TaskResolution(current, userMessage == null ? "" : userMessage);
+            }
+            boolean candidateWasSuperseded = TASK_READY.equals(current.status());
+            jdbc.update("UPDATE ai_task SET status = ?, revision = revision + 1, updated_at = ? WHERE task_id = ? AND status IN (?, ?)",
+                    candidateWasSuperseded ? TASK_REPLACED
+                            : (current.memorySegmentNo() != segment || !scopeFingerprint.equals(current.scopeFingerprint())
+                            ? TASK_EXPIRED : TASK_REPLACED),
+                    Timestamp.from(now), current.taskId(), TASK_COLLECTING, TASK_READY);
+            jdbc.update("UPDATE ai_conversation SET active_task_id = NULL WHERE id = ? AND active_task_id = ?",
+                    conversationId, current.taskId());
+        }
+        String taskId = UUID.randomUUID().toString();
+        Timestamp expiry = Timestamp.from(now.plus(idleTtl == null ? Duration.ofHours(4) : idleTtl));
+        jdbc.update("INSERT INTO ai_task(task_id, conversation_id, memory_segment_no, adapter, intent, status, revision, "
+                        + "scope_fingerprint, expires_at, confirmed_conditions, missing_fields, candidates, created_at, updated_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                taskId, conversationId, segment, "warehouse", "UNRESOLVED", TASK_COLLECTING, 1L,
+                scopeFingerprint == null ? "" : scopeFingerprint, expiry, "{}", "", null,
+                Timestamp.from(now), Timestamp.from(now));
+        jdbc.update("UPDATE ai_conversation SET active_task_id = ? WHERE id = ? AND active_task_id IS NULL",
+                taskId, conversationId);
+        return new TaskResolution(task(taskId), userMessage == null ? "" : userMessage);
+    }
+
+    private TaskSelection parseSelection(TaskRow task, String optionToken) {
+        if (optionToken == null || optionToken.isBlank() || task.candidates() == null) {
+            throw new BusinessException(ErrorCode.CONFLICT, "候选已失效，请重新选择");
+        }
+        try {
+            JsonNode root = JSON.readTree(task.candidates());
+            if (root == null || !root.isArray() || root.size() == 0 || root.size() > 20) {
+                throw new BusinessException(ErrorCode.CONFLICT, "候选已失效，请重新选择");
+            }
+            for (JsonNode candidate : root) {
+                if (candidate == null || !candidate.isObject()) {
+                    throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
+                }
+                java.util.Set<String> names = new java.util.HashSet<>();
+                names.addAll(candidate.propertyNames());
+                if (!names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit"))) {
+                    throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
+                }
+                String token = text(candidate, "optionToken", 256);
+                String code = text(candidate, "code", 128);
+                String name = text(candidate, "name", 256);
+                String baseUnit = text(candidate, "baseUnit", 64);
+                if (optionToken.equals(token)) {
+                    java.util.Map<String, String> confirmed = new java.util.LinkedHashMap<>();
+                    confirmed.put("type", "ITEM");
+                    confirmed.put("code", code);
+                    confirmed.put("name", name);
+                    confirmed.put("baseUnit", baseUnit == null ? "" : baseUnit);
+                    String conditions = JSON.writeValueAsString(confirmed);
+                    return new TaskSelection(task, conditions,
+                            "查询物品「" + name + "」（" + code + "）的当前库存");
+                }
+            }
+        }
+        catch (BusinessException exception) {
+            throw exception;
+        }
+        catch (Exception exception) {
+            throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
+        }
+        throw new BusinessException(ErrorCode.CONFLICT, "候选已失效，请重新选择");
+    }
+
+    private static String text(JsonNode object, String name, int maxLength) {
+        JsonNode value = object.get(name);
+        if (value == null || value.isNull()) {
+            if ("baseUnit".equals(name)) return null;
+            throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
+        }
+        if (!value.isTextual() || value.asText().isBlank() || value.asText().length() > maxLength) {
+            throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
+        }
+        return value.asText();
+    }
+
     @Transactional
     public boolean complete(String runId) {
         return transition(runId, COMPLETE, null);
@@ -249,6 +592,13 @@ public class AgentStore {
     @Transactional
     public boolean fail(String runId, String reason) {
         return transition(runId, FAILED, reason);
+    }
+
+    /** Reads the persisted terminal state when a failure CAS did not win. */
+    public String status(String runId) {
+        List<String> statuses = jdbc.query("SELECT status FROM ai_run WHERE run_id = ?",
+                (rs, row) -> rs.getString(1), runId);
+        return statuses.isEmpty() ? null : statuses.getFirst();
     }
 
     @Transactional
@@ -395,14 +745,25 @@ public class AgentStore {
     }
 
     public record StartRun(String conversationId, String runId, boolean newRun, String status,
-                           String assistantMessageId, long memorySegmentNo) {
+                           String assistantMessageId, long memorySegmentNo,
+                           String taskId, long taskRevision, String effectiveUserMessage) {
         public StartRun(String conversationId, String runId, boolean newRun, String status,
                         String assistantMessageId) {
-            this(conversationId, runId, newRun, status, assistantMessageId, 1L);
+            this(conversationId, runId, newRun, status, assistantMessageId, 1L, null, 0L, null);
         }
 
         public StartRun(String conversationId, String runId, boolean newRun, String status) {
             this(conversationId, runId, newRun, status, UUID.randomUUID().toString());
+        }
+
+        public StartRun(String conversationId, String runId, boolean newRun, String status,
+                        String assistantMessageId, long memorySegmentNo) {
+            this(conversationId, runId, newRun, status, assistantMessageId, memorySegmentNo, null, 0L, null);
+        }
+
+        public StartRun(String conversationId, String runId, boolean newRun, String status,
+                        String assistantMessageId, long memorySegmentNo, String taskId, long taskRevision) {
+            this(conversationId, runId, newRun, status, assistantMessageId, memorySegmentNo, taskId, taskRevision, null);
         }
     }
 
@@ -420,6 +781,18 @@ public class AgentStore {
     }
 
     public record MessagePage(List<MessageRow> records, long total, long page, long size) {
+    }
+
+    public record TaskRow(String taskId, String conversationId, long memorySegmentNo, String adapter,
+                          String intent, String status, long revision, String scopeFingerprint,
+                          Instant expiresAt, String confirmedConditions, String missingFields,
+                          String candidates) {
+    }
+
+    private record TaskResolution(TaskRow task, String effectiveUserMessage) {
+    }
+
+    public record TaskSelection(TaskRow task, String confirmedConditions, String effectiveUserMessage) {
     }
 
     private record MemorySegmentState(long segmentNo, Instant lastActivity, String latestScope,

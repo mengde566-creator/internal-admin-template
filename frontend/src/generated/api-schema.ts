@@ -760,6 +760,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AgentSseEventDTO: {
+            conversationId: string;
+            eventId: string;
+            memorySegmentId: string;
+            messageId: string;
+            /** Format: date-time */
+            occurredAt: string;
+            payload: Record<string, never>;
+            runId: string;
+            /** Format: int64 */
+            sequence: number;
+            type: string;
+            version: string;
+        };
         AiCapabilitiesDTO: {
             availableAdapters?: string[];
             enabled?: boolean;
@@ -859,6 +873,22 @@ export interface components {
         ChangePasswordDTO: {
             newPassword: string;
             oldPassword: string;
+        };
+        ClarificationOptionDTO: {
+            baseUnit?: string;
+            code?: string;
+            name?: string;
+            optionToken?: string;
+        };
+        ClarificationSelection: {
+            clarificationId: string;
+            optionToken: string;
+        };
+        ClarificationTaskDTO: {
+            clarificationId?: string;
+            options?: components["schemas"]["ClarificationOptionDTO"][];
+            /** Format: int64 */
+            revision?: number;
         };
         ConversationDTO: {
             conversationId?: string;
@@ -1033,6 +1063,7 @@ export interface components {
             state?: string;
         };
         MessagePageDTO: {
+            activeClarification?: components["schemas"]["ClarificationTaskDTO"];
             /** Format: int64 */
             page?: number;
             records?: components["schemas"]["MessageDTO"][];
@@ -1077,12 +1108,9 @@ export interface components {
             permissionCodes?: string[];
         };
         RunRequest: {
+            clarificationSelection?: components["schemas"]["ClarificationSelection"];
             clientRequestId: string;
-            text: string;
-        };
-        SseEmitter: {
-            /** Format: int64 */
-            timeout?: number;
+            text?: string;
         };
         StockPageDTO: {
             /** Format: int64 */
@@ -1289,7 +1317,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": components["schemas"]["SseEmitter"];
+                    "text/event-stream": components["schemas"]["AgentSseEventDTO"];
                 };
             };
         };

@@ -11,11 +11,31 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                    Consumer<String> toolCardEmitter,
                                    AtomicBoolean toolOutputProduced,
                                    AtomicLong eventSequence,
-                                   String messageId) {
+                                   String messageId, String taskId, long taskRevision) {
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter) {
         this(actor, runId, message, toolCardEmitter, new AtomicBoolean(), new AtomicLong(),
-                java.util.UUID.randomUUID().toString());
+                java.util.UUID.randomUUID().toString(), null, 0L);
+    }
+
+    public AgentExecutionContext(AgentRunContext actor, String runId, String message,
+                                 Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
+                                 AtomicLong eventSequence, String messageId) {
+        this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId, null, 0L);
+    }
+
+    public AgentExecutionContext(AgentRunContext actor, String runId, String message,
+                                 Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
+                                 AtomicLong eventSequence, String messageId, String taskId, long taskRevision) {
+        this.actor = actor;
+        this.runId = runId;
+        this.message = message;
+        this.toolCardEmitter = toolCardEmitter;
+        this.toolOutputProduced = toolOutputProduced;
+        this.eventSequence = eventSequence;
+        this.messageId = messageId;
+        this.taskId = taskId;
+        this.taskRevision = taskRevision;
     }
 
     public void markToolOutputProduced() {

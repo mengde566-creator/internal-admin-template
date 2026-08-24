@@ -79,6 +79,20 @@ MOD-* 模块责任与公开契约
 | REQ-V02-AI-008 完整AI观测链路 | SLICE-00建立最小事实，SLICE-05完成反馈与评测 |
 | REQ-V02-AI-009 可复用业务接入 | SLICE-06 |
 
+### 4.4 2026-08-23 开发前差值审计
+
+本次按“已确认需求 → 场景 → 功能 → 模块 → HTTP/SSE/数据 → 当前代码与测试”正向追踪，并以当前代码反向追溯消费者、权限和持久化事实；另由独立项目审议者直接读取原始材料做一次反例复核。结论是：**SLICE-01已有可见主链，但尚未收口，暂停直接进入SLICE-02生产实现。**
+
+进入SLICE-02前只完成一轮`SLICE-01契约纠偏`：
+
+1. 落地最小持久化Task与`clarificationSelection`，以`taskId + revision + scopeFingerprint + expiresAt`校验旧候选；不建候选表、结果表或通用工作流。
+2. 统一Tool结果为公共`outcome`和仓储窄DTO；`AMBIGUOUS`只生成`clarification-choice`，事实卡只承载已解析结果，并补`schemaVersion/resultCount/truncated/queriedAt`。
+3. 让Run请求、SSE信封、OpenAPI生成类型与前端消费者使用同一合同；补齐`occurredAt`、`memorySegmentId`，不再把`SseEmitter`当成业务响应Schema。
+4. 收敛完整成功的原子边界：助手History、Run终态和Observation终态任一失败均不得向页面声明`SUCCESS`；不引入消息队列或分布式事务。
+5. 归还Agent与Observability后续迁移的模块所有权；新增Task迁移只用四库共同类型与CAS，不使用部分唯一索引、JSON列、生成列或新的窗口函数。
+
+本轮不夹带四类Tool全集、异常输入全集、Knowledge、反馈评测、保留期清理和第二业务消费者。现有窗口函数与历史迁移的低版本数据库门槛另立数据库兼容专项；它不阻塞当前已验证PostgreSQL上的功能落地，但完成前不得宣称MySQL/Oracle或任意低版本已验证兼容。
+
 ## 5. 每次任务的最小读取集
 
 研发或验收某个分片时，只额外读取：
@@ -104,7 +118,7 @@ MOD-* 模块责任与公开契约
 | 分片 | 设计 | 实现 | 总设计师验收 |
 | --- | --- | --- | --- |
 | SLICE-00 | 已确认 | Gate A、Gate B已通过；分片完成 | Gate A、Gate B已通过；分片完成 |
-| SLICE-01 | 已确认 | 未开始 | 未开始 |
+| SLICE-01 | 已确认 | 可见主链已实现；开发前审计退回5项契约纠偏 | 未通过；纠偏完成后一次验收 |
 | SLICE-02 | 已确认 | 未开始 | 未开始 |
 | SLICE-03 | 已确认 | 未开始 | 未开始 |
 | SLICE-04 | 已确认 | 未开始 | 未开始 |

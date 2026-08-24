@@ -86,14 +86,14 @@ module-agent-warehouse-adapter
 
 ### Tool结果边界
 
-当前库存任务统一返回 `STOCK_RESULT | CANDIDATES | NO_MATCH | NO_STOCK`，近期变化返回 `RESULT | NO_DATA`；其它任务继续使用：
+Tool公共信封只使用：
 
 ```text
 RESOLVED | AMBIGUOUS | NO_DATA | NOT_FOUND
 DENIED | INVALID | UNAVAILABLE
 ```
 
-并携带schemaVersion、resultCount、truncated、queriedAt及构建受信资产所需DTO。业务文字仍是不可信数据，不能派生新工具和动作。
+仓储适配DTO用窄`reasonCode`表达未匹配物品、物品无库存或时间范围无变化，并携带`schemaVersion/resultCount/truncated/queriedAt`及构建受信资产所需DTO。`AMBIGUOUS`只生成`clarification-choice`；`stock-summary`、`movement-list`等事实卡不得同时承担候选选择。业务文字仍是不可信数据，不能派生新工具和动作。
 
 ### 禁止
 
@@ -270,7 +270,7 @@ Agent关闭时返回`enabled=false`且数组为空；开启时`availableAdapters
 
 History 分页的 `page=1` 取最新一批消息，返回的 `records` 在当前页内仍按时间正序，供聊天渲染。
 
-上述四个接口必须通过真实Springdoc进入OpenAPI并生成前端类型后，才能开始页面联调。SLICE-01不增加对话删除、重命名、共享、导出和独立History管理页；持久化Task与`clarificationSelection`仍留待后续分片，当前仅通过Run入口推进关键词查询。
+上述四个接口必须通过真实Springdoc进入OpenAPI并生成前端类型后，才能开始页面联调。SLICE-01不增加对话删除、重命名、共享、导出和独立History管理页；持久化Task与`clarificationSelection`属于SLICE-01收口条件，不能用普通文本回填和History猜测替代。
 
 ### 用户可提交
 

@@ -1,6 +1,7 @@
 package com.internaladmin.app;
 
 import com.internaladmin.app.config.OpenApiContractConfig;
+import com.internaladmin.app.config.AgentOpenApiCustomizer;
 import com.internaladmin.module.agent.controller.AiCapabilitiesController;
 import com.internaladmin.module.agent.controller.AgentConversationController;
 import com.internaladmin.module.agent.service.AgentActorResolver;
@@ -321,6 +322,7 @@ class NoDatabaseOpenApiContractTest {
     })
     @Import({
             OpenApiContractConfig.class,
+            AgentOpenApiCustomizer.class,
             AiCapabilitiesController.class,
             SecurityConfig.class,
             GlobalExceptionHandler.class,

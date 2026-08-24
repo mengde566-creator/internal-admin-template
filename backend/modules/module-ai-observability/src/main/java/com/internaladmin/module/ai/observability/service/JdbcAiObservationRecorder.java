@@ -77,10 +77,15 @@ public class JdbcAiObservationRecorder implements AiObservationRecorder {
 
     @Override
     public synchronized void finishRun(String runId, String status, String errorCode) {
+        finishRunChecked(runId, status, errorCode);
+    }
+
+    @Override
+    public synchronized boolean finishRunChecked(String runId, String status, String errorCode) {
         ensureRun(runId);
-        jdbc.update("UPDATE ai_observation_run SET status = ?, error_code = ?, completed_at = ? "
+        return jdbc.update("UPDATE ai_observation_run SET status = ?, error_code = ?, completed_at = ? "
                         + "WHERE run_id = ? AND status = 'RUNNING'",
-                status, errorCode, Timestamp.from(Instant.now()), runId);
+                status, errorCode, Timestamp.from(Instant.now()), runId) == 1;
     }
 
     private void ensureRun(String runId) {

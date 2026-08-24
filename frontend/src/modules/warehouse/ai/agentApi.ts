@@ -16,19 +16,24 @@ export type AiCapabilities = {
 export type Conversation = Required<ConversationSchema>
 export type ConversationPage = Required<Omit<ConversationPageSchema, 'records'>> & { records: Conversation[] }
 export type Message = Required<NonNullable<NonNullable<MessagePageSchema['records']>[number]>>
-export type MessagePage = Required<Omit<MessagePageSchema, 'records'>> & { records: Message[] }
+type ClarificationTaskSchema = NonNullable<MessagePageSchema['activeClarification']>
+export type ClarificationOption = Required<NonNullable<ClarificationTaskSchema['options']>[number]>
+export type ClarificationTask = {
+  clarificationId: string
+  revision: number
+  options: ClarificationOption[]
+}
+export type MessagePage = Required<Omit<MessagePageSchema, 'records' | 'activeClarification'>> & {
+  records: Message[]
+  activeClarification: ClarificationTask | null
+}
 
-export interface AgentSseEvent {
-  version: string
-  eventId: string
-  sequence: number
-  occurredAt?: string
-  runId: string
-  conversationId: string
-  memorySegmentId?: string | null
-  messageId?: string | null
-  type: string
-  payload: Record<string, unknown>
+type AgentSseEnvelope = components['schemas']['AgentSseEventDTO']
+export type AgentSseEvent = Omit<AgentSseEnvelope, 'payload'> & { payload: Record<string, unknown> }
+
+export type ClarificationSelection = {
+  clarificationId: string
+  optionToken: string
 }
 
 export class AgentHttpError extends Error {
@@ -82,9 +87,22 @@ export async function createConversation(): Promise<Conversation> {
 
 export async function fetchConversationMessages(conversationId: string, page = 1, size = 50): Promise<MessagePage> {
   const response = await http.get<ApiResponse<MessagePageSchema>>(`/api/ai/conversations/${encodeURIComponent(conversationId)}/messages`, { params: { page, size } })
-  const data = normalisePage(response.data.data)
+  const raw = response.data.data
+  const data = normalisePage(raw)
   return {
     ...data,
+    activeClarification: raw?.activeClarification
+      ? {
+          clarificationId: raw.activeClarification.clarificationId ?? '',
+          revision: raw.activeClarification.revision ?? 0,
+          options: (raw.activeClarification.options ?? []).map((option) => ({
+            code: option?.code ?? '',
+            name: option?.name ?? '',
+            baseUnit: option?.baseUnit ?? '',
+            optionToken: option?.optionToken ?? ''
+          }))
+        }
+      : null,
     records: data.records.map((message) => ({
       messageId: message.messageId ?? '',
       runId: message.runId ?? '',
@@ -121,7 +139,8 @@ export async function runAgent(
   clientRequestId: string,
   text: string,
   signal: AbortSignal,
-  onEvent: (event: AgentSseEvent) => void
+  onEvent: (event: AgentSseEvent) => void,
+  clarificationSelection?: ClarificationSelection
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/ai/conversations/${encodeURIComponent(conversationId)}/runs`, {
     method: 'POST',
@@ -132,7 +151,7 @@ export async function runAgent(
       'Content-Type': 'application/json',
       ...(xsrfToken() ? { 'X-XSRF-TOKEN': xsrfToken() as string } : {})
     },
-    body: JSON.stringify({ clientRequestId, text })
+    body: JSON.stringify({ clientRequestId, ...(text.trim() ? { text: text.trim() } : {}), ...(clarificationSelection ? { clarificationSelection } : {}) })
   })
   if (!response.ok) await readError(response)
   if (!response.body) throw new AgentHttpError(response.status, '暂时无法接收助手回复。')

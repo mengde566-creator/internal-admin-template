@@ -1,6 +1,55 @@
 {
   "components": {
     "schemas": {
+      "AgentSseEventDTO": {
+        "properties": {
+          "conversationId": {
+            "type": "string"
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "memorySegmentId": {
+            "type": "string"
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "sequence": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversationId",
+          "eventId",
+          "memorySegmentId",
+          "messageId",
+          "occurredAt",
+          "payload",
+          "runId",
+          "sequence",
+          "type",
+          "version"
+        ],
+        "type": "object"
+      },
       "AiCapabilitiesDTO": {
         "properties": {
           "availableAdapters": {
@@ -416,6 +465,60 @@
           "newPassword",
           "oldPassword"
         ],
+        "type": "object"
+      },
+      "ClarificationOptionDTO": {
+        "properties": {
+          "baseUnit": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "optionToken": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ClarificationSelection": {
+        "properties": {
+          "clarificationId": {
+            "maxLength": 128,
+            "minLength": 0,
+            "type": "string"
+          },
+          "optionToken": {
+            "maxLength": 256,
+            "minLength": 0,
+            "type": "string"
+          }
+        },
+        "required": [
+          "clarificationId",
+          "optionToken"
+        ],
+        "type": "object"
+      },
+      "ClarificationTaskDTO": {
+        "properties": {
+          "clarificationId": {
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/ClarificationOptionDTO"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
         "type": "object"
       },
       "ConversationDTO": {
@@ -1024,6 +1127,9 @@
       },
       "MessagePageDTO": {
         "properties": {
+          "activeClarification": {
+            "$ref": "#/components/schemas/ClarificationTaskDTO"
+          },
           "page": {
             "format": "int64",
             "type": "integer"
@@ -1145,6 +1251,9 @@
       },
       "RunRequest": {
         "properties": {
+          "clarificationSelection": {
+            "$ref": "#/components/schemas/ClarificationSelection"
+          },
           "clientRequestId": {
             "maxLength": 128,
             "minLength": 0,
@@ -1157,18 +1266,8 @@
           }
         },
         "required": [
-          "clientRequestId",
-          "text"
+          "clientRequestId"
         ],
-        "type": "object"
-      },
-      "SseEmitter": {
-        "properties": {
-          "timeout": {
-            "format": "int64",
-            "type": "integer"
-          }
-        },
         "type": "object"
       },
       "StockPageDTO": {
@@ -1612,7 +1711,7 @@
             "content": {
               "text/event-stream": {
                 "schema": {
-                  "$ref": "#/components/schemas/SseEmitter"
+                  "$ref": "#/components/schemas/AgentSseEventDTO"
                 }
               }
             },

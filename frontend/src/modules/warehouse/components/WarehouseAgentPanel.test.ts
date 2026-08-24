@@ -100,11 +100,11 @@ describe('仓储助手可见交互', () => {
     expect(routerPush).toHaveBeenCalledWith({ name: 'warehouse-stock', query: { keyword: 'A-001' } })
   })
 
-  it('多候选只展示业务字段，选择后回填业务编码而非内部键', async () => {
+  it('多候选只展示业务字段，选择后不把业务编码写入请求文本', async () => {
     api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
       onEvent(event('card.replace', 2, {
-        cardId: 'stock-task', revision: 0, cardType: 'stock-summary', status: 'CANDIDATES',
-        candidates: [{ code: 'ITEM-6204', name: '深沟球轴承', baseUnit: '件' }], rows: []
+        cardId: 'stock-task', revision: 0, cardType: 'clarification-choice', status: 'CANDIDATES',
+        options: [{ code: 'ITEM-6204', name: '深沟球轴承', baseUnit: '件', optionToken: 'opaque-token' }], rows: []
       }))
       onEvent(event('run.completed', 3, { status: 'SUCCESS' }))
     })
@@ -116,7 +116,54 @@ describe('仓储助手可见交互', () => {
     expect(wrapper.text()).toContain('深沟球轴承')
     expect(wrapper.text()).not.toContain('candidate-secret')
     await wrapper.find('.candidate-button').trigger('click')
-    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('ITEM-6204')
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+    expect(wrapper.text()).toContain('已选择：深沟球轴承')
+  })
+
+  it('澄清卡使用受控 optionToken 提交，不把业务编码当凭据', async () => {
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('card.replace', 2, {
+        cardId: 'task-1', revision: 1, cardType: 'clarification-choice',
+        queriedAt: '2026-08-21T08:30:00Z', options: [{ code: 'ITEM-A', name: '轴承A', optionToken: 'opaque-token' }], rows: []
+      }))
+      onEvent(event('run.completed', 3, { status: 'SUCCESS' }))
+    })
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('轴承')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('请从下面选择一个物品')
+    await wrapper.get('.candidate-button').trigger('click')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(api.runAgent.mock.calls[1][2]).toBe('')
+    expect(api.runAgent.mock.calls[1][5]).toEqual({ clarificationId: 'task-1', optionToken: 'opaque-token' })
+  })
+
+  it('选择历史对话后恢复服务端返回的有效澄清卡，不解析助手正文', async () => {
+    api.fetchConversationMessages.mockResolvedValueOnce({
+      records: [{ messageId: 'message-old', runId: 'run-old', role: 'ASSISTANT', state: 'COMPLETE', content: '请从下面选择一个物品', createdAt: '2026-08-20T08:00:00Z' }],
+      total: 1,
+      page: 1,
+      size: 50,
+      activeClarification: {
+        clarificationId: 'task-restored',
+        revision: 4,
+        options: [{ code: 'ITEM-A', name: '轴承A', baseUnit: '件', optionToken: 'opaque-restored' }]
+      }
+    })
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('[aria-label="打开历史对话"]').trigger('click')
+    await wrapper.get('.conversation-item').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.candidate-list').text()).toContain('轴承A')
+    expect(wrapper.text()).toContain('请从下面选择一个物品')
+    expect(wrapper.text()).not.toContain('opaque-restored')
+    await wrapper.get('.candidate-button').trigger('click')
+    expect(wrapper.text()).toContain('已选择：轴承A')
   })
 
   it('可选择本人历史并在点击收起时向父级发出 toggle-collapse 事件', async () => {

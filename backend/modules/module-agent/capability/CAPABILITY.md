@@ -2,9 +2,9 @@
 
 ## 1. 定位与非目标
 
-SLICE-00 已通过 Gate A、Gate B，提供 Agent 默认关闭、DeepSeek 纵向链、一个仓储只读 Tool、Session+CSRF SSE、History、运行终态/有界重试和最小观测。多轮 Task、完整 Tool 集合、前端入口和管理页仍未实现。
+SLICE-00 已通过 Gate A、Gate B，提供 Agent 默认关闭、DeepSeek 纵向链、Session+CSRF SSE、History、运行终态/有界重试和最小观测技术基线。
 
-SLICE-01 已落地服务端 Conversation/History 契约和仓储 A+B 可见入口：Conversation ID 由服务端生成，提供本人有界分页与稳定顺序 History，Run 请求正式使用 `text`，运行必须引用已存在且归属当前用户的 Conversation；仓储助手可在 DOCKED/COMPACT/DRAWER 中创建/选择对话、流式显示文字与受控库存卡片。当前任务补充了关键词库存、近期变化工具和按当前 scope 隔离的短期有效 History；完整 Task 持久化、澄清协议、候选绑定、其余工具和知识问答仍未实现。
+SLICE-01 已落地服务端 Conversation/History、scope隔离短期Memory和仓储 A+B 可见主链：Conversation ID 由服务端生成，提供本人有界分页与稳定顺序 History，Run 请求使用 `text`，运行必须引用已存在且归属当前用户的 Conversation；仓储助手可在 DOCKED/COMPACT/DRAWER 中创建/选择对话、流式显示文字与当前两类受控卡片。当前模型入口有关键词库存与近期变化两个只读Tool。本轮契约纠偏已实现最小持久化Task/受控澄清选择、统一结果元数据、明确SSE事件信封、完整成功边界和迁移归属，当前等待总设计师验收；其余两类仓储Tool和知识问答未实现。
 
 ## 2. 特有约束
 

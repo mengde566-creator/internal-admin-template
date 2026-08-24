@@ -367,7 +367,7 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
     }
     public List<ItemDTO> listItems(String keyword, int page, int size, WarehouseAccessScopeDTO scope) {
         scope = validateTrustedScope(scope);
-        String pattern = "%" + (keyword == null ? "" : keyword.trim()) + "%";
+        String pattern = likePattern(keyword);
         int bounded = Math.max(1, Math.min(size, MAX_PAGE_SIZE));
         int offset = Math.max(0, page - 1) * bounded;
         return itemMapper.selectPageOptions(pattern, offset, bounded).stream().map(this::toItem).toList();
@@ -464,25 +464,39 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
         String warehousePattern = likePattern(warehouseKeyword);
         String locationPattern = likePattern(locationKeyword);
         Long departmentId = scope.allDepartments() ? null : scope.departmentId();
-        List<StockPageRowDTO> rows = balanceMapper.selectTaskStock(itemPattern, warehousePattern,
-                locationPattern, departmentId, bounded);
+        List<ItemDO> candidateItems = itemKeyword != null && !itemKeyword.isBlank()
+                ? itemMapper.selectPageOptions(itemPattern, 0, bounded + 1)
+                : List.of();
+        List<WarehouseStockCandidate> candidates = candidateItems.stream()
+                .map(item -> new WarehouseStockCandidate(item.getCode(), item.getName(), item.getBaseUnit())).toList();
+        if (candidates.size() > 1) {
+            boolean truncated = candidates.size() > bounded;
+            List<WarehouseStockCandidate> visible = candidates.stream().limit(bounded).toList();
+            return new WarehouseStockTaskResult("CANDIDATES", List.of(), visible, Instant.now(), truncated);
+        }
+        Long resolvedItemId = candidateItems.size() == 1 ? candidateItems.getFirst().getId() : null;
+        List<StockPageRowDTO> rows = balanceMapper.selectTaskStock(resolvedItemId == null ? itemPattern : "%",
+                warehousePattern, locationPattern, departmentId, bounded + 1, resolvedItemId);
+        boolean truncated = rows.size() > bounded;
+        rows = rows.stream().limit(bounded).toList();
         List<WarehouseStockTaskRow> resultRows = rows.stream().map(row -> new WarehouseStockTaskRow(
                 row.itemId(), row.itemCode(), row.itemName(), row.baseUnit(), row.warehouseId(),
                 row.warehouseCode(), row.warehouseName(), row.locationId(), row.locationCode(),
                 row.locationName(), QuantityCodec.format(row.quantityScaled()), row.version())).toList();
-        Set<Long> itemIds = rows.stream().map(StockPageRowDTO::itemId).collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
-        if (itemIds.size() > 1 && itemKeyword != null && !itemKeyword.isBlank()) {
-            List<WarehouseStockCandidate> candidates = rows.stream()
-                    .filter(row -> row.itemId() != null)
-                    .collect(java.util.stream.Collectors.toMap(StockPageRowDTO::itemId, row -> new WarehouseStockCandidate(
-                            row.itemCode(), row.itemName(), row.baseUnit()),
-                            (left, right) -> left, java.util.LinkedHashMap::new)).values().stream().toList();
-            return new WarehouseStockTaskResult("CANDIDATES", List.of(), candidates, Instant.now());
+        String status;
+        if (!resultRows.isEmpty()) {
+            status = "STOCK_RESULT";
         }
-        String status = resultRows.isEmpty()
-                ? (itemKeyword == null || itemKeyword.isBlank() ? "NO_STOCK" : "NO_MATCH")
-                : "STOCK_RESULT";
-        return new WarehouseStockTaskResult(status, resultRows, List.of(), Instant.now());
+        else if (itemKeyword == null || itemKeyword.isBlank()) {
+            status = "NO_DATA";
+        }
+        else if (candidates.isEmpty()) {
+            status = "NO_MATCH";
+        }
+        else {
+            status = "NO_STOCK";
+        }
+        return new WarehouseStockTaskResult(status, resultRows, List.of(), Instant.now(), truncated);
     }
 
     @Override
@@ -498,13 +512,15 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
         Long departmentId = scope.allDepartments() ? null : scope.departmentId();
         List<WarehouseMovementTaskRowDTO> rows = movementMapper.selectTaskMovements(
                 LocalDateTime.now().minusDays(recentDays), likePattern(itemKeyword),
-                likePattern(warehouseKeyword), likePattern(locationKeyword), departmentId, bounded);
+                likePattern(warehouseKeyword), likePattern(locationKeyword), departmentId, bounded + 1);
+        boolean truncated = rows.size() > bounded;
+        rows = rows.stream().limit(bounded).toList();
         List<WarehouseMovementTaskRow> result = rows.stream().map(row -> new WarehouseMovementTaskRow(
                 row.itemId(), row.itemCode(), row.itemName(), row.baseUnit(), row.warehouseId(),
                 row.warehouseCode(), row.warehouseName(), row.locationId(), row.locationCode(),
                 row.locationName(), row.movementType(), QuantityCodec.format(row.deltaQuantity()),
                 row.createdAt())).toList();
-        return new WarehouseMovementTaskResult(result.isEmpty() ? "NO_DATA" : "RESULT", result, Instant.now());
+        return new WarehouseMovementTaskResult(result.isEmpty() ? "NO_DATA" : "RESULT", result, Instant.now(), truncated);
     }
 
     private int boundedTaskLimit(int limit) {

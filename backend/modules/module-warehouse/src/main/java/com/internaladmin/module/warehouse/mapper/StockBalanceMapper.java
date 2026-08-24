@@ -26,12 +26,13 @@ public interface StockBalanceMapper extends BaseMapper<StockBalanceDO> {
                     "WHERE (i.code LIKE #{itemPattern} ESCAPE '!' OR i.name LIKE #{itemPattern} ESCAPE '!') " +
                     "AND (w.code LIKE #{warehousePattern} ESCAPE '!' OR w.name LIKE #{warehousePattern} ESCAPE '!') " +
                     "AND (l.code LIKE #{locationPattern} ESCAPE '!' OR l.name LIKE #{locationPattern} ESCAPE '!') " +
-                    "<if test='departmentId != null'> AND w.department_id=#{departmentId}</if>" +
+                    "<if test='departmentId != null'> AND w.department_id=#{departmentId}</if> " +
+                    "<if test='itemId != null'> AND b.item_id=#{itemId}</if>" +
                     ") bounded WHERE row_num &lt;= #{limit}", "</script>"})
     List<com.internaladmin.module.warehouse.model.dto.StockPageRowDTO> selectTaskStock(
             @Param("itemPattern") String itemPattern, @Param("warehousePattern") String warehousePattern,
             @Param("locationPattern") String locationPattern, @Param("departmentId") Long departmentId,
-            @Param("limit") int limit);
+            @Param("limit") int limit, @Param("itemId") Long itemId);
     @Select({"<script>",
             "SELECT item_id AS itemId, item_code AS itemCode, item_name AS itemName, base_unit AS baseUnit, " +
                     "warehouse_id AS warehouseId, warehouse_code AS warehouseCode, warehouse_name AS warehouseName, " +
@@ -45,7 +46,7 @@ public interface StockBalanceMapper extends BaseMapper<StockBalanceDO> {
                     "JOIN wh_item i ON i.id=b.item_id " +
                     "JOIN wh_location l ON l.id=b.location_id " +
                     "JOIN wh_warehouse w ON w.id=l.warehouse_id " +
-                    "WHERE (i.code LIKE #{keywordPattern} OR i.name LIKE #{keywordPattern}) " +
+                    "WHERE (i.code LIKE #{keywordPattern} ESCAPE '!' OR i.name LIKE #{keywordPattern} ESCAPE '!') " +
                     "<if test='departmentId != null'> AND w.department_id=#{departmentId}</if> " +
                     "<if test='itemId != null'> AND b.item_id=#{itemId}</if> " +
                     "<if test='warehouseId != null'> AND w.id=#{warehouseId}</if> " +
@@ -64,7 +65,7 @@ public interface StockBalanceMapper extends BaseMapper<StockBalanceDO> {
                     "JOIN wh_item i ON i.id=b.item_id " +
                     "JOIN wh_location l ON l.id=b.location_id " +
                     "JOIN wh_warehouse w ON w.id=l.warehouse_id " +
-                    "WHERE (i.code LIKE #{keywordPattern} OR i.name LIKE #{keywordPattern}) " +
+                    "WHERE (i.code LIKE #{keywordPattern} ESCAPE '!' OR i.name LIKE #{keywordPattern} ESCAPE '!') " +
                     "<if test='departmentId != null'> AND w.department_id=#{departmentId}</if> " +
                     "<if test='itemId != null'> AND b.item_id=#{itemId}</if> " +
                     "<if test='warehouseId != null'> AND w.id=#{warehouseId}</if> " +

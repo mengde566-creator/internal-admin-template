@@ -159,18 +159,46 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                         integer(root, "limit", 20, 1, 20), scope(actor(execution)));
                 List<Map<String, Object>> rows = result.rows().stream().map(this::stockRow).toList();
                 List<Map<String, Object>> candidates = new ArrayList<>();
+                List<Map<String, Object>> modelCandidates = new ArrayList<>();
                 for (WarehouseStockCandidate candidate : result.candidates()) {
-                    candidates.add(Map.of("code", candidate.code(),
-                            "name", candidate.name(), "baseUnit", candidate.baseUnit()));
+                    Map<String, Object> option = new LinkedHashMap<>();
+                    option.put("optionToken", java.util.UUID.randomUUID().toString());
+                    option.put("code", candidate.code());
+                    option.put("name", candidate.name());
+                    option.put("baseUnit", candidate.baseUnit());
+                    candidates.add(option);
+                    Map<String, Object> modelOption = new LinkedHashMap<>();
+                    modelOption.put("code", candidate.code());
+                    modelOption.put("name", candidate.name());
+                    modelOption.put("baseUnit", candidate.baseUnit());
+                    modelCandidates.add(modelOption);
                 }
                 Map<String, Object> payload = new LinkedHashMap<>();
-                payload.put("status", result.status()); payload.put("rows", rows); payload.put("candidates", candidates);
+                payload.put("outcome", result.outcome()); payload.put("reasonCode", result.reasonCode());
+                payload.put("schemaVersion", result.schemaVersion()); payload.put("resultCount", result.resultCount());
+                payload.put("truncated", result.truncated()); payload.put("rows", rows); payload.put("candidates", modelCandidates);
                 payload.put("queriedAt", result.queriedAt());
                 String output = json.writeValueAsString(payload);
-                execution.toolCardEmitter().accept(json.writeValueAsString(Map.of(
-                        "cardId", "stock-task", "revision", 0,
-                        "cardType", "stock-summary", "queriedAt", result.queriedAt(),
-                        "status", result.status(), "rows", rows, "candidates", candidates)));
+                Map<String, Object> card = new LinkedHashMap<>();
+                card.put("cardId", execution.taskId() == null ? "stock-summary" : execution.taskId());
+                card.put("revision", execution.taskRevision());
+                boolean ambiguous = "AMBIGUOUS".equals(result.outcome());
+                card.put("cardType", ambiguous ? "clarification-choice" : "stock-summary");
+                if (ambiguous) {
+                    card.put("clarificationId", execution.taskId());
+                    card.put("question", "请从下面选择一个物品");
+                    card.put("selectionMode", "SINGLE");
+                    card.put("options", candidates);
+                    card.put("allowFreeText", false);
+                }
+                card.put("schemaVersion", result.schemaVersion());
+                card.put("resultCount", result.resultCount());
+                card.put("truncated", result.truncated());
+                card.put("outcome", result.outcome());
+                card.put("reasonCode", result.reasonCode());
+                card.put("queriedAt", result.queriedAt());
+                card.put("rows", rows);
+                execution.toolCardEmitter().accept(json.writeValueAsString(card));
                 execution.markToolOutputProduced();
                 record(execution, "SUCCEEDED", started, null);
                 return output;
@@ -199,11 +227,27 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                         value(root, "itemKeyword"), value(root, "warehouseKeyword"), value(root, "locationKeyword"),
                         integer(root, "limit", 20, 1, 20), scope(actor(execution)));
                 List<Map<String, Object>> rows = result.rows().stream().map(this::movementRow).toList();
-                String output = json.writeValueAsString(Map.of("status", result.status(), "rows", rows,
-                        "queriedAt", result.queriedAt()));
-                execution.toolCardEmitter().accept(json.writeValueAsString(Map.of(
-                        "cardId", "movement-task", "revision", 0, "cardType", "movement-list",
-                        "status", result.status(), "queriedAt", result.queriedAt(), "rows", rows)));
+                Map<String, Object> movementPayload = new LinkedHashMap<>();
+                movementPayload.put("outcome", result.outcome());
+                movementPayload.put("reasonCode", result.reasonCode());
+                movementPayload.put("schemaVersion", result.schemaVersion());
+                movementPayload.put("resultCount", result.resultCount());
+                movementPayload.put("truncated", result.truncated());
+                movementPayload.put("rows", rows);
+                movementPayload.put("queriedAt", result.queriedAt());
+                String output = json.writeValueAsString(movementPayload);
+                Map<String, Object> movementCard = new LinkedHashMap<>();
+                movementCard.put("cardId", execution.taskId() == null ? "movement-list" : execution.taskId() + ":movement");
+                movementCard.put("revision", execution.taskRevision());
+                movementCard.put("cardType", "movement-list");
+                movementCard.put("outcome", result.outcome());
+                movementCard.put("reasonCode", result.reasonCode());
+                movementCard.put("schemaVersion", result.schemaVersion());
+                movementCard.put("resultCount", result.resultCount());
+                movementCard.put("truncated", result.truncated());
+                movementCard.put("queriedAt", result.queriedAt());
+                movementCard.put("rows", rows);
+                execution.toolCardEmitter().accept(json.writeValueAsString(movementCard));
                 execution.markToolOutputProduced();
                 record(execution, "SUCCEEDED", started, null);
                 return output;
