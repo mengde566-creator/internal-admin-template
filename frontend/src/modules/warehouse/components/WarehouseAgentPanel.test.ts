@@ -44,6 +44,14 @@ function event(type: string, sequence: number, payload: Record<string, unknown> 
   return { version: '1', eventId: `event-${sequence}`, sequence, runId: 'run-1', conversationId: 'conversation-1', messageId: 'message-1', type, payload }
 }
 
+async function flushShellMeasure() {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  if (typeof window.requestAnimationFrame === 'function') {
+    await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)))
+  }
+  await nextTick()
+}
+
 describe('仓储助手可见交互', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -118,6 +126,8 @@ describe('仓储助手可见交互', () => {
     await wrapper.find('.candidate-button').trigger('click')
     expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')
     expect(wrapper.text()).toContain('已选择：深沟球轴承')
+    expect(wrapper.findAll('.agent-selection')).toHaveLength(1)
+    expect(wrapper.text()).not.toContain('已选择“深沟球轴承”')
   })
 
   it('澄清卡使用受控 optionToken 提交，不把业务编码当凭据', async () => {
@@ -378,7 +388,7 @@ describe('仓储助手可见交互', () => {
     await wrapper.get('[aria-label="还原高度"]').trigger('click')
     expect(panel.classes()).not.toContain('agent-panel--expanded')
     expect(panel.attributes('style')).toContain('--agent-panel-width: 520px')
-    expect(panel.attributes('style')).toContain('--agent-panel-height: 460px')
+    expect(panel.attributes('style')).toContain('--agent-panel-height: 520px')
     wrapper.unmount()
     shell.remove()
 
@@ -399,14 +409,16 @@ describe('仓储助手可见交互', () => {
     expect(handle.attributes('aria-orientation')).toBe('horizontal')
     handle.element.dispatchEvent(new Event('focus', { bubbles: true }))
     await nextTick()
-    expect(handle.attributes('aria-valuenow')).toBe('420')
+    expect(handle.attributes('aria-valuenow')).toBe('520')
     expect(handle.attributes('aria-valuemax')).toBe('650')
+    expect(handle.attributes('aria-valuemin')).toBe('520')
+    expect(getComputedStyle(wrapper.get('.agent-messages').element).minHeight).toBe('180px')
     expect(panel.classList.contains('agent-panel--shell-floating')).toBe(true)
     expect(wrapper.get('[data-testid="agent-panel"]').attributes('style')).toContain('--agent-shell-top: 100px')
     handle.element.dispatchEvent(Object.assign(new Event('pointerdown', { bubbles: true }), { clientY: 100, pointerId: 1 }))
     await nextTick()
-    expect(handle.attributes('aria-valuenow')).toBe('420')
-    const moveUp = Object.assign(new Event('pointermove'), { clientY: -80 })
+    expect(handle.attributes('aria-valuenow')).toBe('520')
+    const moveUp = Object.assign(new Event('pointermove'), { clientY: 20 })
     window.dispatchEvent(moveUp)
     await nextTick()
     expect(handle.attributes('aria-valuenow')).toBe('600')
@@ -420,18 +432,49 @@ describe('仓储助手可见交互', () => {
     const moveDown = Object.assign(new Event('pointermove'), { clientY: 350 })
     window.dispatchEvent(moveDown)
     await nextTick()
-    expect(handle.attributes('aria-valuenow')).toBe('400')
+    expect(handle.attributes('aria-valuenow')).toBe('520')
     await handle.trigger('keydown', { key: 'ArrowUp' })
-    expect(handle.attributes('aria-valuenow')).toBe('440')
+    expect(handle.attributes('aria-valuenow')).toBe('560')
     await handle.trigger('keydown', { key: 'ArrowDown' })
-    expect(handle.attributes('aria-valuenow')).toBe('400')
+    expect(handle.attributes('aria-valuenow')).toBe('520')
     await handle.trigger('keydown', { key: 'Home' })
-    expect(handle.attributes('aria-valuenow')).toBe('360')
+    expect(handle.attributes('aria-valuenow')).toBe('520')
     await handle.trigger('keydown', { key: 'End' })
     expect(handle.attributes('aria-valuenow')).toBe('650')
     window.dispatchEvent(new Event('pointerup'))
     wrapper.unmount()
     shell.remove()
+  })
+
+  it('OVERLAY进入和窗口尺寸变化后重新测量并收敛到可见仓储外壳边界', async () => {
+    const { wrapper, shell, workspace } = mountWithShell('DOCKED', 650, 420)
+    await flushPromises()
+    const panel = wrapper.get('[data-testid="agent-panel"]')
+    Object.defineProperty(panel.element, 'getBoundingClientRect', { configurable: true, value: () => ({ height: 420 }) })
+    await wrapper.setProps({ mode: 'OVERLAY' })
+    await flushShellMeasure()
+    expect(panel.classes()).toContain('agent-panel--shell-floating')
+    expect(panel.attributes('style')).toContain('--agent-shell-height: 650px')
+
+    let shellRect = { top: 60, right: 980, bottom: 700, height: 640 }
+    Object.defineProperty(shell, 'getBoundingClientRect', { configurable: true, value: () => shellRect })
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1000 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 540 })
+    shellRect = { top: 60, right: 980, bottom: 700, height: 640 }
+    window.dispatchEvent(new Event('resize'))
+    await flushShellMeasure()
+
+    expect(panel.attributes('style')).toContain('--agent-shell-top: 60px')
+    expect(panel.attributes('style')).toContain('--agent-shell-right: 20px')
+    expect(panel.attributes('style')).toContain('--agent-shell-bottom: 0px')
+    expect(panel.attributes('style')).toContain('--agent-shell-height: 480px')
+    expect(wrapper.get('.agent-height-handle').attributes('aria-valuemax')).toBe('480')
+    expect(wrapper.get('.agent-height-handle').attributes('aria-valuenow')).toBe('480')
+    expect(wrapper.get('.agent-height-handle').attributes('aria-valuemin')).toBe('480')
+    wrapper.unmount()
+    workspace.remove()
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
   })
 
   it('支持拖拽手柄与键盘调整助手宽度，且带有完整可访问性属性', async () => {
@@ -444,7 +487,7 @@ describe('仓储助手可见交互', () => {
     expect(handle.attributes('aria-orientation')).toBe('vertical')
     expect(handle.attributes('aria-label')).toBe('调整仓储助手宽度')
     expect(handle.attributes('aria-valuenow')).toBe('420')
-    expect(handle.attributes('aria-valuemin')).toBe('360')
+    expect(handle.attributes('aria-valuemin')).toBe('420')
 
     // 键盘 ArrowLeft 调宽 +20px
     await handle.trigger('keydown', { key: 'ArrowLeft' })
@@ -454,9 +497,9 @@ describe('仓储助手可见交互', () => {
     await handle.trigger('keydown', { key: 'ArrowRight' })
     expect(wrapper.emitted('width-change')?.slice(-1)[0]).toEqual([420])
 
-    // 键盘 Home 调至最小宽度 360px
+    // 键盘 Home 调至最小宽度 420px
     await handle.trigger('keydown', { key: 'Home' })
-    expect(wrapper.emitted('width-change')?.slice(-1)[0]).toEqual([360])
+    expect(wrapper.emitted('width-change')?.slice(-1)[0]).toEqual([420])
   })
 
   it('调宽助手时向父级发出 width-change 事件，由父级统筹布局模式', async () => {

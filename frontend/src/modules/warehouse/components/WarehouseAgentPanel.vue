@@ -121,7 +121,7 @@ const pendingClarification = ref<ClarificationSelection | null>(null)
 const pendingClarificationLabel = ref('')
 
 const DEFAULT_WIDTH = 420
-const MIN_WIDTH = 360
+const MIN_WIDTH = 420
 const panelWidth = ref(DEFAULT_WIDTH)
 const isResizing = ref(false)
 const panelExpanded = ref(false)
@@ -130,7 +130,8 @@ const overlayHeight = ref(0)
 const heightParent = ref(0)
 const shellBounds = ref<ShellBounds | null>(null)
 const expandedRestoreHeight = ref(0)
-const MIN_PANEL_HEIGHT = 360
+const MIN_PANEL_HEIGHT = 520
+const MIN_MESSAGES_HEIGHT = 180
 
 const maxWidth = computed(() => {
   if (props.workspaceWidth > 0) {
@@ -152,8 +153,10 @@ const panelIsExpanded = computed(() => canExpandPanel.value && panelExpanded.val
 const panelShellFloating = computed(() => (mode.value === 'OVERLAY' || panelIsExpanded.value) && shellBounds.value !== null)
 const clampedOverlayHeight = computed(() => {
   if (!overlayHeight.value || !heightParent.value) return 0
-  return Math.min(Math.max(overlayHeight.value, MIN_PANEL_HEIGHT), heightParent.value)
+  const minimum = Math.min(MIN_PANEL_HEIGHT, heightParent.value)
+  return Math.min(Math.max(overlayHeight.value, minimum), heightParent.value)
 })
+const effectiveMinPanelHeight = computed(() => Math.min(MIN_PANEL_HEIGHT, heightParent.value || MIN_PANEL_HEIGHT))
 const canCopy = computed(() => capabilities.value?.features.includes('COPY') === true)
 const canOpenRoute = computed(() => capabilities.value?.features.includes('OPEN_ROUTE') === true)
 const cardList = computed(() => Object.values(cards.value))
@@ -178,6 +181,7 @@ let resizeStartWidth = 0
 let heightResizeStartY = 0
 let heightResizeStartHeight = 0
 let heightResizeParent = 0
+let shellMeasureFrame: number | null = null
 
 function startResize(e: PointerEvent) {
   if (mode.value === 'DRAWER' || mode.value === 'COMPACT') return
@@ -243,10 +247,12 @@ function measureShellBounds(source?: HTMLElement | null) {
     ?? panel?.closest<HTMLElement>('.warehouse-workspace')
     ?? panel?.parentElement
   const rect = shell?.getBoundingClientRect()
-  const shellHeight = Math.round(rect?.height || shell?.clientHeight || 0)
-  const shellTop = rect?.top ?? 0
+  const rawHeight = rect?.height || shell?.clientHeight || 0
+  const shellTop = Math.max(0, Math.round(rect?.top ?? 0))
   const shellRight = rect?.right ?? window.innerWidth
-  const shellBottom = rect?.bottom || shellTop + shellHeight
+  const rawBottom = rect?.bottom || shellTop + rawHeight
+  const shellBottom = Math.min(window.innerHeight, rawBottom)
+  const shellHeight = Math.round(Math.max(0, shellBottom - shellTop))
   const currentHeight = panel?.getBoundingClientRect().height ?? 0
   if (shellHeight > 0) {
     heightParent.value = shellHeight
@@ -262,6 +268,28 @@ function measureShellBounds(source?: HTMLElement | null) {
     }
   }
   return { height: heightParent.value, currentHeight: clampedOverlayHeight.value || currentHeight }
+}
+
+function cancelShellMeasure() {
+  if (shellMeasureFrame === null) return
+  if (typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(shellMeasureFrame)
+  else window.clearTimeout(shellMeasureFrame)
+  shellMeasureFrame = null
+}
+
+function scheduleShellMeasure() {
+  if (shellMeasureFrame !== null) return
+  const measure = () => {
+    shellMeasureFrame = null
+    if (!visible.value || !panelVisible.value || (mode.value !== 'OVERLAY' && !panelIsExpanded.value)) return
+    measureShellBounds()
+    panelWidth.value = Math.min(panelWidth.value, maxWidth.value)
+  }
+  if (typeof window.requestAnimationFrame === 'function') {
+    shellMeasureFrame = window.requestAnimationFrame(measure)
+  } else {
+    shellMeasureFrame = window.setTimeout(measure, 0)
+  }
 }
 
 function onHeightHandleFocus(e: FocusEvent) {
@@ -321,10 +349,12 @@ function togglePanelExpanded() {
     expandedRestoreHeight.value = bounds.currentHeight
     overlayHeight.value = bounds.height
     panelExpanded.value = true
+    scheduleShellMeasure()
     return
   }
   panelExpanded.value = false
   if (expandedRestoreHeight.value > 0) overlayHeight.value = expandedRestoreHeight.value
+  scheduleShellMeasure()
 }
 
 watch(mode, (nextMode) => {
@@ -334,6 +364,8 @@ watch(mode, (nextMode) => {
     heightParent.value = 0
     shellBounds.value = null
     endHeightResize()
+  } else {
+    scheduleShellMeasure()
   }
 })
 
@@ -721,12 +753,12 @@ function openItem(card: StockSummaryCard) {
 
 function chooseCandidate(candidate: StockCandidate) {
   draft.value = ''
+  runNotice.value = ''
   const card = Object.values(cards.value).find((value) => value.cardType === 'clarification-choice')
   if (candidate.optionToken && card?.cardId) {
     pendingClarification.value = { clarificationId: card.cardId, optionToken: candidate.optionToken }
     pendingClarificationLabel.value = candidate.name
   }
-  runNotice.value = `已选择“${candidate.name}”，点击发送继续查询。`
 }
 
 async function initialise() {
@@ -734,7 +766,10 @@ async function initialise() {
     const result = await fetchAgentCapabilities()
     capabilities.value = result
     emit('capability-change', visible.value)
-    if (visible.value) await loadConversations()
+    if (visible.value) {
+      await loadConversations()
+      scheduleShellMeasure()
+    }
   } catch {
     capabilities.value = null
     emit('capability-change', false)
@@ -744,10 +779,13 @@ async function initialise() {
 }
 
 onMounted(() => {
+  window.addEventListener('resize', scheduleShellMeasure)
   void initialise()
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', scheduleShellMeasure)
+  cancelShellMeasure()
   abortController.value?.abort()
   window.removeEventListener('pointermove', onResizeMove)
   window.removeEventListener('pointerup', endResize)
@@ -803,8 +841,8 @@ onBeforeUnmount(() => {
         aria-label="调整仓储助手高度"
         aria-valuetext="仓储助手高度"
         tabindex="0"
-        :aria-valuenow="clampedOverlayHeight || MIN_PANEL_HEIGHT"
-        :aria-valuemin="MIN_PANEL_HEIGHT"
+        :aria-valuenow="clampedOverlayHeight || effectiveMinPanelHeight"
+        :aria-valuemin="effectiveMinPanelHeight"
         :aria-valuemax="heightParent || MIN_PANEL_HEIGHT"
         @pointerdown="startHeightResize"
         @focus="onHeightHandleFocus"
@@ -905,7 +943,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <section class="agent-messages" aria-live="polite" data-testid="agent-messages">
+      <section class="agent-messages" aria-live="polite" data-testid="agent-messages" :style="{ minHeight: `${MIN_MESSAGES_HEIGHT}px` }">
         <p v-if="loadingHistory" class="agent-muted message-empty">正在打开对话…</p>
         <p v-else-if="!messages.length" class="agent-muted message-empty">可以问我某个物品当前在哪些库位有库存。</p>
         <article
