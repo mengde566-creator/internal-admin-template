@@ -889,6 +889,9 @@ export interface components {
             options?: components["schemas"]["ClarificationOptionDTO"][];
             /** Format: int64 */
             revision?: number;
+            selectedItemCode?: string;
+            selectedItemName?: string;
+            status?: string;
         };
         ConversationDTO: {
             conversationId?: string;

@@ -192,12 +192,22 @@ class AgentStoreConversationContractTest {
                 Duration.ofHours(1), candidateRun.taskId(), "option-a");
         assertEquals(candidateRun.taskId(), selected.taskId());
         assertEquals(AgentStore.TASK_COLLECTING, store.task(selected.taskId()).status());
-        assertNull(store.activeClarification(conversationId, 7L, "scope-7"),
-                "已消费候选不能在刷新后恢复");
+        AgentStore.TaskRow duringRun = store.activeClarification(conversationId, 7L, "scope-7");
+        assertNotNull(duringRun);
+        assertEquals(selected.runId(), duringRun.activeRunId(), "运行中的任务携带 activeRunId");
+        assertEquals(AgentStore.RUNNING, duringRun.latestRunStatus(), "运行中的任务 latestRunStatus 为 RUNNING");
+
         assertTrue(selected.effectiveUserMessage().contains("轴承A"));
         assertTrue(store.task(selected.taskId()).confirmedConditions().contains("ITEM-A"));
         assertThrows(BusinessException.class, () -> store.startRun(conversationId, "task-stale", "轴承B", 7L,
                 "scope-after-transfer", Duration.ofHours(1), candidateRun.taskId(), "option-b"));
+
+        // 运行失败后：activeRunId 清空，latestRunStatus 为 FAILED
+        assertTrue(store.fail(selected.runId(), "TOOL_ERROR"));
+        AgentStore.TaskRow afterFailure = store.activeClarification(conversationId, 7L, "scope-7");
+        assertNotNull(afterFailure);
+        assertNull(afterFailure.activeRunId(), "失败后已无活跃运行");
+        assertEquals("FAILED", afterFailure.latestRunStatus(), "最新运行状态标记为 FAILED");
     }
 
     @Test

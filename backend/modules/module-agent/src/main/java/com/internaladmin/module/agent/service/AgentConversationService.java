@@ -154,30 +154,53 @@ public class AgentConversationService {
     }
 
     private ClarificationTaskDTO toClarificationTask(AgentStore.TaskRow task) {
-        if (task == null || task.candidates() == null || task.candidates().isBlank()) return null;
-        try {
-            JsonNode root = JSON.readTree(task.candidates());
-            if (root == null || !root.isArray() || root.size() < 1 || root.size() > 20) return null;
-            List<ClarificationOptionDTO> options = new java.util.ArrayList<>();
-            for (JsonNode candidate : root) {
-                if (candidate == null || !candidate.isObject()) return null;
-                java.util.Set<String> fields = new java.util.HashSet<>();
-                candidate.propertyNames().forEach(fields::add);
-                if (!fields.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit"))) return null;
-                JsonNode token = candidate.get("optionToken");
-                JsonNode code = candidate.get("code");
-                JsonNode name = candidate.get("name");
-                JsonNode unit = candidate.get("baseUnit");
-                if (token == null || !token.isTextual() || token.asText().isBlank() || token.asText().length() > 256
-                        || code == null || !code.isTextual() || code.asText().isBlank() || code.asText().length() > 128
-                        || name == null || !name.isTextual() || name.asText().isBlank() || name.asText().length() > 256
-                        || unit == null || !unit.isTextual() || unit.asText().length() > 64) return null;
-                options.add(new ClarificationOptionDTO(code.asText(), name.asText(), unit.asText(), token.asText()));
+        if (task == null) return null;
+        if (AgentStore.TASK_READY.equals(task.status()) && task.candidates() != null && !task.candidates().isBlank()) {
+            try {
+                JsonNode root = JSON.readTree(task.candidates());
+                if (root == null || !root.isArray() || root.size() < 1 || root.size() > 20) return null;
+                List<ClarificationOptionDTO> options = new java.util.ArrayList<>();
+                for (JsonNode candidate : root) {
+                    if (candidate == null || !candidate.isObject()) return null;
+                    java.util.Set<String> fields = new java.util.HashSet<>();
+                    candidate.propertyNames().forEach(fields::add);
+                    if (!fields.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit"))) return null;
+                    JsonNode token = candidate.get("optionToken");
+                    JsonNode code = candidate.get("code");
+                    JsonNode name = candidate.get("name");
+                    JsonNode unit = candidate.get("baseUnit");
+                    if (token == null || !token.isTextual() || token.asText().isBlank() || token.asText().length() > 256
+                            || code == null || !code.isTextual() || code.asText().isBlank() || code.asText().length() > 128
+                            || name == null || !name.isTextual() || name.asText().isBlank() || name.asText().length() > 256
+                            || unit == null || !unit.isTextual() || unit.asText().length() > 64) return null;
+                    options.add(new ClarificationOptionDTO(code.asText(), name.asText(), unit.asText(), token.asText()));
+                }
+                return new ClarificationTaskDTO(task.taskId(), task.revision(), "READY", null, null, options);
+            } catch (RuntimeException ignored) {
+                return null;
             }
-            return new ClarificationTaskDTO(task.taskId(), task.revision(), options);
-        } catch (RuntimeException ignored) {
-            return null;
         }
+        if (AgentStore.TASK_COLLECTING.equals(task.status()) && task.confirmedConditions() != null && !task.confirmedConditions().isBlank()) {
+            if (task.activeRunId() != null || "RUNNING".equalsIgnoreCase(task.latestRunStatus())) {
+                return null;
+            }
+            if (task.latestRunStatus() == null || (!"FAILED".equalsIgnoreCase(task.latestRunStatus())
+                    && !"PARTIAL".equalsIgnoreCase(task.latestRunStatus())
+                    && !"CANCELLED".equalsIgnoreCase(task.latestRunStatus()))) {
+                return null;
+            }
+            try {
+                JsonNode conditions = JSON.readTree(task.confirmedConditions());
+                String itemCode = conditions.has("code") ? conditions.get("code").asText(null) : null;
+                String itemName = conditions.has("name") ? conditions.get("name").asText(null) : null;
+                if ((itemCode != null && !itemCode.isBlank()) || (itemName != null && !itemName.isBlank())) {
+                    return new ClarificationTaskDTO(task.taskId(), task.revision(), "FAILED_RETRYABLE", itemCode, itemName, List.of());
+                }
+            } catch (RuntimeException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     /** 严格解析服务端卡片，禁止用原文或字段顺序推断可信候选。 */

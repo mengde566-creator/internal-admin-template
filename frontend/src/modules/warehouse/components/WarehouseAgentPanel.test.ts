@@ -108,7 +108,7 @@ describe('仓储助手可见交互', () => {
     expect(routerPush).toHaveBeenCalledWith({ name: 'warehouse-stock', query: { keyword: 'A-001' } })
   })
 
-  it('多候选只展示业务字段，选择后不把业务编码写入请求文本', async () => {
+  it('多候选只展示业务字段，单击候选立即提交且不暴露受信凭据', async () => {
     api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
       onEvent(event('card.replace', 2, {
         cardId: 'stock-task', revision: 0, cardType: 'clarification-choice', status: 'CANDIDATES',
@@ -121,37 +121,267 @@ describe('仓储助手可见交互', () => {
     await wrapper.get('textarea').setValue('轴承')
     await wrapper.get('.send-button').trigger('click')
     await flushPromises()
+
     expect(wrapper.text()).toContain('深沟球轴承')
     expect(wrapper.text()).not.toContain('candidate-secret')
-    await wrapper.find('.candidate-button').trigger('click')
-    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('')
-    expect(wrapper.text()).toContain('已选择：深沟球轴承')
-    expect(wrapper.findAll('.agent-selection')).toHaveLength(1)
-    expect(wrapper.text()).not.toContain('已选择“深沟球轴承”')
-  })
+    expect(wrapper.text()).not.toContain('opaque-token')
 
-  it('澄清卡使用受控 optionToken 提交，不把业务编码当凭据', async () => {
+    // 单击候选立即提交，不需要再点击通用“发送”按钮
+    api.runAgent.mockClear()
     api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
-      onEvent(event('card.replace', 2, {
-        cardId: 'task-1', revision: 1, cardType: 'clarification-choice',
-        queriedAt: '2026-08-21T08:30:00Z', options: [{ code: 'ITEM-A', name: '轴承A', optionToken: 'opaque-token' }], rows: []
-      }))
+      onEvent(event('run.started', 1))
+      onEvent(event('message.completed', 2, { text: '已查询到深沟球轴承库存。' }))
       onEvent(event('run.completed', 3, { status: 'SUCCESS' }))
     })
-    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+
+    await wrapper.find('.candidate-button').trigger('click')
     await flushPromises()
-    await wrapper.get('textarea').setValue('轴承')
-    await wrapper.get('.send-button').trigger('click')
-    await flushPromises()
-    expect(wrapper.text()).toContain('请从下面选择一个物品')
-    await wrapper.get('.candidate-button').trigger('click')
-    await wrapper.get('.send-button').trigger('click')
-    await flushPromises()
-    expect(api.runAgent.mock.calls[1][2]).toBe('')
-    expect(api.runAgent.mock.calls[1][5]).toEqual({ clarificationId: 'task-1', optionToken: 'opaque-token' })
+
+    expect(api.runAgent).toHaveBeenCalledTimes(1)
+    expect(api.runAgent.mock.calls[0][2]).toBe('')
+    expect(api.runAgent.mock.calls[0][5]).toEqual({ clarificationId: 'stock-task', optionToken: 'opaque-token' })
+    expect(wrapper.text()).toContain('选择物品“深沟球轴承”')
+    expect(wrapper.text()).toContain('已选择：深沟球轴承')
   })
 
-  it('选择历史对话后恢复服务端返回的有效澄清卡，不解析助手正文', async () => {
+  it('双击或快速重复点击候选只产生一个 Run，提交期间候选按钮全部禁用', async () => {
+    let resolveRun!: () => void
+    api.runAgent.mockImplementationOnce((_id: string, _requestId: string, _text: string, _signal: AbortSignal) => {
+      return new Promise<void>((resolve) => { resolveRun = resolve })
+    })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+
+    // 注入澄清卡
+    ;(wrapper.vm as any).cards['task-double'] = {
+      cardId: 'task-double',
+      revision: 1,
+      cardType: 'clarification-choice',
+      status: 'CANDIDATES',
+      candidates: [{ code: 'ITEM-1', name: '物品1', optionToken: 'tok-1' }],
+      stocks: []
+    }
+    await nextTick()
+
+    const candidateBtn = wrapper.get('.candidate-button')
+    // 快速双击
+    const firstClick = candidateBtn.trigger('click')
+    const secondClick = candidateBtn.trigger('click')
+    await Promise.all([firstClick, secondClick])
+
+    expect(api.runAgent).toHaveBeenCalledTimes(1)
+    expect(candidateBtn.attributes('disabled')).toBeDefined()
+
+    resolveRun()
+    await flushPromises()
+  })
+
+  it('候选存在时输入自由文本不会直接提交，必须点击显式“改为直接提问”后才允许发送新问题', async () => {
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+
+    ;(wrapper.vm as any).cards['task-keep'] = {
+      cardId: 'task-keep',
+      revision: 1,
+      cardType: 'clarification-choice',
+      status: 'CANDIDATES',
+      candidates: [{ code: 'ITEM-1', name: '物品1', optionToken: 'tok-1' }],
+      stocks: []
+    }
+    await nextTick()
+
+    expect(wrapper.find('.candidate-button').exists()).toBe(true)
+    expect(wrapper.find('.candidate-switch-btn').exists()).toBe(true)
+
+    // 输入自由文本
+    await wrapper.get('textarea').setValue('我想直接问别的')
+    await nextTick()
+
+    // 候选卡依然存在，未被静默清空，且输入区展示切换提问提示条
+    expect(wrapper.find('.candidate-button').exists()).toBe(true)
+    expect(wrapper.get('.candidate-button').text()).toContain('物品1')
+    expect(wrapper.find('.composer-switch-banner').exists()).toBe(true)
+
+    // 此时普通发送按钮必须禁用，Enter 键也不得直接提交
+    expect(wrapper.get('.send-button').attributes('disabled')).toBeDefined()
+    await wrapper.get('textarea').trigger('keydown.enter')
+    await flushPromises()
+    expect(api.runAgent).not.toHaveBeenCalled()
+
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(api.runAgent).not.toHaveBeenCalled()
+
+    // 点击“改为直接提问”进行显式确认切换
+    await wrapper.get('.composer-switch-banner button').trigger('click')
+    await nextTick()
+
+    // 候选卡转为失效，解除发送阻断
+    expect(wrapper.find('.candidate-button').exists()).toBe(false)
+    expect(wrapper.text()).toContain('候选已失效，请重新查询。')
+    expect(wrapper.get('.send-button').attributes('disabled')).toBeUndefined()
+
+    // 确认后方可发送自由文本调用 runAgent
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('run.started', 1))
+      onEvent(event('run.completed', 2, { status: 'SUCCESS' }))
+    })
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(api.runAgent).toHaveBeenCalledTimes(1)
+    expect(api.runAgent.mock.calls[0][2]).toBe('我想直接问别的')
+  })
+
+  it('HTTP 接受前网络失败时安全恢复 READY 态，保留候选且不残留乐观用户消息，支持重新点击', async () => {
+    api.runAgent.mockRejectedValueOnce(new Error('Network offline'))
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+
+    ;(wrapper.vm as any).cards['task-retry'] = {
+      cardId: 'task-retry',
+      revision: 1,
+      cardType: 'clarification-choice',
+      status: 'CANDIDATES',
+      candidates: [{ code: 'ITEM-RETRY', name: '可重试物品', optionToken: 'tok-retry' }],
+      stocks: []
+    }
+    await nextTick()
+
+    await wrapper.get('.candidate-button').trigger('click')
+    await flushPromises()
+
+    // 1. 恢复 READY (CANDIDATES)，候选按钮依然可见可点击
+    expect(wrapper.find('.candidate-button').exists()).toBe(true)
+    expect(wrapper.text()).toContain('连接失败，请点击候选重试。')
+
+    // 2. 没有残留成功外观的用户消息
+    expect(wrapper.findAll('.agent-message--user')).toHaveLength(0)
+
+    // 3. 用户可再次点击重试
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('run.started', 1))
+      onEvent(event('run.completed', 2, { status: 'SUCCESS' }))
+    })
+    await wrapper.get('.candidate-button').trigger('click')
+    await flushPromises()
+
+    expect(api.runAgent).toHaveBeenCalledTimes(2)
+  })
+
+  it('服务端已接受后模型/Tool 失败时旧 token 失效，保留已选物品名并提供受控“重新查询”动作，成功后移除重试按钮', async () => {
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('run.started', 1))
+      onEvent(event('run.failed', 2))
+    })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+
+    ;(wrapper.vm as any).cards['task-fail'] = {
+      cardId: 'task-fail',
+      revision: 1,
+      cardType: 'clarification-choice',
+      status: 'CANDIDATES',
+      candidates: [{ code: 'ITEM-FAIL', name: '失败物品', optionToken: 'tok-fail' }],
+      stocks: []
+    }
+    await nextTick()
+
+    await wrapper.get('.candidate-button').trigger('click')
+    await flushPromises()
+
+    // 1. 已接受后失败：旧候选按钮不再可点击
+    expect(wrapper.find('.candidate-button').exists()).toBe(false)
+    expect(wrapper.text()).toContain('已选择：失败物品（查询未完成）')
+
+    // 2. 提供受控“重新查询”动作
+    const retryBtn = wrapper.find('.candidate-retry-button')
+    expect(retryBtn.exists()).toBe(true)
+    expect(retryBtn.text()).toBe('重新查询')
+
+    // 3. 点击“重新查询”后发起包含唯一物品编码的精准查询（避免名称重复再次产生歧义，且不复用旧 optionToken）
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('run.started', 1))
+      onEvent(event('run.completed', 2, { status: 'SUCCESS' }))
+    })
+
+    await retryBtn.trigger('click')
+    await flushPromises()
+
+    expect(api.runAgent.mock.calls[1][2]).toBe('查询物品 ITEM-FAIL（失败物品）')
+    expect(api.runAgent.mock.calls[1][5]).toBeUndefined()
+
+    // 4. 重试成功后进入 COMPLETED，移除“查询未完成”和“重新查询”按钮
+    expect(wrapper.find('.candidate-retry-button').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('（查询未完成）')
+    expect(wrapper.text()).toContain('已选择：失败物品')
+  })
+
+  it('候选过期、409 冲突或已被消费时收敛为失效状态，旧卡不可点击', async () => {
+    api.runAgent.mockRejectedValueOnce({ status: 409, message: '候选已失效，请重新选择' })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+
+    ;(wrapper.vm as any).cards['task-conflict'] = {
+      cardId: 'task-conflict',
+      revision: 1,
+      cardType: 'clarification-choice',
+      status: 'CANDIDATES',
+      candidates: [{ code: 'ITEM-OLD', name: '过期物品', optionToken: 'tok-old' }],
+      stocks: []
+    }
+    await nextTick()
+
+    await wrapper.get('.candidate-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.candidate-button').exists()).toBe(false)
+    expect(wrapper.text()).toContain('候选已失效，请重新查询。')
+    expect(wrapper.text()).toContain('候选已失效，请重新选择')
+  })
+
+  it('多个澄清卡存在时精准绑定被点击卡片的 clarificationId', async () => {
+    api.runAgent.mockImplementation(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('run.started', 1))
+      onEvent(event('run.completed', 2, { status: 'SUCCESS' }))
+    })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+
+    ;(wrapper.vm as any).cards['card-1'] = {
+      cardId: 'card-1',
+      revision: 1,
+      cardType: 'clarification-choice',
+      status: 'CANDIDATES',
+      candidates: [{ code: 'ITEM-1', name: '卡片1物品', optionToken: 'tok-1' }],
+      stocks: []
+    }
+    ;(wrapper.vm as any).cards['card-2'] = {
+      cardId: 'card-2',
+      revision: 2,
+      cardType: 'clarification-choice',
+      status: 'CANDIDATES',
+      candidates: [{ code: 'ITEM-2', name: '卡片2物品', optionToken: 'tok-2' }],
+      stocks: []
+    }
+    await nextTick()
+
+    const candidateButtons = wrapper.findAll('.candidate-button')
+    expect(candidateButtons).toHaveLength(2)
+
+    // 点击第二张卡片里的选项
+    await candidateButtons[1].trigger('click')
+    await flushPromises()
+
+    expect(api.runAgent.mock.calls[0][5]).toEqual({ clarificationId: 'card-2', optionToken: 'tok-2' })
+  })
+
+  it('选择历史对话后恢复服务端返回的有效澄清卡，已消费/无澄清卡的历史不恢复为可点击状态', async () => {
     api.fetchConversationMessages.mockResolvedValueOnce({
       records: [{ messageId: 'message-old', runId: 'run-old', role: 'ASSISTANT', state: 'COMPLETE', content: '请从下面选择一个物品', createdAt: '2026-08-20T08:00:00Z' }],
       total: 1,
@@ -172,8 +402,96 @@ describe('仓储助手可见交互', () => {
     expect(wrapper.get('.candidate-list').text()).toContain('轴承A')
     expect(wrapper.text()).toContain('请从下面选择一个物品')
     expect(wrapper.text()).not.toContain('opaque-restored')
-    await wrapper.get('.candidate-button').trigger('click')
-    expect(wrapper.text()).toContain('已选择：轴承A')
+
+    // 再次加载无有效澄清任务的对话
+    api.fetchConversationMessages.mockResolvedValueOnce({
+      records: [{ messageId: 'message-2', runId: 'run-2', role: 'ASSISTANT', state: 'COMPLETE', content: '库存已查询完毕', createdAt: '2026-08-21T08:00:00Z' }],
+      total: 1,
+      page: 1,
+      size: 50,
+      activeClarification: null
+    })
+    await (wrapper.vm as any).selectConversation('conversation-2')
+    await flushPromises()
+
+    expect(wrapper.find('.candidate-button').exists()).toBe(false)
+  })
+
+  it('加载带有已接受但失败历史对话时，恢复已选择且可重新查询的卡片状态（FAILED_RETRYABLE），点击重新查询发起受控查询', async () => {
+    api.fetchConversationMessages.mockResolvedValueOnce({
+      records: [
+        { messageId: 'message-1', runId: 'run-1', role: 'USER', state: 'COMPLETE', content: '选择物品“深沟球轴承”', createdAt: '2026-08-20T08:00:00Z' },
+        { messageId: 'message-2', runId: 'run-1', role: 'ASSISTANT', state: 'FAILED', content: '这次查询没有完成，请稍后再试。', createdAt: '2026-08-20T08:00:01Z' }
+      ],
+      total: 2,
+      page: 1,
+      size: 50,
+      activeClarification: {
+        clarificationId: 'task-recoverable',
+        revision: 3,
+        status: 'FAILED_RETRYABLE',
+        selectedItemCode: 'ITEM-6204',
+        selectedItemName: '深沟球轴承',
+        options: []
+      }
+    })
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('[aria-label="打开历史对话"]').trigger('click')
+    await wrapper.get('.conversation-item').trigger('click')
+    await flushPromises()
+
+    // 验证卡片被恢复为 FAILED 态，展示已选物品名和“重新查询”
+    expect(wrapper.find('.candidate-button').exists()).toBe(false)
+    expect(wrapper.text()).toContain('已选择：深沟球轴承（查询未完成）')
+    const retryBtn = wrapper.find('.candidate-retry-button')
+    expect(retryBtn.exists()).toBe(true)
+
+    // 点击“重新查询”，发起包含唯一编码的受控重试
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('run.started', 1))
+      onEvent(event('run.completed', 2, { status: 'SUCCESS' }))
+    })
+
+    await retryBtn.trigger('click')
+    await flushPromises()
+
+    expect(api.runAgent).toHaveBeenCalledTimes(1)
+    expect(api.runAgent.mock.calls[0][2]).toBe('查询物品 ITEM-6204（深沟球轴承）')
+  })
+
+  it('开始新话题清理卡片与状态，取消运行生成唯一 CANCELLED 终态', async () => {
+    let activeSignal!: AbortSignal
+    api.runAgent.mockImplementationOnce((_id: string, _requestId: string, _text: string, signal: AbortSignal) => {
+      activeSignal = signal
+      return new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          const err = new Error('The user aborted a request.')
+          err.name = 'AbortError'
+          reject(err)
+        })
+      })
+    })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('查库存')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.cancel-button').exists()).toBe(true)
+    await wrapper.get('.cancel-button').trigger('click')
+    await flushPromises()
+    expect(activeSignal.aborted).toBe(true)
+    expect(wrapper.text()).toContain('已取消本次查询。')
+
+    // 点击新话题
+    await wrapper.get('[aria-label="新话题"]').trigger('click')
+    await flushPromises()
+    expect((wrapper.vm as any).cards).toEqual({})
+    expect((wrapper.vm as any).messages).toEqual([])
+    expect((wrapper.vm as any).runNotice).toBe('')
   })
 
   it('可选择本人历史并在点击收起时向父级发出 toggle-collapse 事件', async () => {

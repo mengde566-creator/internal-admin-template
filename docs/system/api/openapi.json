@@ -517,6 +517,15 @@
           "revision": {
             "format": "int64",
             "type": "integer"
+          },
+          "selectedItemCode": {
+            "type": "string"
+          },
+          "selectedItemName": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
           }
         },
         "type": "object"

@@ -466,17 +466,20 @@ public class AgentStore {
     public TaskRow activeClarification(String conversationId, Long userId, String scopeFingerprint) {
         String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
         List<TaskRow> rows = jdbc.query("SELECT t.task_id, t.conversation_id, t.memory_segment_no, t.adapter, t.intent, t.status, "
-                        + "t.revision, t.scope_fingerprint, t.expires_at, t.confirmed_conditions, t.missing_fields, t.candidates "
+                        + "t.revision, t.scope_fingerprint, t.expires_at, t.confirmed_conditions, t.missing_fields, t.candidates, "
+                        + "c.active_run_id, "
+                        + "(SELECT r.status FROM ai_run r WHERE r.task_id = t.task_id AND r.conversation_id = c.id ORDER BY r.created_at DESC LIMIT 1) AS latest_run_status "
                         + "FROM ai_task t JOIN ai_conversation c ON c.active_task_id = t.task_id "
                         + "WHERE c.id = ? AND c.user_id = ? AND t.conversation_id = c.id "
                         + "AND c.active_memory_segment_no = t.memory_segment_no AND t.scope_fingerprint = ? "
-                        + "AND t.status = ? AND t.expires_at > ? AND t.candidates IS NOT NULL",
+                        + "AND t.status IN (?, ?) AND t.expires_at > ?",
                 (rs, row) -> new TaskRow(rs.getString("task_id"), rs.getString("conversation_id"),
                         rs.getLong("memory_segment_no"), rs.getString("adapter"), rs.getString("intent"),
                         rs.getString("status"), rs.getLong("revision"), rs.getString("scope_fingerprint"),
                         readInstant(rs, "expires_at"), rs.getString("confirmed_conditions"),
-                        rs.getString("missing_fields"), rs.getString("candidates")),
-                conversationId, userId, effectiveScope, TASK_READY, Timestamp.from(Instant.now()));
+                        rs.getString("missing_fields"), rs.getString("candidates"),
+                        rs.getString("active_run_id"), rs.getString("latest_run_status")),
+                conversationId, userId, effectiveScope, TASK_READY, TASK_COLLECTING, Timestamp.from(Instant.now()));
         return rows.isEmpty() ? null : rows.getFirst();
     }
 
@@ -786,7 +789,14 @@ public class AgentStore {
     public record TaskRow(String taskId, String conversationId, long memorySegmentNo, String adapter,
                           String intent, String status, long revision, String scopeFingerprint,
                           Instant expiresAt, String confirmedConditions, String missingFields,
-                          String candidates) {
+                          String candidates, String activeRunId, String latestRunStatus) {
+        public TaskRow(String taskId, String conversationId, long memorySegmentNo, String adapter,
+                       String intent, String status, long revision, String scopeFingerprint,
+                       Instant expiresAt, String confirmedConditions, String missingFields,
+                       String candidates) {
+            this(taskId, conversationId, memorySegmentNo, adapter, intent, status, revision,
+                    scopeFingerprint, expiresAt, confirmedConditions, missingFields, candidates, null, null);
+        }
     }
 
     private record TaskResolution(TaskRow task, String effectiveUserMessage) {

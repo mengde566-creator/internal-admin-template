@@ -67,8 +67,72 @@ class AgentConversationServiceTest {
         assertNotNull(page.activeClarification());
         assertEquals("task-1", page.activeClarification().clarificationId());
         assertEquals(3L, page.activeClarification().revision());
+        assertEquals("READY", page.activeClarification().status());
         assertEquals("ITEM-A", page.activeClarification().options().getFirst().code());
         assertEquals("opaque", page.activeClarification().options().getFirst().optionToken());
+    }
+
+    @Test
+    void historyPageMapsFailedAcceptedTaskAsRecoverableClarificationSnapshot() {
+        AgentStore store = mock(AgentStore.class);
+        String scope = "scope-7";
+        when(store.pageMessages("conversation-1", 7L, 1, 50))
+                .thenReturn(new AgentStore.MessagePage(List.of(), 0, 1, 50));
+        when(store.activeClarification("conversation-1", 7L, scope))
+                .thenReturn(new AgentStore.TaskRow("task-1", "conversation-1", 1L, "warehouse",
+                        "CURRENT_STOCK", AgentStore.TASK_COLLECTING, 4L, scope, java.time.Instant.now().plusSeconds(300),
+                        "{\"type\":\"ITEM\",\"code\":\"ITEM-6204\",\"name\":\"深沟球轴承\",\"baseUnit\":\"件\"}", "", null,
+                        null, "FAILED"));
+        AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
+                mock(AiObservationRecorder.class), new AiProperties());
+
+        var page = service.pageMessages("conversation-1", 7L, scope, 1, 50);
+
+        assertNotNull(page.activeClarification());
+        assertEquals("task-1", page.activeClarification().clarificationId());
+        assertEquals(4L, page.activeClarification().revision());
+        assertEquals("FAILED_RETRYABLE", page.activeClarification().status());
+        assertEquals("ITEM-6204", page.activeClarification().selectedItemCode());
+        assertEquals("深沟球轴承", page.activeClarification().selectedItemName());
+        assertTrue(page.activeClarification().options().isEmpty());
+    }
+
+    @Test
+    void historyPageDoesNotMapCollectingTaskWhenRunIsRunning() {
+        AgentStore store = mock(AgentStore.class);
+        String scope = "scope-7";
+        when(store.pageMessages("conversation-1", 7L, 1, 50))
+                .thenReturn(new AgentStore.MessagePage(List.of(), 0, 1, 50));
+        when(store.activeClarification("conversation-1", 7L, scope))
+                .thenReturn(new AgentStore.TaskRow("task-1", "conversation-1", 1L, "warehouse",
+                        "CURRENT_STOCK", AgentStore.TASK_COLLECTING, 4L, scope, java.time.Instant.now().plusSeconds(300),
+                        "{\"type\":\"ITEM\",\"code\":\"ITEM-6204\",\"name\":\"深沟球轴承\",\"baseUnit\":\"件\"}", "", null,
+                        "run-active", "RUNNING"));
+        AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
+                mock(AiObservationRecorder.class), new AiProperties());
+
+        var page = service.pageMessages("conversation-1", 7L, scope, 1, 50);
+
+        assertNull(page.activeClarification());
+    }
+
+    @Test
+    void historyPageDoesNotMapCollectingTaskWhenRunIsCompleted() {
+        AgentStore store = mock(AgentStore.class);
+        String scope = "scope-7";
+        when(store.pageMessages("conversation-1", 7L, 1, 50))
+                .thenReturn(new AgentStore.MessagePage(List.of(), 0, 1, 50));
+        when(store.activeClarification("conversation-1", 7L, scope))
+                .thenReturn(new AgentStore.TaskRow("task-1", "conversation-1", 1L, "warehouse",
+                        "CURRENT_STOCK", AgentStore.TASK_COLLECTING, 4L, scope, java.time.Instant.now().plusSeconds(300),
+                        "{\"type\":\"ITEM\",\"code\":\"ITEM-6204\",\"name\":\"深沟球轴承\",\"baseUnit\":\"件\"}", "", null,
+                        null, "COMPLETE"));
+        AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
+                mock(AiObservationRecorder.class), new AiProperties());
+
+        var page = service.pageMessages("conversation-1", 7L, scope, 1, 50);
+
+        assertNull(page.activeClarification());
     }
 
     @Test

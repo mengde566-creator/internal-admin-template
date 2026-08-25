@@ -21,6 +21,9 @@ export type ClarificationOption = Required<NonNullable<ClarificationTaskSchema['
 export type ClarificationTask = {
   clarificationId: string
   revision: number
+  status: string
+  selectedItemCode: string
+  selectedItemName: string
   options: ClarificationOption[]
 }
 export type MessagePage = Required<Omit<MessagePageSchema, 'records' | 'activeClarification'>> & {
@@ -95,6 +98,9 @@ export async function fetchConversationMessages(conversationId: string, page = 1
       ? {
           clarificationId: raw.activeClarification.clarificationId ?? '',
           revision: raw.activeClarification.revision ?? 0,
+          status: raw.activeClarification.status ?? 'READY',
+          selectedItemCode: raw.activeClarification.selectedItemCode ?? '',
+          selectedItemName: raw.activeClarification.selectedItemName ?? '',
           options: (raw.activeClarification.options ?? []).map((option) => ({
             code: option?.code ?? '',
             name: option?.name ?? '',

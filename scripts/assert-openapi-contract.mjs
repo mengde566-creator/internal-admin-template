@@ -326,3 +326,11 @@ for (const [path, pathItem] of Object.entries(specification.paths ?? {})) {
     }
   }
 }
+
+const clarificationSchema = specification.components?.schemas?.['ClarificationTaskDTO']
+if (clarificationSchema) {
+  const deref = dereference(clarificationSchema)
+  for (const field of ['clarificationId', 'revision', 'status', 'selectedItemCode', 'selectedItemName', 'options']) {
+    assert(deref?.properties?.[field], `ClarificationTaskDTO 缺少 ${field} 属性`)
+  }
+}
