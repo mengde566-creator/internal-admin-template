@@ -124,6 +124,7 @@ const activeEntry = computed(() => String(route?.name ?? 'warehouse-stock'))
       <WarehouseAgentPanel
         :mode="agentMode"
         :workspace-width="workspaceWidth"
+        :can-operate="auth.hasPermission('warehouse:inventory:operate')"
         @toggle-collapse="agentCollapsed = !agentCollapsed"
         @width-change="agentWidth = $event"
         @capability-change="agentEnabled = $event"

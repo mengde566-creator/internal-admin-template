@@ -369,19 +369,20 @@ public class AgentStore {
      * @param confirmedConditions 已确认条件的有界文本
      * @param missingFields 当前缺失字段
      * @param candidates 受控令牌与展示字段的有界文本
+     * @param intent 本次候选对应的只读任务意图
      * @return 只有首个匹配 revision 的更新返回 true
      */
     @Transactional
     public TaskRow recordTaskCandidates(String taskId, long revision, String scopeFingerprint,
                                         Instant expiresAt, String confirmedConditions,
-                                        String missingFields, String candidates) {
+                                        String missingFields, String candidates, String intent) {
         String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
         int updated = jdbc.update("UPDATE ai_task SET revision = revision + 1, status = ?, "
                         + "scope_fingerprint = ?, expires_at = ?, intent = ?, confirmed_conditions = ?, "
                         + "missing_fields = ?, candidates = ?, updated_at = ? "
                         + "WHERE task_id = ? AND revision = ? AND status IN (?, ?) "
                         + "AND scope_fingerprint = ? AND expires_at > ?",
-                TASK_READY, effectiveScope, Timestamp.from(expiresAt), "CURRENT_STOCK", confirmedConditions,
+                TASK_READY, effectiveScope, Timestamp.from(expiresAt), intent, confirmedConditions,
                 missingFields, candidates, Timestamp.from(Instant.now()), taskId, revision,
                 TASK_COLLECTING, TASK_READY, effectiveScope, Timestamp.from(Instant.now()));
         if (updated != 1) {
@@ -547,7 +548,8 @@ public class AgentStore {
                 }
                 java.util.Set<String> names = new java.util.HashSet<>();
                 names.addAll(candidate.propertyNames());
-                if (!names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit"))) {
+                if (!names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit"))
+                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "warehouseCode", "warehouseName"))) {
                     throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
                 }
                 String token = text(candidate, "optionToken", 256);
@@ -556,13 +558,38 @@ public class AgentStore {
                 String baseUnit = text(candidate, "baseUnit", 64);
                 if (optionToken.equals(token)) {
                     java.util.Map<String, String> confirmed = new java.util.LinkedHashMap<>();
-                    confirmed.put("type", "ITEM");
+                    String warehouseCode = text(candidate, "warehouseCode", 128);
+                    String warehouseName = text(candidate, "warehouseName", 256);
+                    String intent = task.intent();
+                    String type = switch (intent) {
+                        case "CURRENT_STOCK", "ITEM_LOCATIONS" -> "ITEM";
+                        case "LOCATION_CONTENTS" -> "LOCATION";
+                        default -> throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
+                    };
+                    boolean hasWarehouseFields = names.contains("warehouseCode") || names.contains("warehouseName");
+                    if ("LOCATION".equals(type) && (!hasWarehouseFields || warehouseCode == null || warehouseName == null)) {
+                        throw new BusinessException(ErrorCode.CONFLICT, "候选与库位任务不匹配，请重新查询");
+                    }
+                    if ("ITEM".equals(type) && hasWarehouseFields) {
+                        throw new BusinessException(ErrorCode.CONFLICT, "候选与物品任务不匹配，请重新查询");
+                    }
+                    confirmed.put("type", type);
+                    confirmed.put("intent", intent);
                     confirmed.put("code", code);
                     confirmed.put("name", name);
                     confirmed.put("baseUnit", baseUnit == null ? "" : baseUnit);
+                    if (warehouseCode != null) {
+                        confirmed.put("warehouseCode", warehouseCode);
+                        confirmed.put("warehouseName", warehouseName == null ? "" : warehouseName);
+                    }
                     String conditions = JSON.writeValueAsString(confirmed);
-                    return new TaskSelection(task, conditions,
-                            "查询物品「" + name + "」（" + code + "）的当前库存");
+                    String effective = switch (intent) {
+                        case "CURRENT_STOCK" -> "查询物品「" + name + "」（" + code + "）的当前库存";
+                        case "ITEM_LOCATIONS" -> "查询物品「" + name + "」（" + code + "）所在的位置";
+                        case "LOCATION_CONTENTS" -> "查询仓库「" + warehouseName + "」的库位「" + name + "」有哪些库存";
+                        default -> throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
+                    };
+                    return new TaskSelection(task, conditions, effective);
                 }
             }
         }
@@ -578,10 +605,11 @@ public class AgentStore {
     private static String text(JsonNode object, String name, int maxLength) {
         JsonNode value = object.get(name);
         if (value == null || value.isNull()) {
-            if ("baseUnit".equals(name)) return null;
+            if ("baseUnit".equals(name) || "warehouseCode".equals(name) || "warehouseName".equals(name)) return null;
             throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
         }
-        if (!value.isTextual() || value.asText().isBlank() || value.asText().length() > maxLength) {
+        if (!value.isTextual() || (!"baseUnit".equals(name) && value.asText().isBlank())
+                || value.asText().length() > maxLength) {
             throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
         }
         return value.asText();

@@ -175,7 +175,7 @@ class AgentStoreConversationContractTest {
         assertNotNull(store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
                 Instant.now().plus(Duration.ofHours(1)), "轴承", "物品",
                 "[{\"optionToken\":\"option-a\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"},"
-                        + "{\"optionToken\":\"option-b\",\"code\":\"ITEM-B\",\"name\":\"轴承B\",\"baseUnit\":\"件\"}]"));
+                        + "{\"optionToken\":\"option-b\",\"code\":\"ITEM-B\",\"name\":\"轴承B\",\"baseUnit\":\"件\"}]", "CURRENT_STOCK"));
         assertTrue(store.complete(candidateRun.runId()));
         assertEquals(AgentStore.TASK_READY, store.task(candidateRun.taskId()).status(),
                 "候选卡所在的 Run 完成后仍须允许下一次选择");
@@ -217,7 +217,7 @@ class AgentStoreConversationContractTest {
         AgentStore.StartRun candidateRun = store.startRun(conversationId, "candidate-run", "轴承", 7L, "scope-7");
         AgentStore.TaskRow ready = store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
                 Instant.now().plus(Duration.ofHours(1)), "{}", "ITEM",
-                "[{\"optionToken\":\"old-token\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"}]");
+                "[{\"optionToken\":\"old-token\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"}]", "CURRENT_STOCK");
         store.complete(candidateRun.runId());
 
         AgentStore.StartRun correction = store.startRun(conversationId, "correction-run", "换一个物品", 7L, "scope-7");
@@ -228,13 +228,50 @@ class AgentStoreConversationContractTest {
         AgentStore.StartRun next = store.startRun(conversationId, "next-candidate", "轴承", 7L, "scope-7");
         AgentStore.TaskRow nextReady = store.recordTaskCandidates(next.taskId(), next.taskRevision(), "scope-7",
                 Instant.now().plus(Duration.ofHours(1)), "{}", "ITEM",
-                "[{\"optionToken\":\"new-token\",\"code\":\"ITEM-B\",\"name\":\"轴承B\",\"baseUnit\":\"件\"}]");
+                "[{\"optionToken\":\"new-token\",\"code\":\"ITEM-B\",\"name\":\"轴承B\",\"baseUnit\":\"件\"}]", "CURRENT_STOCK");
         store.complete(next.runId());
         AgentStore.TaskSelection first = store.selectClarification(conversationId, nextReady.taskId(), nextReady.revision(),
                 "scope-7", "new-token");
         assertEquals(AgentStore.TASK_COLLECTING, first.task().status());
         assertThrows(BusinessException.class, () -> store.selectClarification(conversationId, nextReady.taskId(),
                 nextReady.revision(), "scope-7", "new-token"));
+    }
+
+    @Test
+    void locationCandidateSelectionBuildsTrustedWarehouseAndLocationCondition() throws Exception {
+        AgentStore store = store("conversation-location-selection");
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun candidateRun = store.startRun(conversationId, "location-candidate", "一号库位有什么", 7L, "scope-7");
+        AgentStore.TaskRow ready = store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
+                Instant.now().plus(Duration.ofHours(1)), "{\"intent\":\"LOCATION_CONTENTS\"}", "LOCATION",
+                "[{\"optionToken\":\"location-token\",\"code\":\"L-01\",\"name\":\"一号库位\",\"baseUnit\":\"\",\"warehouseCode\":\"W-01\",\"warehouseName\":\"一号仓库\"}]", "LOCATION_CONTENTS");
+        store.complete(candidateRun.runId());
+
+        AgentStore.TaskSelection selected = store.selectClarification(conversationId, ready.taskId(), ready.revision(),
+                "scope-7", "location-token");
+        assertEquals(AgentStore.TASK_COLLECTING, selected.task().status());
+        assertEquals("LOCATION_CONTENTS", selected.task().intent());
+        assertTrue(selected.confirmedConditions().contains("W-01"));
+        assertTrue(selected.confirmedConditions().contains("L-01"));
+        assertTrue(selected.confirmedConditions().contains("\"type\":\"LOCATION\""));
+        assertEquals("查询仓库「一号仓库」的库位「一号库位」有哪些库存", selected.effectiveUserMessage());
+    }
+
+    @Test
+    void itemLocationCandidateSelectionBuildsLocationTaskMessage() throws Exception {
+        AgentStore store = store("conversation-item-location-selection");
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun candidateRun = store.startRun(conversationId, "item-location-candidate", "轴承在哪里", 7L, "scope-7");
+        AgentStore.TaskRow ready = store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
+                Instant.now().plus(Duration.ofHours(1)), "{\"intent\":\"ITEM_LOCATIONS\"}", "ITEM",
+                "[{\"optionToken\":\"item-location-token\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"}]", "ITEM_LOCATIONS");
+        store.complete(candidateRun.runId());
+
+        AgentStore.TaskSelection selected = store.selectClarification(conversationId, ready.taskId(), ready.revision(),
+                "scope-7", "item-location-token");
+
+        assertEquals("ITEM_LOCATIONS", selected.task().intent());
+        assertEquals("查询物品「轴承A」（ITEM-A）所在的位置", selected.effectiveUserMessage());
     }
 
     @Test

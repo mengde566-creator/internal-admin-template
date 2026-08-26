@@ -330,7 +330,10 @@ for (const [path, pathItem] of Object.entries(specification.paths ?? {})) {
 const clarificationSchema = specification.components?.schemas?.['ClarificationTaskDTO']
 if (clarificationSchema) {
   const deref = dereference(clarificationSchema)
-  for (const field of ['clarificationId', 'revision', 'status', 'selectedItemCode', 'selectedItemName', 'options']) {
+  for (const field of [
+    'clarificationId', 'revision', 'status', 'candidateKind', 'candidateIntent',
+    'selectedCode', 'selectedName', 'selectedWarehouseCode', 'selectedWarehouseName', 'options'
+  ]) {
     assert(deref?.properties?.[field], `ClarificationTaskDTO 缺少 ${field} 属性`)
   }
 }

@@ -46,7 +46,7 @@ async function load() {
   if (!success) return
   if (!routeItemApplied.value) {
     routeItemApplied.value = true
-    if (await applyRouteItemFilter()) return
+    if (await applyRouteFilters()) return
   }
   if (hasQueried.value) await query()
 }
@@ -61,13 +61,33 @@ function routeItemKeyword() {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-async function applyRouteItemFilter() {
+function routeBusinessValue(name: 'warehouse' | 'location') {
+  const value = route?.query?.[name]
+  return typeof value === 'string' ? value.trim().toLowerCase() : ''
+}
+
+async function applyRouteFilters() {
   const requestedId = routeItemId()
   const requestedKeyword = routeItemKeyword().toLowerCase()
-  const item = items.value.find((row) => row.id === requestedId && row.enabled)
-    ?? (requestedKeyword ? items.value.find((row) => row.enabled && (row.code.toLowerCase() === requestedKeyword || row.name.toLowerCase() === requestedKeyword)) : undefined)
-  if (!item) return false
-  selectedItem.value = item.id
+  const requestedWarehouse = routeBusinessValue('warehouse')
+  const requestedLocation = routeBusinessValue('location')
+  const item = requestedId || requestedKeyword
+    ? items.value.find((row) => row.id === requestedId && row.enabled)
+      ?? (requestedKeyword ? items.value.find((row) => row.enabled && (row.code.toLowerCase() === requestedKeyword || row.name.toLowerCase() === requestedKeyword)) : undefined)
+    : undefined
+  const warehouse = requestedWarehouse
+    ? warehouseOptions.value.find((row) => row.enabled && (row.code.toLowerCase() === requestedWarehouse || row.name.toLowerCase() === requestedWarehouse))
+    : undefined
+  const location = requestedLocation
+    ? locations.value.find((row) => row.enabled && (row.code.toLowerCase() === requestedLocation || row.name.toLowerCase() === requestedLocation)
+      && (!warehouse || row.warehouseId === warehouse.id))
+    : undefined
+  if ((requestedId || requestedKeyword) && !item) return false
+  if (requestedWarehouse && !warehouse) return false
+  if (requestedLocation && !location) return false
+  selectedItem.value = item?.id ?? ''
+  selectedWarehouse.value = warehouse?.id ?? ''
+  selectedLocation.value = location?.id ?? ''
   await query()
   return true
 }
@@ -136,17 +156,27 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', checkFixAction)
 })
 
-watch(() => [route?.query?.item, route?.query?.keyword], () => {
+watch(() => [route?.query?.item, route?.query?.keyword, route?.query?.warehouse, route?.query?.location], () => {
   if (!routeItemApplied.value || !items.value.length) return
   const requestedId = routeItemId()
   const requestedKeyword = routeItemKeyword().toLowerCase()
-  const item = items.value.find((row) => row.id === requestedId && row.enabled)
-    ?? (requestedKeyword ? items.value.find((row) => row.enabled && (row.code.toLowerCase() === requestedKeyword || row.name.toLowerCase() === requestedKeyword)) : undefined)
-  if (item) {
-    selectedItem.value = item.id
+  const requestedWarehouse = routeBusinessValue('warehouse')
+  const requestedLocation = routeBusinessValue('location')
+  const item = requestedId || requestedKeyword
+    ? items.value.find((row) => row.id === requestedId && row.enabled)
+      ?? (requestedKeyword ? items.value.find((row) => row.enabled && (row.code.toLowerCase() === requestedKeyword || row.name.toLowerCase() === requestedKeyword)) : undefined)
+    : undefined
+  const warehouse = requestedWarehouse ? warehouseOptions.value.find((row) => row.enabled && (row.code.toLowerCase() === requestedWarehouse || row.name.toLowerCase() === requestedWarehouse)) : undefined
+  const location = requestedLocation ? locations.value.find((row) => row.enabled && (row.code.toLowerCase() === requestedLocation || row.name.toLowerCase() === requestedLocation) && (!warehouse || row.warehouseId === warehouse.id)) : undefined
+  if ((!requestedId && !requestedKeyword || item) && (!requestedWarehouse || warehouse) && (!requestedLocation || location)) {
+    selectedItem.value = item?.id ?? ''
+    selectedWarehouse.value = warehouse?.id ?? ''
+    selectedLocation.value = location?.id ?? ''
     void query()
-  } else if (selectedItem.value) {
+  } else if (selectedItem.value || selectedWarehouse.value || selectedLocation.value) {
     selectedItem.value = ''
+    selectedWarehouse.value = ''
+    selectedLocation.value = ''
     stocks.value = []
     total.value = 0
     hasQueried.value = false

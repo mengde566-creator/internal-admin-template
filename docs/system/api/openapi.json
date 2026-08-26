@@ -480,6 +480,12 @@
           },
           "optionToken": {
             "type": "string"
+          },
+          "warehouseCode": {
+            "type": "string"
+          },
+          "warehouseName": {
+            "type": "string"
           }
         },
         "type": "object"
@@ -505,6 +511,12 @@
       },
       "ClarificationTaskDTO": {
         "properties": {
+          "candidateIntent": {
+            "type": "string"
+          },
+          "candidateKind": {
+            "type": "string"
+          },
           "clarificationId": {
             "type": "string"
           },
@@ -518,10 +530,16 @@
             "format": "int64",
             "type": "integer"
           },
-          "selectedItemCode": {
+          "selectedCode": {
             "type": "string"
           },
-          "selectedItemName": {
+          "selectedName": {
+            "type": "string"
+          },
+          "selectedWarehouseCode": {
+            "type": "string"
+          },
+          "selectedWarehouseName": {
             "type": "string"
           },
           "status": {

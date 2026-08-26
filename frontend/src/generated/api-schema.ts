@@ -879,18 +879,24 @@ export interface components {
             code?: string;
             name?: string;
             optionToken?: string;
+            warehouseCode?: string;
+            warehouseName?: string;
         };
         ClarificationSelection: {
             clarificationId: string;
             optionToken: string;
         };
         ClarificationTaskDTO: {
+            candidateIntent?: string;
+            candidateKind?: string;
             clarificationId?: string;
             options?: components["schemas"]["ClarificationOptionDTO"][];
             /** Format: int64 */
             revision?: number;
-            selectedItemCode?: string;
-            selectedItemName?: string;
+            selectedCode?: string;
+            selectedName?: string;
+            selectedWarehouseCode?: string;
+            selectedWarehouseName?: string;
             status?: string;
         };
         ConversationDTO: {

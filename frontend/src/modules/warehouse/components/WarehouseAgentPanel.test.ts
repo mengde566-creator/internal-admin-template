@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import WarehouseAgentPanel from './WarehouseAgentPanel.vue'
+import { formatDateTime } from '../../../shared/utils/dateTime'
 
 const api = vi.hoisted(() => ({
   fetchAgentCapabilities: vi.fn(),
@@ -90,10 +91,250 @@ describe('仓储助手可见交互', () => {
     expect(api.runAgent.mock.calls[0][2]).toBe('物品 A 当前有库存吗？')
     expect(wrapper.get('[data-testid="stock-summary-card"]').text()).toContain('9.8765')
     expect(wrapper.get('[data-testid="stock-summary-card"]').text()).toContain('件')
-    expect(wrapper.get('[data-testid="stock-summary-card"]').text()).toContain('2026-08-21T08:30:00Z')
+    expect(wrapper.get('[data-testid="stock-summary-card"]').text()).toContain(formatDateTime('2026-08-21T08:30:00Z'))
     expect(wrapper.findAll('[data-testid="stock-summary-card"]')).toHaveLength(1)
     expect(wrapper.text()).toContain('已找到库存。')
     expect(wrapper.text()).toContain('复制摘要')
+  })
+
+  it('连续两轮问答将卡片跟随对应助手消息，并在重复替换时保持原位', async () => {
+    const streamEvent = (type: string, sequence: number, runId: string, messageId: string, payload: Record<string, unknown> = {}) => ({
+      version: '1',
+      eventId: `${runId}-${sequence}`,
+      sequence,
+      runId,
+      conversationId: 'conversation-1',
+      messageId,
+      type,
+      payload
+    })
+    const stockPayload = (cardId: string, itemName: string, quantity: string) => ({
+      cardId,
+      revision: 0,
+      cardType: 'stock-summary',
+      itemName,
+      baseUnit: '件',
+      queriedAt: '2026-08-21T08:30:00Z',
+      rows: [{ itemCode: cardId, itemName, quantity, baseUnit: '件', warehouseName: '一号仓库', locationName: '一号库位' }]
+    })
+    api.runAgent
+      .mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+        onEvent(streamEvent('card.replace', 1, 'run-1', 'message-1', stockPayload('card-1', '物品 A', '9')))
+        onEvent(streamEvent('message.delta', 2, 'run-1', 'message-1', { text: '第一轮助手回复' }))
+        onEvent(streamEvent('message.completed', 3, 'run-1', 'message-1', { text: '第一轮助手回复' }))
+        onEvent(streamEvent('run.completed', 4, 'run-1', 'message-1', { status: 'SUCCESS' }))
+      })
+      .mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+        onEvent(streamEvent('card.replace', 1, 'run-2', 'message-2', stockPayload('card-2', '物品 B', '4')))
+        onEvent(streamEvent('card.replace', 2, 'run-2', 'message-2', stockPayload('card-2', '物品 B', '5')))
+        onEvent(streamEvent('message.delta', 3, 'run-2', 'message-2', { text: '第二轮助手回复' }))
+        onEvent(streamEvent('message.completed', 4, 'run-2', 'message-2', { text: '第二轮助手回复' }))
+        onEvent(streamEvent('run.completed', 5, 'run-2', 'message-2', { status: 'SUCCESS' }))
+      })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('现在有哪些库存？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea').setValue('第一个物品还有多少？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    const timeline = [...wrapper.get('[data-testid="agent-messages"]').element.children] as HTMLElement[]
+    expect(timeline.map((node) => node.className)).toEqual([
+      'agent-message agent-message--user',
+      'agent-message agent-message--assistant',
+      'stock-card',
+      'agent-message agent-message--user',
+      'agent-message agent-message--assistant',
+      'stock-card'
+    ])
+    expect(timeline[0].textContent).toContain('现在有哪些库存？')
+    expect(timeline[1].textContent).toContain('第一轮助手回复')
+    expect(timeline[2].textContent).toContain('物品 A')
+    expect(timeline[3].textContent).toContain('第一个物品还有多少？')
+    expect(timeline[4].textContent).toContain('第二轮助手回复')
+    expect(timeline[5].textContent).toContain('物品 B')
+    expect(timeline[2].getAttribute('data-message-id')).toBe('message-1')
+    expect(timeline[5].getAttribute('data-message-id')).toBe('message-2')
+    expect(timeline[5].textContent).toContain('5件')
+    expect(timeline[5].textContent).not.toContain('4件')
+  })
+
+  it('真实位置与近期变化事件形状应渲染完整业务字段并保持每轮卡片归属', async () => {
+    const streamEvent = (type: string, sequence: number, runId: string, messageId: string, payload: Record<string, unknown> = {}) => ({
+      version: '1', eventId: `${runId}-${sequence}`, sequence, runId, conversationId: 'conversation-1', messageId, type, payload
+    })
+    api.runAgent
+      .mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+        onEvent(streamEvent('card.replace', 1, 'run-location', 'message-location', {
+          cardId: 'warehouse-task-card', revision: 7, cardType: 'item-location', outcome: 'RESOLVED',
+          itemName: '深沟球轴承', baseUnit: '件', queriedAt: '2026-08-26T10:00:00Z',
+          rows: [{ itemCode: 'ITEM-6204', itemName: '深沟球轴承', warehouseCode: 'WH-01', warehouseName: '一号仓库', locationCode: 'LOC-01', locationName: '一号库位', quantity: '12.0000', baseUnit: '件' }]
+        }))
+        onEvent(streamEvent('message.completed', 2, 'run-location', 'message-location', { text: '物品位于一号仓库的一号库位。' }))
+        onEvent(streamEvent('run.completed', 3, 'run-location', 'message-location', { status: 'SUCCESS' }))
+      })
+      .mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+        onEvent(streamEvent('message.delta', 1, 'run-movement', 'message-movement', { text: '最近7天有一次入库变化。' }))
+        onEvent(streamEvent('card.replace', 2, 'run-movement', 'message-movement', {
+          cardId: 'warehouse-task-card', revision: 8, cardType: 'movement-list', outcome: 'RESOLVED',
+          queriedAt: '2026-08-26T10:01:00Z',
+          rows: [{ itemCode: 'ITEM-6204', itemName: '深沟球轴承', warehouseCode: 'WH-01', warehouseName: '一号仓库', locationCode: 'LOC-01', locationName: '一号库位', movementType: 'INBOUND', quantity: '3.0000', baseUnit: '件', occurredAt: '2026-08-25T09:30:00Z' }]
+        }))
+        onEvent(streamEvent('message.completed', 3, 'run-movement', 'message-movement', { text: '最近7天有一次入库变化。' }))
+        onEvent(streamEvent('run.completed', 4, 'run-movement', 'message-movement', { status: 'SUCCESS' }))
+      })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('物品深沟球轴承放在哪些库位？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea').setValue('最近7天有哪些变化？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    const timeline = [...wrapper.get('[data-testid="agent-messages"]').element.children] as HTMLElement[]
+    expect(timeline.map((node) => node.className)).toEqual([
+      'agent-message agent-message--user', 'agent-message agent-message--assistant', 'stock-card',
+      'agent-message agent-message--user', 'agent-message agent-message--assistant', 'stock-card'
+    ])
+    expect(timeline[2].getAttribute('data-message-id')).toBe('message-location')
+    expect(timeline[2].textContent).toContain('一号仓库 / 一号库位')
+    expect(timeline[2].textContent).toContain('12.0000')
+    expect(timeline[5].getAttribute('data-message-id')).toBe('message-movement')
+    expect(timeline[5].textContent).toContain('入库')
+    expect(timeline[5].textContent).toContain(formatDateTime('2026-08-25T09:30:00Z'))
+    expect(timeline[5].textContent).toContain('3.0000')
+  })
+
+  it('真实多物品位置与变化卡逐行展示业务对象，且近期变化打开不偷取第一行筛选', async () => {
+    const streamEvent = (type: string, sequence: number, runId: string, messageId: string, payload: Record<string, unknown> = {}) => ({
+      version: '1', eventId: `${runId}-${sequence}`, sequence, runId, conversationId: 'conversation-1', messageId, type, payload
+    })
+    api.runAgent
+      .mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+        onEvent(streamEvent('card.replace', 1, 'run-location-many', 'message-location-many', {
+          cardId: 'same-task-card', revision: 2, cardType: 'location-contents', outcome: 'RESOLVED', queriedAt: '2026-08-26T10:00:00Z',
+          rows: [
+            { itemCode: 'ITEM-A', itemName: '轴承A', warehouseCode: 'WH-01', warehouseName: '一号仓库', locationCode: 'LOC-01', locationName: '一号库位', quantity: '12.0000', baseUnit: '件' },
+            { itemCode: 'ITEM-B', itemName: '齿轮B', warehouseCode: 'WH-01', warehouseName: '一号仓库', locationCode: 'LOC-01', locationName: '一号库位', quantity: '4.0000', baseUnit: '把' }
+          ]
+        }))
+        onEvent(streamEvent('message.completed', 2, 'run-location-many', 'message-location-many', { text: '库位中有两件物品。' }))
+        onEvent(streamEvent('run.completed', 3, 'run-location-many', 'message-location-many', { status: 'SUCCESS' }))
+      })
+      .mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+        onEvent(streamEvent('card.replace', 1, 'run-movement-many', 'message-movement-many', {
+          cardId: 'same-task-card', revision: 3, cardType: 'movement-list', outcome: 'RESOLVED', queriedAt: '2026-08-26T10:01:00Z',
+          rows: [
+            { itemCode: 'ITEM-A', itemName: '轴承A', warehouseCode: 'WH-01', warehouseName: '一号仓库', locationCode: 'LOC-01', locationName: '一号库位', movementType: 'INBOUND', quantity: '3.0000', baseUnit: '件', occurredAt: '2026-08-25T09:30:00Z' },
+            { itemCode: 'ITEM-B', itemName: '齿轮B', warehouseCode: 'WH-02', warehouseName: '二号仓库', locationCode: 'LOC-02', locationName: '二号库位', movementType: 'OUTBOUND', quantity: '1.0000', baseUnit: '把', occurredAt: '2026-08-25T10:30:00Z' }
+          ]
+        }))
+        onEvent(streamEvent('message.completed', 2, 'run-movement-many', 'message-movement-many', { text: '近期有两条变化。' }))
+        onEvent(streamEvent('run.completed', 3, 'run-movement-many', 'message-movement-many', { status: 'SUCCESS' }))
+      })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('一号库位有什么？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea').setValue('最近有哪些变化？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    const cards = wrapper.findAll('.stock-card')
+    expect(cards).toHaveLength(2)
+    const locationCard = cards[0]
+    expect(locationCard.find('.stock-card-heading strong').text()).toContain('一号仓库 / 一号库位')
+    expect(locationCard.find('.stock-card-heading strong').text()).not.toContain('轴承A')
+    expect(locationCard.text()).toContain('轴承A')
+    expect(locationCard.text()).toContain('ITEM-A')
+    expect(locationCard.text()).toContain('齿轮B')
+    expect(locationCard.text()).toContain('ITEM-B')
+
+    const movementCard = cards[1]
+    expect(movementCard.text()).toContain('轴承A')
+    expect(movementCard.text()).toContain('ITEM-A')
+    expect(movementCard.text()).toContain('齿轮B')
+    expect(movementCard.text()).toContain('ITEM-B')
+    expect(movementCard.text()).toContain('入库')
+    expect(movementCard.text()).toContain('出库')
+    const movementOpen = movementCard.findAll('.text-button').find((button) => button.text().includes('查看库存'))
+    expect(movementOpen).toBeTruthy()
+    await movementOpen!.trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ name: 'warehouse-records', query: {} })
+  })
+
+  it('五轮自然提问保持每轮回复与结果卡相邻，支持不同卡片类型和纠正对象', async () => {
+    const streamEvent = (type: string, sequence: number, runId: string, messageId: string, payload: Record<string, unknown> = {}) => ({
+      version: '1',
+      eventId: `${runId}-${sequence}`,
+      sequence,
+      runId,
+      conversationId: 'conversation-1',
+      messageId,
+      type,
+      payload
+    })
+    const cardPayload = (cardId: string, revision: number, cardType: 'stock-summary' | 'movement-list', itemName: string, quantity: string) => ({
+      cardId,
+      revision,
+      cardType,
+      itemName,
+      baseUnit: '件',
+      queriedAt: '2026-08-21T08:30:00Z',
+      rows: [{ itemCode: cardId, itemName, quantity, baseUnit: '件', warehouseName: '一号仓库', locationName: '一号库位' }]
+    })
+    const rounds = [
+      { question: '现在有哪些库存？', runId: 'run-1', messageId: 'message-1', cardId: 'warehouse-task-card', revision: 1, cardType: 'stock-summary' as const, itemName: '物品 A', quantity: '9', reply: '第一轮库存概览。', cardFirst: true },
+      { question: '第一个物品还有多少？', runId: 'run-2', messageId: 'message-2', cardId: 'warehouse-task-card', revision: 2, cardType: 'stock-summary' as const, itemName: '物品 A', quantity: '8', reply: '第二轮物品库存。', cardFirst: false },
+      { question: '它在哪些库位？', runId: 'run-3', messageId: 'message-3', cardId: 'warehouse-task-card', revision: 3, cardType: 'stock-summary' as const, itemName: '物品 A', quantity: '8', reply: '第三轮库位结果。', cardFirst: true },
+      { question: '最近几天有什么变化？', runId: 'run-4', messageId: 'message-4', cardId: 'warehouse-task-card', revision: 4, cardType: 'movement-list' as const, itemName: '物品 A', quantity: '2', reply: '第四轮近期变化。', cardFirst: true },
+      { question: '不是这个，查另一个物品', runId: 'run-5', messageId: 'message-5', cardId: 'warehouse-task-card', revision: 5, cardType: 'stock-summary' as const, itemName: '物品 B', quantity: '5', reply: '第五轮纠正后的库存。', cardFirst: true }
+    ]
+    rounds.forEach((round) => {
+      api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+        const payload = cardPayload(round.cardId, round.revision, round.cardType, round.itemName, round.quantity)
+        if (round.cardFirst) onEvent(streamEvent('card.replace', 1, round.runId, round.messageId, payload))
+        if (round.cardType === 'movement-list') {
+          onEvent(streamEvent('card.replace', 2, round.runId, round.messageId, cardPayload(round.cardId, round.revision, round.cardType, round.itemName, '3')))
+        }
+        onEvent(streamEvent('message.delta', 3, round.runId, round.messageId, { text: round.reply }))
+        onEvent(streamEvent('message.completed', 4, round.runId, round.messageId, { text: round.reply }))
+        if (!round.cardFirst) onEvent(streamEvent('card.replace', 5, round.runId, round.messageId, payload))
+        onEvent(streamEvent('run.completed', 6, round.runId, round.messageId, { status: 'SUCCESS' }))
+      })
+    })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    for (const round of rounds) {
+      await wrapper.get('textarea').setValue(round.question)
+      await wrapper.get('.send-button').trigger('click')
+      await flushPromises()
+    }
+
+    const timeline = [...wrapper.get('[data-testid="agent-messages"]').element.children] as HTMLElement[]
+    expect(timeline).toHaveLength(15)
+    rounds.forEach((round, index) => {
+      const messageIndex = index * 3
+      expect(timeline[messageIndex].className).toBe('agent-message agent-message--user')
+      expect(timeline[messageIndex].textContent).toContain(round.question)
+      expect(timeline[messageIndex + 1].className).toBe('agent-message agent-message--assistant')
+      expect(timeline[messageIndex + 1].textContent).toContain(round.reply)
+      expect(timeline[messageIndex + 2].className).toBe('stock-card')
+      expect(timeline[messageIndex + 2].getAttribute('data-message-id')).toBe(round.messageId)
+      expect(timeline[messageIndex + 2].textContent).toContain(round.itemName)
+    })
+    expect(timeline[11].querySelector('.card-kicker')?.textContent).toContain('近期库存变化')
+    expect(timeline.filter((node) => node.className === 'stock-card')).toHaveLength(5)
+    expect(timeline[11].textContent).toContain('3件')
+    expect(timeline[11].textContent).not.toContain('2件')
   })
 
   it('查看物品使用仓储库存查询受控路径', async () => {
@@ -108,10 +349,68 @@ describe('仓储助手可见交互', () => {
     expect(routerPush).toHaveBeenCalledWith({ name: 'warehouse-stock', query: { keyword: 'A-001' } })
   })
 
+  it('位置卡片使用仓库/库位业务条件受控打开，并可复制业务摘要', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('card.replace', 1, {
+        cardId: 'location-card', revision: 1, cardType: 'location-contents', outcome: 'RESOLVED',
+        queriedAt: '2026-08-26T10:00:00Z',
+        rows: [{ itemCode: 'ITEM-6204', itemName: '深沟球轴承', warehouseCode: 'WH-01', warehouseName: '一号仓库', locationCode: 'LOC-01', locationName: '一号库位', quantity: '12.0000', baseUnit: '件' }]
+      }))
+      onEvent(event('message.completed', 2, { text: '一号库位有库存。' }))
+      onEvent(event('run.completed', 3, { status: 'SUCCESS' }))
+    })
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('一号仓库的一号库位有什么？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    const copyButton = wrapper.findAll('.text-button').find((button) => button.text().includes('复制摘要'))
+    expect(copyButton).toBeTruthy()
+    await copyButton!.trigger('click')
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('一号仓库 / 一号库位'))
+
+    const routeButton = wrapper.findAll('.text-button').find((button) => button.text().includes('查看库存'))
+    expect(routeButton).toBeTruthy()
+    await routeButton!.trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ name: 'warehouse-stock', query: { warehouse: 'WH-01', location: 'LOC-01' } })
+  })
+
+  it('库存事实卡仅在具备办理权限时显示通用库存操作入口', async () => {
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('card.replace', 1, {
+        cardId: 'operation-card', revision: 1, cardType: 'stock-summary', outcome: 'RESOLVED',
+        rows: [{ itemCode: 'ITEM-A', itemName: '轴承A', quantity: '2.0000', baseUnit: '件' }]
+      }))
+      onEvent(event('message.completed', 2, { text: '库存已找到。' }))
+      onEvent(event('run.completed', 3, { status: 'SUCCESS' }))
+    })
+    const readOnly = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED', canOperate: false }, global: { stubs } })
+    await flushPromises()
+    await readOnly.get('textarea').setValue('轴承A有多少库存？')
+    await readOnly.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(readOnly.text()).not.toContain('办理库存操作')
+    readOnly.unmount()
+
+    const operator = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED', canOperate: true }, global: { stubs } })
+    await flushPromises()
+    await operator.get('textarea').setValue('轴承A有多少库存？')
+    await operator.get('.send-button').trigger('click')
+    await flushPromises()
+    const button = operator.findAll('.text-button').find((candidate) => candidate.text().includes('办理库存操作'))
+    expect(button).toBeTruthy()
+    await button!.trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ name: 'warehouse-operations' })
+  })
+
   it('多候选只展示业务字段，单击候选立即提交且不暴露受信凭据', async () => {
     api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
       onEvent(event('card.replace', 2, {
         cardId: 'stock-task', revision: 0, cardType: 'clarification-choice', status: 'CANDIDATES',
+        candidateKind: 'ITEM', candidateIntent: 'CURRENT_STOCK',
         options: [{ code: 'ITEM-6204', name: '深沟球轴承', baseUnit: '件', optionToken: 'opaque-token' }], rows: []
       }))
       onEvent(event('run.completed', 3, { status: 'SUCCESS' }))
@@ -140,8 +439,74 @@ describe('仓储助手可见交互', () => {
     expect(api.runAgent).toHaveBeenCalledTimes(1)
     expect(api.runAgent.mock.calls[0][2]).toBe('')
     expect(api.runAgent.mock.calls[0][5]).toEqual({ clarificationId: 'stock-task', optionToken: 'opaque-token' })
-    expect(wrapper.text()).toContain('选择物品“深沟球轴承”')
+    expect(wrapper.text()).toContain('选择物品「深沟球轴承」')
     expect(wrapper.text()).toContain('已选择：深沟球轴承')
+  })
+
+  it('位置澄清卡使用仓库和库位标题而不是物品标题', async () => {
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('card.replace', 1, {
+        cardId: 'location-clarification', revision: 1, cardType: 'clarification-choice', status: 'CANDIDATES',
+        candidateKind: 'LOCATION', candidateIntent: 'LOCATION_CONTENTS', options: [{ code: 'LOC-01', name: '一号库位', baseUnit: '', warehouseCode: 'WH-01', warehouseName: '一号仓库', optionToken: 'opaque-location' }], rows: []
+      }))
+      onEvent(event('run.completed', 2, { status: 'SUCCESS' }))
+    })
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('这个库位有什么？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('请从下面选择一个仓库和库位')
+    expect(wrapper.text()).not.toContain('请从下面选择一个物品')
+  })
+
+  it('候选卡跟随澄清回复，点击后新结果卡跟随新的助手回复', async () => {
+    const streamEvent = (type: string, sequence: number, runId: string, messageId: string, payload: Record<string, unknown> = {}) => ({
+      version: '1', eventId: `${runId}-${sequence}`, sequence, runId, conversationId: 'conversation-1', messageId, type, payload
+    })
+    api.runAgent
+      .mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+        onEvent(streamEvent('card.replace', 1, 'run-clarify', 'message-clarify', {
+          cardId: 'warehouse-task-card', revision: 1, cardType: 'clarification-choice', status: 'CANDIDATES',
+          outcome: 'AMBIGUOUS', candidateKind: 'ITEM', candidateIntent: 'CURRENT_STOCK', options: [{ code: 'ITEM-A', name: '物品 A', baseUnit: '件', optionToken: 'opaque-choice' }], rows: []
+        }))
+        onEvent(streamEvent('message.delta', 2, 'run-clarify', 'message-clarify', { text: '请从下面选择一个物品。' }))
+        onEvent(streamEvent('message.completed', 3, 'run-clarify', 'message-clarify', { text: '请从下面选择一个物品。' }))
+        onEvent(streamEvent('run.completed', 4, 'run-clarify', 'message-clarify', { status: 'SUCCESS' }))
+      })
+      .mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+        onEvent(streamEvent('card.replace', 1, 'run-result', 'message-result', {
+          cardId: 'warehouse-task-card', revision: 2, cardType: 'stock-summary', outcome: 'RESOLVED',
+          itemName: '物品 A', baseUnit: '件', rows: [{ itemCode: 'ITEM-A', itemName: '物品 A', quantity: '7', baseUnit: '件' }]
+        }))
+        onEvent(streamEvent('message.delta', 2, 'run-result', 'message-result', { text: '已查询物品 A 的库存。' }))
+        onEvent(streamEvent('message.completed', 3, 'run-result', 'message-result', { text: '已查询物品 A 的库存。' }))
+        onEvent(streamEvent('run.completed', 4, 'run-result', 'message-result', { status: 'SUCCESS' }))
+      })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('查一下轴承')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    await wrapper.get('.candidate-button').trigger('click')
+    await flushPromises()
+
+    const timeline = [...wrapper.get('[data-testid="agent-messages"]').element.children] as HTMLElement[]
+    expect(timeline.map((node) => node.className)).toEqual([
+      'agent-message agent-message--user',
+      'agent-message agent-message--assistant',
+      'stock-card',
+      'agent-message agent-message--user',
+      'agent-message agent-message--assistant',
+      'stock-card'
+    ])
+    expect(timeline[2].getAttribute('data-message-id')).toBe('message-clarify')
+    expect(timeline[2].textContent).toContain('已选择：物品 A')
+    expect(timeline[4].textContent).toContain('已查询物品 A 的库存')
+    expect(timeline[5].getAttribute('data-message-id')).toBe('message-result')
+    expect(timeline[5].textContent).toContain('7件')
+    expect(timeline[5].textContent).not.toContain('opaque-choice')
   })
 
   it('双击或快速重复点击候选只产生一个 Run，提交期间候选按钮全部禁用', async () => {
@@ -159,6 +524,8 @@ describe('仓储助手可见交互', () => {
       revision: 1,
       cardType: 'clarification-choice',
       status: 'CANDIDATES',
+      candidateKind: 'ITEM',
+      candidateIntent: 'CURRENT_STOCK',
       candidates: [{ code: 'ITEM-1', name: '物品1', optionToken: 'tok-1' }],
       stocks: []
     }
@@ -186,6 +553,8 @@ describe('仓储助手可见交互', () => {
       revision: 1,
       cardType: 'clarification-choice',
       status: 'CANDIDATES',
+      candidateKind: 'ITEM',
+      candidateIntent: 'CURRENT_STOCK',
       candidates: [{ code: 'ITEM-1', name: '物品1', optionToken: 'tok-1' }],
       stocks: []
     }
@@ -245,6 +614,8 @@ describe('仓储助手可见交互', () => {
       revision: 1,
       cardType: 'clarification-choice',
       status: 'CANDIDATES',
+      candidateKind: 'ITEM',
+      candidateIntent: 'CURRENT_STOCK',
       candidates: [{ code: 'ITEM-RETRY', name: '可重试物品', optionToken: 'tok-retry' }],
       stocks: []
     }
@@ -285,6 +656,8 @@ describe('仓储助手可见交互', () => {
       revision: 1,
       cardType: 'clarification-choice',
       status: 'CANDIDATES',
+      candidateKind: 'ITEM',
+      candidateIntent: 'CURRENT_STOCK',
       candidates: [{ code: 'ITEM-FAIL', name: '失败物品', optionToken: 'tok-fail' }],
       stocks: []
     }
@@ -311,7 +684,7 @@ describe('仓储助手可见交互', () => {
     await retryBtn.trigger('click')
     await flushPromises()
 
-    expect(api.runAgent.mock.calls[1][2]).toBe('查询物品 ITEM-FAIL（失败物品）')
+    expect(api.runAgent.mock.calls[1][2]).toBe('查询物品「失败物品」（ITEM-FAIL）的当前库存')
     expect(api.runAgent.mock.calls[1][5]).toBeUndefined()
 
     // 4. 重试成功后进入 COMPLETED，移除“查询未完成”和“重新查询”按钮
@@ -331,6 +704,8 @@ describe('仓储助手可见交互', () => {
       revision: 1,
       cardType: 'clarification-choice',
       status: 'CANDIDATES',
+      candidateKind: 'ITEM',
+      candidateIntent: 'CURRENT_STOCK',
       candidates: [{ code: 'ITEM-OLD', name: '过期物品', optionToken: 'tok-old' }],
       stocks: []
     }
@@ -358,6 +733,8 @@ describe('仓储助手可见交互', () => {
       revision: 1,
       cardType: 'clarification-choice',
       status: 'CANDIDATES',
+      candidateKind: 'ITEM',
+      candidateIntent: 'CURRENT_STOCK',
       candidates: [{ code: 'ITEM-1', name: '卡片1物品', optionToken: 'tok-1' }],
       stocks: []
     }
@@ -366,6 +743,8 @@ describe('仓储助手可见交互', () => {
       revision: 2,
       cardType: 'clarification-choice',
       status: 'CANDIDATES',
+      candidateKind: 'ITEM',
+      candidateIntent: 'CURRENT_STOCK',
       candidates: [{ code: 'ITEM-2', name: '卡片2物品', optionToken: 'tok-2' }],
       stocks: []
     }
@@ -390,6 +769,8 @@ describe('仓储助手可见交互', () => {
       activeClarification: {
         clarificationId: 'task-restored',
         revision: 4,
+        candidateKind: 'ITEM',
+        candidateIntent: 'CURRENT_STOCK',
         options: [{ code: 'ITEM-A', name: '轴承A', baseUnit: '件', optionToken: 'opaque-restored' }]
       }
     })
@@ -417,6 +798,74 @@ describe('仓储助手可见交互', () => {
     expect(wrapper.find('.candidate-button').exists()).toBe(false)
   })
 
+  it('恢复位置澄清卡时提示仓库和库位并保留受控选择', async () => {
+    api.fetchConversationMessages.mockResolvedValueOnce({
+      records: [{ messageId: 'message-location-candidate', runId: 'run-location-candidate', role: 'ASSISTANT', state: 'COMPLETE', content: '请从下面选择一个仓库和库位', createdAt: '2026-08-20T08:00:00Z' }],
+      total: 1,
+      page: 1,
+      size: 50,
+      activeClarification: {
+        clarificationId: 'location-task',
+        revision: 2,
+        candidateKind: 'LOCATION',
+        candidateIntent: 'LOCATION_CONTENTS',
+        options: [{ code: 'LOC-01', name: '一号库位', baseUnit: '', optionToken: 'opaque-location', warehouseCode: 'WH-01', warehouseName: '一号仓库' }]
+      }
+    })
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('[aria-label="打开历史对话"]').trigger('click')
+    await wrapper.get('.conversation-item').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.candidate-hint').text()).toContain('仓库和库位')
+    expect(wrapper.get('.candidate-button').text()).toContain('一号仓库')
+    expect(wrapper.get('.candidate-button').text()).toContain('一号库位')
+    expect(wrapper.text()).not.toContain('opaque-location')
+    await wrapper.get('textarea').setValue('换一个问题')
+    expect(wrapper.text()).toContain('当前有待确认选项')
+    expect(wrapper.text()).not.toContain('当前有待选物品')
+  })
+
+  it('位置澄清卡标题明确要求选择仓库和库位，失败恢复后按库位内容重试', async () => {
+    api.fetchConversationMessages.mockResolvedValueOnce({
+      records: [{ messageId: 'message-location-failed', runId: 'run-location-failed', role: 'ASSISTANT', state: 'FAILED', content: '这次查询没有完成', createdAt: '2026-08-20T08:00:00Z' }],
+      total: 1,
+      page: 1,
+      size: 50,
+      activeClarification: {
+        clarificationId: 'location-task-failed',
+        revision: 5,
+        status: 'FAILED_RETRYABLE',
+        candidateKind: 'LOCATION',
+        candidateIntent: 'LOCATION_CONTENTS',
+        selectedCode: 'LOC-01',
+        selectedName: '一号库位',
+        selectedWarehouseCode: 'WH-01',
+        selectedWarehouseName: '一号仓库',
+        options: []
+      }
+    })
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('[aria-label="打开历史对话"]').trigger('click')
+    await wrapper.get('.conversation-item').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('请从下面选择一个仓库和库位')
+    expect(wrapper.text()).toContain('一号仓库')
+    expect(wrapper.text()).toContain('一号库位')
+    expect(wrapper.text()).not.toContain('请从下面选择一个物品')
+    const retry = wrapper.get('.candidate-retry-button')
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('run.started', 1))
+      onEvent(event('run.completed', 2, { status: 'SUCCESS' }))
+    })
+    await retry.trigger('click')
+    await flushPromises()
+    expect(api.runAgent.mock.calls.at(-1)?.[2]).toBe('查询仓库「一号仓库」的库位「一号库位」有哪些库存')
+  })
+
   it('加载带有已接受但失败历史对话时，恢复已选择且可重新查询的卡片状态（FAILED_RETRYABLE），点击重新查询发起受控查询', async () => {
     api.fetchConversationMessages.mockResolvedValueOnce({
       records: [
@@ -430,8 +879,10 @@ describe('仓储助手可见交互', () => {
         clarificationId: 'task-recoverable',
         revision: 3,
         status: 'FAILED_RETRYABLE',
-        selectedItemCode: 'ITEM-6204',
-        selectedItemName: '深沟球轴承',
+        candidateKind: 'ITEM',
+        candidateIntent: 'CURRENT_STOCK',
+        selectedCode: 'ITEM-6204',
+        selectedName: '深沟球轴承',
         options: []
       }
     })
@@ -457,7 +908,7 @@ describe('仓储助手可见交互', () => {
     await flushPromises()
 
     expect(api.runAgent).toHaveBeenCalledTimes(1)
-    expect(api.runAgent.mock.calls[0][2]).toBe('查询物品 ITEM-6204（深沟球轴承）')
+    expect(api.runAgent.mock.calls[0][2]).toBe('查询物品「深沟球轴承」（ITEM-6204）的当前库存')
   })
 
   it('开始新话题清理卡片与状态，取消运行生成唯一 CANCELLED 终态', async () => {

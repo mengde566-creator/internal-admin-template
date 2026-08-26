@@ -68,8 +68,39 @@ class AgentConversationServiceTest {
         assertEquals("task-1", page.activeClarification().clarificationId());
         assertEquals(3L, page.activeClarification().revision());
         assertEquals("READY", page.activeClarification().status());
+        assertEquals("ITEM", page.activeClarification().candidateKind());
+        assertEquals("CURRENT_STOCK", page.activeClarification().candidateIntent());
         assertEquals("ITEM-A", page.activeClarification().options().getFirst().code());
         assertEquals("opaque", page.activeClarification().options().getFirst().optionToken());
+    }
+
+    @Test
+    void acceptsLocationAndItemLocationCardsWithBusinessOnlyCandidateFields() {
+        AgentConversationService service = new AgentConversationService(mock(AgentStore.class), mock(ChatClient.class),
+                mock(AiObservationRecorder.class), new AiProperties());
+        var itemLocation = service.inspectCard("{\"cardId\":\"task-1\",\"revision\":1,\"cardType\":\"item-location\",\"schemaVersion\":1,\"resultCount\":1,\"truncated\":false,\"outcome\":\"RESOLVED\",\"reasonCode\":null,\"queriedAt\":\"2026-08-26T10:00:00Z\",\"rows\":[]}");
+        assertEquals("item-location", itemLocation.cardType());
+        var clarification = service.inspectCard("{\"cardId\":\"task-2\",\"revision\":1,\"cardType\":\"clarification-choice\",\"schemaVersion\":1,\"resultCount\":1,\"truncated\":false,\"outcome\":\"AMBIGUOUS\",\"reasonCode\":null,\"queriedAt\":\"2026-08-26T10:00:00Z\",\"rows\":[],\"clarificationId\":\"task-2\",\"question\":\"请从下面选择一个仓库和库位\",\"selectionMode\":\"SINGLE\",\"candidateKind\":\"LOCATION\",\"candidateIntent\":\"LOCATION_CONTENTS\",\"options\":[{\"optionToken\":\"opaque\",\"code\":\"LOC-01\",\"name\":\"一号库位\",\"baseUnit\":\"\",\"warehouseCode\":\"WH-01\",\"warehouseName\":\"一号仓库\"}],\"allowFreeText\":false}");
+        assertEquals("clarification-choice", clarification.cardType());
+    }
+
+    @Test
+    void itemLocationCandidateKeepsItemLocationTaskIntentWhenRecorded() {
+        AgentStore store = mock(AgentStore.class);
+        AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
+                mock(AiObservationRecorder.class), new AiProperties());
+        String card = "{\"cardId\":\"task-3\",\"revision\":1,\"cardType\":\"clarification-choice\",\"schemaVersion\":1,\"resultCount\":2,\"truncated\":false,\"outcome\":\"AMBIGUOUS\",\"reasonCode\":null,\"queriedAt\":\"2026-08-26T10:00:00Z\",\"rows\":[],\"clarificationId\":\"task-3\",\"question\":\"请从下面选择一个物品\",\"selectionMode\":\"SINGLE\",\"candidateKind\":\"ITEM\",\"candidateIntent\":\"ITEM_LOCATIONS\",\"options\":[{\"optionToken\":\"opaque\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"}],\"allowFreeText\":false}";
+        AgentStore.TaskRow persisted = new AgentStore.TaskRow("task-3", "conversation-1", 1L, "warehouse",
+                "ITEM_LOCATIONS", AgentStore.TASK_READY, 2L, "scope-1", java.time.Instant.now().plusSeconds(300),
+                "{\"intent\":\"ITEM_LOCATIONS\"}", "ITEM", "[]");
+        when(store.recordTaskCandidates(anyString(), anyLong(), anyString(), any(), anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(persisted);
+
+        service.recordCard(new AgentStore.StartRun("conversation-1", "run-1", true, AgentStore.RUNNING,
+                        "message-1", 1L, "task-3", 1L), service.inspectCard(card), "scope-1");
+
+        verify(store).recordTaskCandidates(eq("task-3"), eq(1L), eq("scope-1"), any(),
+                contains("ITEM_LOCATIONS"), eq("ITEM"), anyString(), eq("ITEM_LOCATIONS"));
     }
 
     @Test
@@ -92,9 +123,36 @@ class AgentConversationServiceTest {
         assertEquals("task-1", page.activeClarification().clarificationId());
         assertEquals(4L, page.activeClarification().revision());
         assertEquals("FAILED_RETRYABLE", page.activeClarification().status());
-        assertEquals("ITEM-6204", page.activeClarification().selectedItemCode());
-        assertEquals("深沟球轴承", page.activeClarification().selectedItemName());
+        assertEquals("ITEM", page.activeClarification().candidateKind());
+        assertEquals("CURRENT_STOCK", page.activeClarification().candidateIntent());
+        assertEquals("ITEM-6204", page.activeClarification().selectedCode());
+        assertEquals("深沟球轴承", page.activeClarification().selectedName());
         assertTrue(page.activeClarification().options().isEmpty());
+    }
+
+    @Test
+    void historyPageMapsFailedLocationTaskWithTrustedLocationSemantics() {
+        AgentStore store = mock(AgentStore.class);
+        String scope = "scope-location";
+        when(store.pageMessages("conversation-location", 7L, 1, 50))
+                .thenReturn(new AgentStore.MessagePage(List.of(), 0, 1, 50));
+        when(store.activeClarification("conversation-location", 7L, scope))
+                .thenReturn(new AgentStore.TaskRow("task-location", "conversation-location", 1L, "warehouse",
+                        "LOCATION_CONTENTS", AgentStore.TASK_COLLECTING, 6L, scope, java.time.Instant.now().plusSeconds(300),
+                        "{\"type\":\"LOCATION\",\"code\":\"LOC-01\",\"name\":\"一号库位\",\"warehouseCode\":\"WH-01\",\"warehouseName\":\"一号仓库\"}", "", null,
+                        null, "FAILED"));
+        AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
+                mock(AiObservationRecorder.class), new AiProperties());
+
+        var page = service.pageMessages("conversation-location", 7L, scope, 1, 50);
+
+        assertNotNull(page.activeClarification());
+        assertEquals("LOCATION", page.activeClarification().candidateKind());
+        assertEquals("LOCATION_CONTENTS", page.activeClarification().candidateIntent());
+        assertEquals("LOC-01", page.activeClarification().selectedCode());
+        assertEquals("一号库位", page.activeClarification().selectedName());
+        assertEquals("WH-01", page.activeClarification().selectedWarehouseCode());
+        assertEquals("一号仓库", page.activeClarification().selectedWarehouseName());
     }
 
     @Test

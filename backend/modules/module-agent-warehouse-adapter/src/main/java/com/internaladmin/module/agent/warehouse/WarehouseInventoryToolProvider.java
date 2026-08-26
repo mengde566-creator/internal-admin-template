@@ -8,6 +8,8 @@ import com.internaladmin.module.iam.api.IamActorDTO;
 import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.iam.api.ScopeMode;
 import com.internaladmin.module.warehouse.api.WarehouseAccessScopeDTO;
+import com.internaladmin.module.warehouse.api.WarehouseLocationCandidate;
+import com.internaladmin.module.warehouse.api.WarehouseLocationTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseMovementTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseMovementTaskRow;
 import com.internaladmin.module.warehouse.api.WarehouseQueryApi;
@@ -34,6 +36,8 @@ import java.util.Set;
 public class WarehouseInventoryToolProvider implements AgentToolProvider {
     public static final String CURRENT_STOCK_TOOL = "warehouse_current_stock";
     public static final String RECENT_MOVEMENTS_TOOL = "warehouse_recent_movements";
+    public static final String ITEM_LOCATIONS_TOOL = "warehouse_item_locations";
+    public static final String LOCATION_CONTENTS_TOOL = "warehouse_location_contents";
     private static final String CONTEXT_KEY = "agent.execution";
     private final WarehouseQueryApi warehouse;
     private final IamActorApi iam;
@@ -41,6 +45,8 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
     private final AiObservationRecorder observations;
     private final ToolCallback currentStock;
     private final ToolCallback recentMovements;
+    private final ToolCallback itemLocations;
+    private final ToolCallback locationContents;
 
     public WarehouseInventoryToolProvider(WarehouseQueryApi warehouse, IamActorApi iam,
                                           ObjectMapper json, AiObservationRecorder observations) {
@@ -50,11 +56,13 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
         this.observations = observations;
         this.currentStock = new CurrentStockCallback();
         this.recentMovements = new RecentMovementsCallback();
+        this.itemLocations = new ItemLocationsCallback();
+        this.locationContents = new LocationContentsCallback();
     }
 
     @Override
     public ToolCallback[] getToolCallbacks() {
-        return new ToolCallback[]{currentStock, recentMovements};
+        return new ToolCallback[]{currentStock, recentMovements, itemLocations, locationContents};
     }
 
     private abstract class BaseCallback implements ToolCallback {
@@ -139,6 +147,42 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
             safe.put("occurredAt", row.occurredAt());
             return safe;
         }
+
+        List<Map<String, Object>> stockRows(List<com.internaladmin.module.warehouse.api.WarehouseStockTaskRow> rows) {
+            return rows.stream().map(this::stockRow).toList();
+        }
+
+        List<Map<String, Object>> modelCandidates(List<com.internaladmin.module.warehouse.api.WarehouseStockCandidate> candidates) {
+            List<Map<String, Object>> values = new ArrayList<>();
+            for (var candidate : candidates) {
+                Map<String, Object> value = new LinkedHashMap<>();
+                value.put("code", candidate.code()); value.put("name", candidate.name()); value.put("baseUnit", candidate.baseUnit());
+                values.add(value);
+            }
+            return values;
+        }
+
+        List<Map<String, Object>> cardCandidates(List<com.internaladmin.module.warehouse.api.WarehouseStockCandidate> candidates) {
+            List<Map<String, Object>> values = new ArrayList<>();
+            for (var candidate : candidates) {
+                Map<String, Object> value = new LinkedHashMap<>();
+                value.put("optionToken", java.util.UUID.randomUUID().toString());
+                value.put("code", candidate.code()); value.put("name", candidate.name()); value.put("baseUnit", candidate.baseUnit());
+                values.add(value);
+            }
+            return values;
+        }
+
+        List<Map<String, Object>> locationCandidates(List<WarehouseLocationCandidate> candidates) {
+            List<Map<String, Object>> values = new ArrayList<>();
+            for (var candidate : candidates) {
+                Map<String, Object> value = new LinkedHashMap<>();
+                value.put("warehouseCode", candidate.warehouseCode()); value.put("warehouseName", candidate.warehouseName());
+                value.put("locationCode", candidate.locationCode()); value.put("locationName", candidate.locationName());
+                values.add(value);
+            }
+            return values;
+        }
     }
 
     private final class CurrentStockCallback extends BaseCallback {
@@ -187,6 +231,8 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                 if (ambiguous) {
                     card.put("clarificationId", execution.taskId());
                     card.put("question", "请从下面选择一个物品");
+                    card.put("candidateKind", "ITEM");
+                    card.put("candidateIntent", "CURRENT_STOCK");
                     card.put("selectionMode", "SINGLE");
                     card.put("options", candidates);
                     card.put("allowFreeText", false);
@@ -206,6 +252,119 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                 record(execution, "FAILED", started, "TOOL_FAILED"); throw ex;
             } catch (Exception ex) {
                 record(execution, "FAILED", started, "TOOL_FAILED"); throw new IllegalStateException("库存查询失败", ex);
+            }
+        }
+    }
+
+    private final class ItemLocationsCallback extends BaseCallback {
+        ItemLocationsCallback() {
+            super(ITEM_LOCATIONS_TOOL, "查看某件物品目前所在的仓库和库位，以及各处数量",
+                    "{\"type\":\"object\",\"properties\":{\"itemKeyword\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"required\":[\"itemKeyword\"],\"additionalProperties\":false}");
+        }
+
+        @Override
+        public String call(String toolInput, ToolContext toolContext) {
+            long started = System.nanoTime();
+            AgentExecutionContext execution = context(toolContext);
+            try {
+                JsonNode root = json.readTree(toolInput);
+                strictObject(root, Set.of("itemKeyword", "limit"), "itemKeyword");
+                String keyword = value(root, "itemKeyword");
+                if (keyword == null || keyword.isBlank()) throw new IllegalArgumentException("itemKeyword不能为空");
+                WarehouseStockTaskResult result = warehouse.queryItemLocationsTask(keyword,
+                        integer(root, "limit", 20, 1, 20), scope(actor(execution)));
+                List<Map<String, Object>> rows = stockRows(result.rows());
+                List<Map<String, Object>> modelOptions = modelCandidates(result.candidates());
+                List<Map<String, Object>> cardOptions = cardCandidates(result.candidates());
+                Map<String, Object> output = new LinkedHashMap<>();
+                output.put("outcome", result.outcome()); output.put("reasonCode", result.reasonCode());
+                output.put("schemaVersion", result.schemaVersion()); output.put("resultCount", result.resultCount());
+                output.put("truncated", result.truncated()); output.put("rows", rows); output.put("candidates", modelOptions);
+                output.put("queriedAt", result.queriedAt());
+                Map<String, Object> card = new LinkedHashMap<>();
+                card.put("cardId", execution.taskId() == null ? "item-location" : execution.taskId());
+                card.put("revision", execution.taskRevision());
+                boolean ambiguous = "AMBIGUOUS".equals(result.outcome());
+                card.put("cardType", ambiguous ? "clarification-choice" : "item-location");
+                if (ambiguous) {
+                    card.put("clarificationId", execution.taskId()); card.put("question", "请从下面选择一个物品");
+                    card.put("candidateKind", "ITEM");
+                    card.put("candidateIntent", "ITEM_LOCATIONS");
+                    card.put("selectionMode", "SINGLE"); card.put("options", cardOptions); card.put("allowFreeText", false);
+                }
+                card.put("schemaVersion", result.schemaVersion()); card.put("resultCount", result.resultCount());
+                card.put("truncated", result.truncated()); card.put("outcome", result.outcome());
+                card.put("reasonCode", result.reasonCode()); card.put("queriedAt", result.queriedAt()); card.put("rows", rows);
+                String outputJson = json.writeValueAsString(output);
+                execution.toolCardEmitter().accept(json.writeValueAsString(card));
+                execution.markToolOutputProduced(); record(execution, "SUCCEEDED", started, null);
+                return outputJson;
+            } catch (RuntimeException ex) {
+                record(execution, "FAILED", started, "TOOL_FAILED"); throw ex;
+            } catch (Exception ex) {
+                record(execution, "FAILED", started, "TOOL_FAILED"); throw new IllegalStateException("物品位置查询失败", ex);
+            }
+        }
+    }
+
+    private final class LocationContentsCallback extends BaseCallback {
+        LocationContentsCallback() {
+            super(LOCATION_CONTENTS_TOOL, "查看指定仓库和库位里有哪些物品及其当前数量",
+                    "{\"type\":\"object\",\"properties\":{\"warehouseKeyword\":{\"type\":\"string\"},\"locationKeyword\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"additionalProperties\":false}");
+        }
+
+        @Override
+        public String call(String toolInput, ToolContext toolContext) {
+            long started = System.nanoTime();
+            AgentExecutionContext execution = context(toolContext);
+            try {
+                JsonNode root = json.readTree(toolInput);
+                strictObject(root, Set.of("warehouseKeyword", "locationKeyword", "limit"), null);
+                String warehouseKeyword = value(root, "warehouseKeyword");
+                String locationKeyword = value(root, "locationKeyword");
+                if ((warehouseKeyword == null || warehouseKeyword.isBlank()) && (locationKeyword == null || locationKeyword.isBlank())) {
+                    throw new IllegalArgumentException("请提供仓库或库位名称");
+                }
+                WarehouseLocationTaskResult result = warehouse.queryLocationContentsTask(warehouseKeyword, locationKeyword,
+                        integer(root, "limit", 20, 1, 20), scope(actor(execution)));
+                List<Map<String, Object>> rows = stockRows(result.rows());
+                List<Map<String, Object>> modelOptions = locationCandidates(result.candidates());
+                List<Map<String, Object>> cardOptions = new ArrayList<>();
+                for (WarehouseLocationCandidate candidate : result.candidates()) {
+                    Map<String, Object> option = new LinkedHashMap<>();
+                    option.put("optionToken", java.util.UUID.randomUUID().toString());
+                    option.put("code", candidate.locationCode()); option.put("name", candidate.locationName());
+                    option.put("baseUnit", "");
+                    option.put("warehouseCode", candidate.warehouseCode()); option.put("warehouseName", candidate.warehouseName());
+                    cardOptions.add(option);
+                }
+                Map<String, Object> output = new LinkedHashMap<>();
+                output.put("outcome", result.outcome()); output.put("reasonCode", result.reasonCode());
+                output.put("schemaVersion", result.schemaVersion()); output.put("resultCount", result.resultCount());
+                output.put("truncated", result.truncated()); output.put("rows", rows); output.put("candidates", modelOptions);
+                output.put("queriedAt", result.queriedAt());
+                Map<String, Object> card = new LinkedHashMap<>();
+                card.put("cardId", execution.taskId() == null ? "location-contents" : execution.taskId());
+                card.put("revision", execution.taskRevision());
+                boolean ambiguous = "AMBIGUOUS".equals(result.outcome());
+                card.put("cardType", ambiguous ? "clarification-choice" : "location-contents");
+                if (ambiguous) {
+                    card.put("clarificationId", execution.taskId()); card.put("question", "请从下面选择一个仓库和库位");
+                    card.put("candidateKind", "LOCATION");
+                    card.put("candidateIntent", "LOCATION_CONTENTS");
+                    card.put("selectionMode", "SINGLE"); card.put("options", cardOptions); card.put("allowFreeText", false);
+                }
+                card.put("schemaVersion", result.schemaVersion()); card.put("resultCount", result.resultCount());
+                card.put("truncated", result.truncated()); card.put("outcome", result.outcome());
+                card.put("reasonCode", result.reasonCode()); card.put("queriedAt", result.queriedAt()); card.put("rows", rows);
+                String outputJson = json.writeValueAsString(output);
+                execution.toolCardEmitter().accept(json.writeValueAsString(card));
+                execution.markToolOutputProduced(); record(execution, "SUCCEEDED", started, null);
+                return outputJson;
+            } catch (RuntimeException ex) {
+                record(execution, "FAILED", started, "TOOL_FAILED"); throw ex;
+            } catch (Exception ex) {
+                record(execution, "FAILED", started, "TOOL_FAILED"); throw new IllegalStateException("库位内容查询失败", ex);
             }
         }
     }

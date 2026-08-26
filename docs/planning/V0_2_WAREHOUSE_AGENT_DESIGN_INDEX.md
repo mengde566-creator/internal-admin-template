@@ -37,8 +37,8 @@ MOD-* 模块责任与公开契约
 | 分片 | 研发目标 | 功能范围 | 模块范围 | 核心场景 | 完成后总设计师只验收 |
 | --- | --- | --- | --- | --- | --- |
 | `SLICE-00` | Agent启用、Provider与纵向技术Gate | FUN-00；其他功能只验证最小机制 | MOD-AGENT、MOD-KNOWLEDGE、MOD-OBSERVABILITY、MOD-ADAPTER、既有Warehouse/IAM API | SCN-CFG-*、SCN-K-01/02 | Gate A、Gate B均已通过：装配、模型、Embedding、知识库、SSE身份、只读Tool与最小观测链完成 |
-| `SLICE-01` | Conversation、scope隔离的短期Memory、库存候选与A+B最小可见入口 | FUN-01、FUN-02 | MOD-AGENT、现有Vue SPA、WarehouseQueryApi | SCN-RP-01～07、SCN-I-03/04 | 仓储页面可展开或折叠Agent，并以业务关键词完成库存/近期变化查询；完整位置内容、其余工具与卡片保留在SLICE-02 |
-| `SLICE-02` | 仓储只读Tool与结果卡 | FUN-03、FUN-04 | MOD-AGENT、MOD-ADAPTER、既有Warehouse/IAM API | SCN-N-01～03、SCN-D-01/02、SCN-B-01 | 事实、权限和卡片时效 |
+| `SLICE-01` | Conversation、scope隔离的短期Memory、库存候选与A+B最小可见入口 | FUN-01、FUN-02 | MOD-AGENT、现有Vue SPA、WarehouseQueryApi | SCN-RP-01～07、SCN-I-03/04 | 已完成：对话、History、短期Memory、受信澄清与多轮消息/卡片归属均已收口 |
+| `SLICE-02` | 仓储只读Tool与结果卡 | FUN-03、FUN-04 | MOD-AGENT、MOD-ADAPTER、既有Warehouse/IAM API | SCN-N-01～03、SCN-D-01/02、SCN-B-01 | 已完成：当前库存、物品位置、库位内容、近期变化及对应受控卡片与人工页面衔接已实现 |
 | `SLICE-03` | 异常输入与安全边界 | FUN-05 | MOD-AGENT、MOD-ADAPTER | SCN-I-01/02/05/06、SCN-AU-*、SCN-S-*、SCN-O-*、SCN-B-02 | 确定性拒绝、澄清和零越权 |
 | `SLICE-04` | 合成Knowledge与混合查询 | FUN-06 | MOD-KNOWLEDGE、MOD-AGENT | SCN-K-01～03、SCN-N-04、SCN-E-01/03 | 幂等导入、引用、零证据和可见降级 |
 | `SLICE-05` | 流式、History、反馈与完整观测 | FUN-07、FUN-08、FUN-09 | MOD-AGENT、MOD-OBSERVABILITY | SCN-C-*、SCN-E-02/04/05/06、SCN-OB-* | 唯一终态、多轮效果、异常链路和评测 |
@@ -118,8 +118,8 @@ MOD-* 模块责任与公开契约
 | 分片 | 设计 | 实现 | 总设计师验收 |
 | --- | --- | --- | --- |
 | SLICE-00 | 已确认 | Gate A、Gate B已通过；分片完成 | Gate A、Gate B已通过；分片完成 |
-| SLICE-01 | 已确认 | 可见主链已实现；开发前审计退回5项契约纠偏 | 未通过；纠偏完成后一次验收 |
-| SLICE-02 | 已确认 | 未开始 | 未开始 |
+| SLICE-01 | 已确认 | 已完成 | 已通过；多轮对话、澄清恢复和卡片归属已收口 |
+| SLICE-02 | 已确认 | 已完成 | 已通过；四类只读任务、业务候选、结果卡片和受控人工页面衔接已收口 |
 | SLICE-03 | 已确认 | 未开始 | 未开始 |
 | SLICE-04 | 已确认 | 未开始 | 未开始 |
 | SLICE-05 | 已确认 | 未开始 | 未开始 |

@@ -10,7 +10,10 @@ import warehouseRecordsSource from './WarehouseRecordsPage.vue?raw'
 
 import * as agentApi from '../ai/agentApi'
 
-const routeQuery = vi.hoisted(() => ({ item: 'item-1', keyword: 'A100' }))
+const routeQuery = vi.hoisted(() => ({ item: 'item-1', keyword: 'A100', warehouse: '', location: '' }))
+const authPermissions = vi.hoisted(() => ({
+  values: new Set(['warehouse:read', 'warehouse:inventory:operate', 'warehouse:master:manage'])
+}))
 
 vi.mock('vue-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vue-router')>()
@@ -63,13 +66,13 @@ vi.mock('../ai/agentApi', () => ({
 vi.mock('../../iam/api/department', () => ({
   fetchDepartmentOptionsApi: vi.fn().mockResolvedValue({ data: { data: { nodes: [] } } }),
 }))
-vi.mock('../../auth/store/auth', () => ({ useAuthStore: () => ({ hasPermission: () => true }) }))
+vi.mock('../../auth/store/auth', () => ({ useAuthStore: () => ({ hasPermission: (permission: string) => authPermissions.values.has(permission) }) }))
 
 const stubs = {
   WarehouseAgentPanel: {
-    props: ['mode', 'workspaceWidth'],
+    props: ['mode', 'workspaceWidth', 'canOperate'],
     emits: ['toggle-collapse', 'width-change', 'capability-change'],
-    template: '<div><button data-testid="agent-toggle" @click="$emit(\'toggle-collapse\')">切换助手</button><button data-testid="agent-disable" @click="$emit(\'capability-change\', false)">禁用助手</button></div>'
+    template: '<div :data-can-operate="String(canOperate)"><button data-testid="agent-toggle" @click="$emit(\'toggle-collapse\')">切换助手</button><button data-testid="agent-disable" @click="$emit(\'capability-change\', false)">禁用助手</button></div>'
   },
   'el-icon': { template: '<span><slot /></span>' },
   'el-button': { props: ['disabled', 'loading', 'type'], emits: ['click'], template: '<button :disabled="disabled" @click="$emit(\'click\')"><slot /></button>' },
@@ -94,7 +97,7 @@ const stubs = {
 }
 
 describe('仓储入口与库存操作', () => {
-  beforeEach(() => { vi.clearAllMocks(); routeQuery.item = 'item-1'; routeQuery.keyword = 'A100' })
+  beforeEach(() => { vi.clearAllMocks(); authPermissions.values = new Set(['warehouse:read', 'warehouse:inventory:operate', 'warehouse:master:manage']); routeQuery.item = 'item-1'; routeQuery.keyword = 'A100'; routeQuery.warehouse = ''; routeQuery.location = '' })
 
   it('展示五个真实入口，且不暴露开发字段或英文空状态', () => {
     const wrapper = mount(WarehouseManagePage, { global: { stubs } })
@@ -114,6 +117,14 @@ describe('仓储入口与库存操作', () => {
     await wrapper.get('[data-testid="agent-toggle"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="agent-toggle"]').exists()).toBe(true)
+  })
+
+  it('父页只把真实库存操作权限传给助手，缺少权限时不暴露办理入口', () => {
+    const enabled = mount(WarehouseManagePage, { global: { stubs } })
+    expect(enabled.get('[data-can-operate]').attributes('data-can-operate')).toBe('true')
+    authPermissions.values.delete('warehouse:inventory:operate')
+    const readOnly = mount(WarehouseManagePage, { global: { stubs } })
+    expect(readOnly.get('[data-can-operate]').attributes('data-can-operate')).toBe('false')
   })
 
   it('当前动作只显示一个确认主操作', async () => {
@@ -355,6 +366,19 @@ describe('仓储入口与库存操作', () => {
     expect(wrapper.findAll('select')[0].element).toHaveProperty('value', '')
     expect(api.fetchStockPage).not.toHaveBeenCalled()
     expect(wrapper.text()).not.toContain('未知物品')
+  })
+
+  it('位置结果只通过可见业务编码受控定位库存查询', async () => {
+    routeQuery.item = ''
+    routeQuery.keyword = ''
+    routeQuery.warehouse = 'W1'
+    routeQuery.location = 'L1'
+    vi.mocked(api.fetchStockPage).mockClear()
+    const wrapper = mount(WarehouseStockPage, { global: { stubs } })
+    await flushPromises()
+    expect((wrapper.findAll('select')[1].element as HTMLSelectElement).value).toBe('warehouse-1')
+    expect((wrapper.findAll('select')[2].element as HTMLSelectElement).value).toBe('location-1')
+    expect(api.fetchStockPage).toHaveBeenCalledWith(expect.objectContaining({ warehouseId: 'warehouse-1', locationId: 'location-1', page: 1 }))
   })
 
   it('翻到后页后更换物品筛选会从第一页重新查询', async () => {

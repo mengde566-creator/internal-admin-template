@@ -22,8 +22,12 @@ export type ClarificationTask = {
   clarificationId: string
   revision: number
   status: string
-  selectedItemCode: string
-  selectedItemName: string
+  candidateKind: 'ITEM' | 'LOCATION' | ''
+  candidateIntent: 'CURRENT_STOCK' | 'ITEM_LOCATIONS' | 'LOCATION_CONTENTS' | ''
+  selectedCode: string
+  selectedName: string
+  selectedWarehouseCode: string
+  selectedWarehouseName: string
   options: ClarificationOption[]
 }
 export type MessagePage = Required<Omit<MessagePageSchema, 'records' | 'activeClarification'>> & {
@@ -99,13 +103,21 @@ export async function fetchConversationMessages(conversationId: string, page = 1
           clarificationId: raw.activeClarification.clarificationId ?? '',
           revision: raw.activeClarification.revision ?? 0,
           status: raw.activeClarification.status ?? 'READY',
-          selectedItemCode: raw.activeClarification.selectedItemCode ?? '',
-          selectedItemName: raw.activeClarification.selectedItemName ?? '',
+          candidateKind: raw.activeClarification.candidateKind === 'LOCATION' ? 'LOCATION' : raw.activeClarification.candidateKind === 'ITEM' ? 'ITEM' : '',
+          candidateIntent: raw.activeClarification.candidateIntent === 'ITEM_LOCATIONS' || raw.activeClarification.candidateIntent === 'LOCATION_CONTENTS' || raw.activeClarification.candidateIntent === 'CURRENT_STOCK'
+            ? raw.activeClarification.candidateIntent
+            : '',
+          selectedCode: raw.activeClarification.selectedCode ?? '',
+          selectedName: raw.activeClarification.selectedName ?? '',
+          selectedWarehouseCode: raw.activeClarification.selectedWarehouseCode ?? '',
+          selectedWarehouseName: raw.activeClarification.selectedWarehouseName ?? '',
           options: (raw.activeClarification.options ?? []).map((option) => ({
             code: option?.code ?? '',
             name: option?.name ?? '',
             baseUnit: option?.baseUnit ?? '',
-            optionToken: option?.optionToken ?? ''
+            optionToken: option?.optionToken ?? '',
+            warehouseCode: option?.warehouseCode ?? '',
+            warehouseName: option?.warehouseName ?? ''
           }))
         }
       : null,

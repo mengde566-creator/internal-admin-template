@@ -11,6 +11,8 @@ import com.internaladmin.module.iam.api.IamActorDTO;
 import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.iam.api.ScopeMode;
 import com.internaladmin.module.warehouse.api.WarehouseAccessScopeDTO;
+import com.internaladmin.module.warehouse.api.WarehouseLocationCandidate;
+import com.internaladmin.module.warehouse.api.WarehouseLocationTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseMovementTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseMovementTaskRow;
 import com.internaladmin.module.warehouse.api.WarehouseQueryApi;
@@ -38,6 +40,7 @@ import com.internaladmin.module.warehouse.model.dto.StockPageDTO;
 import com.internaladmin.module.warehouse.model.dto.StockPageItemDTO;
 import com.internaladmin.module.warehouse.model.dto.StockPageRowDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseMovementTaskRowDTO;
+import com.internaladmin.module.warehouse.model.dto.WarehouseLocationCandidateRowDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseCreateDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseUpdateDTO;
@@ -497,6 +500,48 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
             status = "NO_STOCK";
         }
         return new WarehouseStockTaskResult(status, resultRows, List.of(), Instant.now(), truncated);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public WarehouseStockTaskResult queryItemLocationsTask(String itemKeyword, int limit,
+                                                           WarehouseAccessScopeDTO scope) {
+        if (itemKeyword == null || itemKeyword.isBlank()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请提供物品名称或编码");
+        }
+        return queryCurrentStock(itemKeyword, null, null, limit, scope);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public WarehouseLocationTaskResult queryLocationContentsTask(String warehouseKeyword,
+                                                                  String locationKeyword, int limit,
+                                                                  WarehouseAccessScopeDTO scope) {
+        scope = validateTrustedScope(scope);
+        int bounded = boundedTaskLimit(limit);
+        List<WarehouseLocationCandidateRowDTO> matches = locationMapper.selectTaskCandidates(
+                likePattern(warehouseKeyword), likePattern(locationKeyword),
+                scope.allDepartments() ? null : scope.departmentId(), bounded + 1);
+        List<WarehouseLocationCandidate> candidates = matches.stream()
+                .map(row -> new WarehouseLocationCandidate(row.warehouseCode(), row.warehouseName(),
+                        row.locationCode(), row.locationName())).toList();
+        if (matches.size() > 1) {
+            return new WarehouseLocationTaskResult("CANDIDATES", List.of(), candidates.stream().limit(bounded).toList(), Instant.now(), matches.size() > bounded);
+        }
+        if (matches.isEmpty()) {
+            return new WarehouseLocationTaskResult("NO_MATCH", List.of(), List.of(), Instant.now(), false);
+        }
+        WarehouseLocationCandidateRowDTO match = matches.getFirst();
+        Long departmentId = scope.allDepartments() ? null : scope.departmentId();
+        List<StockPageRowDTO> rows = balanceMapper.selectStockPage("%%", departmentId, null,
+                match.warehouseId(), match.locationId(), 0, bounded + 1);
+        boolean truncated = rows.size() > bounded;
+        List<WarehouseStockTaskRow> resultRows = rows.stream().limit(bounded).map(row -> new WarehouseStockTaskRow(
+                row.itemId(), row.itemCode(), row.itemName(), row.baseUnit(), row.warehouseId(),
+                row.warehouseCode(), row.warehouseName(), row.locationId(), row.locationCode(),
+                row.locationName(), QuantityCodec.format(row.quantityScaled()), row.version())).toList();
+        return new WarehouseLocationTaskResult(resultRows.isEmpty() ? "NO_DATA" : "LOCATION_RESULT",
+                resultRows, List.of(), Instant.now(), truncated);
     }
 
     @Override

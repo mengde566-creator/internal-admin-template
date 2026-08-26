@@ -24,6 +24,7 @@ import {
   type ClarificationTask,
   type Message
 } from '../ai/agentApi'
+import { formatDateTime } from '../../../shared/utils/dateTime'
 
 type UiMessage = {
   messageId: string
@@ -37,27 +38,36 @@ type StockRow = {
   quantity?: string
   itemCode?: string
   itemName?: string
+  warehouseCode?: string
   warehouseName?: string
+  locationCode?: string
   locationName?: string
   baseUnit?: string
   movementType?: string
   occurredAt?: string
 }
 
-type StockCandidate = { code: string; name: string; baseUnit?: string; optionToken?: string }
+type StockCandidate = { code: string; name: string; baseUnit?: string; optionToken?: string; warehouseCode?: string; warehouseName?: string }
 
 type StockSummaryCard = {
   cardId: string
   revision: number
-  cardType: 'stock-summary' | 'movement-list' | 'clarification-choice'
+  messageId?: string
+  cardType: 'stock-summary' | 'item-location' | 'location-contents' | 'movement-list' | 'clarification-choice'
   outcome?: string
   reasonCode?: string
   status?: string
   itemName?: string
   selectedCandidateCode?: string
   selectedCandidateName?: string
+  selectedWarehouseCode?: string
+  selectedWarehouseName?: string
+  candidateKind?: 'ITEM' | 'LOCATION'
+  candidateIntent?: 'CURRENT_STOCK' | 'ITEM_LOCATIONS' | 'LOCATION_CONTENTS'
   baseUnit?: string
   queriedAt?: string
+  resultCount?: number
+  truncated?: boolean
   stocks: StockRow[]
   candidates: StockCandidate[]
 }
@@ -81,14 +91,20 @@ type MarkdownBlock =
   | { type: 'list'; items: InlineToken[][] }
   | { type: 'paragraph'; tokens: InlineToken[] }
 
+type ConversationItem =
+  | { kind: 'message'; key: string; message: UiMessage }
+  | { kind: 'card'; key: string; card: StockSummaryCard }
+
 const props = withDefaults(
   defineProps<{
     mode?: AgentMode
     workspaceWidth?: number
+    canOperate?: boolean
   }>(),
   {
     mode: 'DOCKED',
-    workspaceWidth: 0
+    workspaceWidth: 0,
+    canOperate: false
   }
 )
 
@@ -159,7 +175,33 @@ const clampedOverlayHeight = computed(() => {
 const effectiveMinPanelHeight = computed(() => Math.min(MIN_PANEL_HEIGHT, heightParent.value || MIN_PANEL_HEIGHT))
 const canCopy = computed(() => capabilities.value?.features.includes('COPY') === true)
 const canOpenRoute = computed(() => capabilities.value?.features.includes('OPEN_ROUTE') === true)
-const cardList = computed(() => Object.values(cards.value))
+const canOpenOperations = computed(() => props.canOperate === true)
+function cardIdentity(cardId: string, messageId?: string | null) {
+  return `${cardId}::${messageId ?? ''}`
+}
+
+const cardEntries = computed(() => Object.entries(cards.value).map(([key, card]) => ({ key, card })))
+const conversationItems = computed<ConversationItem[]>(() => {
+  const items: ConversationItem[] = []
+  const attachedCardKeys = new Set<string>()
+  messages.value.forEach((message, index) => {
+    items.push({
+      kind: 'message',
+      key: `message-${message.messageId || message.createdAt || index}`,
+      message
+    })
+    cardEntries.value.forEach(({ key, card }) => {
+      if (card.messageId && card.messageId === message.messageId) {
+        attachedCardKeys.add(key)
+        items.push({ kind: 'card', key: `card-${key}`, card })
+      }
+    })
+  })
+  cardEntries.value.forEach(({ key, card }) => {
+    if (!attachedCardKeys.has(key)) items.push({ kind: 'card', key: `card-${key}`, card })
+  })
+  return items
+})
 const hasActiveCandidates = computed(() => Object.values(cards.value).some((card) => card.status === 'CANDIDATES' || (!card.status && card.cardType === 'clarification-choice')))
 const sendDisabled = computed(() => isRunning.value || !draft.value.trim() || hasActiveCandidates.value)
 const panelStyle = computed(() => {
@@ -468,7 +510,9 @@ function messageLabel(message: UiMessage) {
 
 function cardEmptyText(card: StockSummaryCard) {
   if (card.reasonCode === 'NO_MATCHING_ITEM' || card.status === 'NO_MATCH') return '没有找到匹配的物品，请换一个业务名称或编码。'
+  if (card.reasonCode === 'NO_MATCHING_LOCATION') return '没有找到匹配的仓库或库位，请换一个业务名称或编码。'
   if (card.reasonCode === 'ITEM_HAS_NO_STOCK' || card.status === 'NO_STOCK') return '当前可见范围内暂无库存。'
+  if (card.reasonCode === 'LOCATION_HAS_NO_STOCK') return '这个库位当前没有库存。'
   if (card.reasonCode === 'NO_MOVEMENT_IN_RANGE' || card.status === 'NO_DATA') return '所选时间范围内没有库存变化。'
   return '当前没有可展示的库存记录。'
 }
@@ -541,32 +585,45 @@ async function loadHistory(conversationId: string, clearCards = true, preserveLo
 
 function restoreClarificationCard(task: ClarificationTask | null | undefined) {
   if (!task || !task.clarificationId) return
-  if (task.status === 'FAILED_RETRYABLE' || (!task.options?.length && (task.selectedItemName || task.selectedItemCode))) {
-    cards.value[task.clarificationId] = {
+  const candidateKind = task.candidateKind
+  const candidateIntent = task.candidateIntent
+  const validSemantics = (candidateKind === 'LOCATION' && candidateIntent === 'LOCATION_CONTENTS')
+    || (candidateKind === 'ITEM' && (candidateIntent === 'CURRENT_STOCK' || candidateIntent === 'ITEM_LOCATIONS'))
+  if (!validSemantics) return
+  if (task.status === 'FAILED_RETRYABLE' || (!task.options?.length && (task.selectedName || task.selectedCode))) {
+    cards.value[cardIdentity(task.clarificationId)] = {
       cardId: task.clarificationId,
       revision: task.revision,
       cardType: 'clarification-choice',
       status: 'FAILED',
       outcome: 'AMBIGUOUS',
-      selectedCandidateCode: task.selectedItemCode,
-      selectedCandidateName: task.selectedItemName,
+      candidateKind,
+      candidateIntent,
+      selectedCandidateCode: task.selectedCode,
+      selectedCandidateName: task.selectedName,
+      selectedWarehouseCode: task.selectedWarehouseCode,
+      selectedWarehouseName: task.selectedWarehouseName,
       candidates: [],
       stocks: []
     }
     return
   }
   if (!task.options?.length) return
-  cards.value[task.clarificationId] = {
+  cards.value[cardIdentity(task.clarificationId)] = {
     cardId: task.clarificationId,
     revision: task.revision,
     cardType: 'clarification-choice',
     status: 'CANDIDATES',
     outcome: 'AMBIGUOUS',
+    candidateKind,
+    candidateIntent,
     candidates: task.options.map((option) => ({
       code: option.code ?? '',
       name: option.name ?? '',
       baseUnit: option.baseUnit ?? '',
-      optionToken: option.optionToken ?? ''
+      optionToken: option.optionToken ?? '',
+      warehouseCode: option.warehouseCode ?? '',
+      warehouseName: option.warehouseName ?? ''
     })),
     stocks: []
   }
@@ -625,6 +682,10 @@ function confirmSwitchToFreeText() {
 }
 
 function ensureAssistantMessage(messageId?: string | null) {
+  const existingById = messageId
+    ? messages.value.find((message) => message.role === 'ASSISTANT' && message.messageId === messageId)
+    : undefined
+  if (existingById) return existingById
   const existing = messages.value.find((message) => message.pending)
   if (existing) {
     if (messageId && !existing.messageId) existing.messageId = messageId
@@ -635,15 +696,17 @@ function ensureAssistantMessage(messageId?: string | null) {
   return message
 }
 
-function parseStockCard(payload: Record<string, unknown>): StockSummaryCard | null {
-  if (!['stock-summary', 'movement-list', 'clarification-choice'].includes(String(payload.cardType))
+function parseStockCard(payload: Record<string, unknown>, messageId?: string): StockSummaryCard | null {
+  if (!['stock-summary', 'item-location', 'location-contents', 'movement-list', 'clarification-choice'].includes(String(payload.cardType))
     || typeof payload.cardId !== 'string' || !payload.cardId.trim() || typeof payload.revision !== 'number') return null
   const rawStocks = Array.isArray(payload.rows) ? payload.rows : (Array.isArray(payload.stocks) ? payload.stocks : [])
   const stocks = rawStocks.filter((row): row is Record<string, unknown> => Boolean(row && typeof row === 'object')).map((row) => ({
     quantity: typeof row.quantity === 'string' ? row.quantity : undefined,
     itemCode: typeof row.itemCode === 'string' ? row.itemCode : undefined,
     itemName: typeof row.itemName === 'string' ? row.itemName : undefined,
+    warehouseCode: typeof row.warehouseCode === 'string' ? row.warehouseCode : undefined,
     warehouseName: typeof row.warehouseName === 'string' ? row.warehouseName : undefined,
+    locationCode: typeof row.locationCode === 'string' ? row.locationCode : undefined,
     locationName: typeof row.locationName === 'string' ? row.locationName : undefined,
     baseUnit: typeof row.baseUnit === 'string' ? row.baseUnit : undefined,
     movementType: typeof row.movementType === 'string' ? row.movementType : undefined,
@@ -657,18 +720,27 @@ function parseStockCard(payload: Record<string, unknown>): StockSummaryCard | nu
       code: row.code as string,
       name: row.name as string,
       baseUnit: typeof row.baseUnit === 'string' ? row.baseUnit as string : undefined,
-      optionToken: typeof row.optionToken === 'string' ? row.optionToken as string : undefined
+      optionToken: typeof row.optionToken === 'string' ? row.optionToken as string : undefined,
+      warehouseCode: typeof row.warehouseCode === 'string' ? row.warehouseCode as string : undefined,
+      warehouseName: typeof row.warehouseName === 'string' ? row.warehouseName as string : undefined
     }))
   return {
     cardId: payload.cardId,
     revision: payload.revision,
+    messageId,
     cardType: payload.cardType as StockSummaryCard['cardType'],
     status: typeof payload.status === 'string' ? payload.status : (payload.cardType === 'clarification-choice' ? 'CANDIDATES' : undefined),
     outcome: typeof payload.outcome === 'string' ? payload.outcome : undefined,
     reasonCode: typeof payload.reasonCode === 'string' ? payload.reasonCode : undefined,
+    candidateKind: payload.candidateKind === 'LOCATION' ? 'LOCATION' : payload.candidateKind === 'ITEM' ? 'ITEM' : undefined,
+    candidateIntent: payload.candidateIntent === 'ITEM_LOCATIONS' || payload.candidateIntent === 'LOCATION_CONTENTS' || payload.candidateIntent === 'CURRENT_STOCK'
+      ? payload.candidateIntent
+      : undefined,
     itemName: typeof payload.itemName === 'string' ? payload.itemName : undefined,
     baseUnit: typeof payload.baseUnit === 'string' ? payload.baseUnit : undefined,
     queriedAt: typeof payload.queriedAt === 'string' ? payload.queriedAt : undefined,
+    resultCount: typeof payload.resultCount === 'number' ? payload.resultCount : undefined,
+    truncated: payload.truncated === true,
     stocks,
     candidates
   }
@@ -688,8 +760,11 @@ function onEvent(event: AgentSseEvent) {
     return
   }
   if (event.type === 'card.replace') {
-    const card = parseStockCard(event.payload)
-    if (card) cards.value[card.cardId] = card
+    const card = parseStockCard(event.payload, event.messageId)
+    if (card) {
+      ensureAssistantMessage(event.messageId)
+      cards.value[cardIdentity(card.cardId, card.messageId)] = card
+    }
     return
   }
   if (event.type === 'run.failed') {
@@ -726,6 +801,8 @@ async function selectAndSubmitCandidate(card: StockSummaryCard, candidate: Stock
   card.status = 'SUBMITTING'
   card.selectedCandidateCode = candidate.code
   card.selectedCandidateName = candidate.name
+  card.selectedWarehouseCode = candidate.warehouseCode
+  card.selectedWarehouseName = candidate.warehouseName
 
   let accepted = false
 
@@ -750,7 +827,7 @@ async function selectAndSubmitCandidate(card: StockSummaryCard, candidate: Stock
       if (!accepted) {
         accepted = true
         card.status = 'ACCEPTED'
-        addUserMessage(`选择物品“${candidate.name}”`)
+        addUserMessage(candidateSelectionMessage(card, candidate))
       }
       onEvent(evt)
     }
@@ -808,9 +885,7 @@ async function retryCandidateQuery(card: StockSummaryCard) {
   if (isRunning.value || card.status === 'SUBMITTING' || card.status === 'ACCEPTED' || card.status === 'COMPLETED') {
     return
   }
-  const targetQuery = card.selectedCandidateCode
-    ? `查询物品 ${card.selectedCandidateCode}${card.selectedCandidateName ? `（${card.selectedCandidateName}）` : ''}`
-    : (card.selectedCandidateName || card.itemName || '').trim()
+  const targetQuery = candidateTaskMessage(card)
   if (!targetQuery) return
 
   isRunning.value = true
@@ -934,16 +1009,98 @@ function togglePanel() {
 }
 
 function copyCard(card: StockSummaryCard) {
-  const lines = [card.itemName ? `物品：${card.itemName}` : '库存摘要']
-  if (card.queriedAt) lines.push(`查询时间：${card.queriedAt}`)
-  card.stocks.forEach((stock) => lines.push(`数量：${stock.quantity ?? '暂无'}${stock.baseUnit ?? card.baseUnit ? ` ${stock.baseUnit ?? card.baseUnit}` : ''}${stock.warehouseName ? ` · ${stock.warehouseName}` : ''}${stock.locationName ? ` / ${stock.locationName}` : ''}`))
+  const title = card.cardType === 'item-location'
+    ? `物品位置${card.itemName ? `：${card.itemName}` : ''}`
+    : cardSubject(card)
+  const lines = [title]
+  if (card.queriedAt) lines.push(`查询时间：${formatDateTime(card.queriedAt)}`)
+  card.stocks.forEach((stock) => {
+    const place = [stock.warehouseName, stock.locationName].filter(Boolean).join(' / ')
+    const movement = stock.movementType ? `${movementTypeLabel(stock.movementType)}${stock.occurredAt ? `（${formatDateTime(stock.occurredAt)}）` : ''} ` : ''
+    lines.push(`${movement}${stock.itemName ?? ''}${place ? ` · ${place}` : ''} · 数量：${stock.quantity ?? '暂无'}${stock.baseUnit ?? card.baseUnit ? ` ${stock.baseUnit ?? card.baseUnit}` : ''}`)
+  })
+  if (card.truncated) lines.push('结果较多，仅展示部分内容。')
   if (navigator.clipboard) {
-    void navigator.clipboard.writeText(lines.join('\n')).then(() => { runNotice.value = '库存摘要已复制。' }).catch(() => { runNotice.value = '当前环境无法复制库存摘要。' })
+    void navigator.clipboard.writeText(lines.join('\n')).then(() => { runNotice.value = '结果摘要已复制。' }).catch(() => { runNotice.value = '当前环境无法复制结果摘要。' })
   }
 }
 
-function openItem(card: StockSummaryCard) {
-  if (canOpenRoute.value && card.stocks[0]?.itemCode) void router.push({ name: 'warehouse-stock', query: { keyword: card.stocks[0].itemCode } })
+function movementTypeLabel(type: string) {
+  return ({ INBOUND: '入库', OUTBOUND: '出库', TRANSFER_IN: '调拨入库', TRANSFER_OUT: '调拨出库', STOCKTAKE: '盘点' } as Record<string, string>)[type] ?? type
+}
+
+function cardSubject(card: StockSummaryCard) {
+  if (card.cardType === 'clarification-choice') {
+    if (card.candidateKind === 'LOCATION') {
+      return [card.selectedWarehouseName, card.selectedCandidateName].filter(Boolean).join(' / ') || '选择仓库和库位'
+    }
+    return card.selectedCandidateName ? `物品：${card.selectedCandidateName}` : '选择物品'
+  }
+  if (card.cardType === 'movement-list') return '近期库存变化'
+  if (card.cardType === 'location-contents') {
+    const first = card.stocks[0]
+    return [first?.warehouseName, first?.locationName].filter(Boolean).join(' / ') || '库位库存'
+  }
+  if (card.cardType === 'item-location') return card.itemName ? `物品：${card.itemName}` : '物品所在位置'
+  if (card.itemName) return `物品：${card.itemName}`
+  return card.selectedCandidateName ? `物品：${card.selectedCandidateName}` : '库存摘要'
+}
+
+function candidateCardTitle(card: StockSummaryCard) {
+  if (card.candidateKind === 'LOCATION') return '请从下面选择一个仓库和库位'
+  if (card.candidateKind === 'ITEM') return '请从下面选择一个物品'
+  return '候选确认'
+}
+
+function selectedCandidateLabel(card: StockSummaryCard) {
+  if (card.candidateKind === 'LOCATION') {
+    return [card.selectedWarehouseName, card.selectedCandidateName].filter(Boolean).join(' / ') || '已选仓库和库位'
+  }
+  return card.selectedCandidateName || card.itemName || '已选物品'
+}
+
+function candidateTaskMessage(card: StockSummaryCard) {
+  const name = (card.selectedCandidateName || card.itemName || '').trim()
+  const code = (card.selectedCandidateCode || '').trim()
+  if (!name && !code) return ''
+  if (card.candidateIntent === 'ITEM_LOCATIONS') {
+    return `查询物品「${name}」${code ? `（${code}）` : ''}所在的位置`
+  }
+  if (card.candidateIntent === 'LOCATION_CONTENTS') {
+    const warehouse = (card.selectedWarehouseName || card.selectedWarehouseCode || '').trim()
+    return warehouse ? `查询仓库「${warehouse}」的库位「${name || code}」有哪些库存` : `查询库位「${name || code}」有哪些库存`
+  }
+  if (card.candidateIntent === 'CURRENT_STOCK') {
+    return `查询物品「${name}」${code ? `（${code}）` : ''}的当前库存`
+  }
+  return ''
+}
+
+function candidateSelectionMessage(card: StockSummaryCard, candidate: StockCandidate) {
+  if (card.candidateKind === 'LOCATION') {
+    return `选择仓库「${candidate.warehouseName || candidate.warehouseCode || ''}」的库位「${candidate.name}」`
+  }
+  return `选择物品「${candidate.name}」`
+}
+
+function openCard(card: StockSummaryCard) {
+  if (!canOpenRoute.value || !card.stocks.length) return
+  const row = card.stocks[0]
+  if (card.cardType === 'location-contents') {
+    void router.push({ name: 'warehouse-stock', query: { warehouse: row.warehouseCode ?? row.warehouseName ?? '', location: row.locationCode ?? row.locationName ?? '' } })
+    return
+  }
+  if (card.cardType === 'movement-list') {
+    // 变化卡可能包含多个物品/位置；没有服务端确认的统一筛选条件时不得擅自缩小到第一行。
+    void router.push({ name: 'warehouse-records', query: {} })
+    return
+  }
+  if (row.itemCode) void router.push({ name: 'warehouse-stock', query: { keyword: row.itemCode } })
+}
+
+function openOperations() {
+  if (!canOpenOperations.value) return
+  void router.push({ name: 'warehouse-operations' })
 }
 
 async function initialise() {
@@ -1131,16 +1288,17 @@ onBeforeUnmount(() => {
       <section class="agent-messages" aria-live="polite" data-testid="agent-messages" :style="{ minHeight: `${MIN_MESSAGES_HEIGHT}px` }">
         <p v-if="loadingHistory" class="agent-muted message-empty">正在打开对话…</p>
         <p v-else-if="!messages.length" class="agent-muted message-empty">可以问我某个物品当前在哪些库位有库存。</p>
-        <article
-          v-for="message in messages"
-          :key="message.messageId"
-          class="agent-message"
-          :class="`agent-message--${message.role.toLowerCase()}`"
-        >
-          <span class="message-role">{{ messageLabel(message) }}</span>
-          <p v-if="message.role === 'USER'">{{ message.content }}</p>
-          <div v-else class="agent-message-content">
-            <template v-for="(block, bIdx) in parseMarkdownBlocks(message.content)" :key="bIdx">
+        <template v-for="item in conversationItems" :key="item.key">
+          <article
+            v-if="item.kind === 'message'"
+            class="agent-message"
+            :class="`agent-message--${item.message.role.toLowerCase()}`"
+            :data-message-id="item.message.messageId || undefined"
+          >
+            <span class="message-role">{{ messageLabel(item.message) }}</span>
+            <p v-if="item.message.role === 'USER'">{{ item.message.content }}</p>
+            <div v-else class="agent-message-content">
+              <template v-for="(block, bIdx) in parseMarkdownBlocks(item.message.content)" :key="bIdx">
               <div v-if="block.type === 'table'" class="agent-table-wrapper">
                 <table class="agent-rendered-table">
                   <thead>
@@ -1183,71 +1341,78 @@ onBeforeUnmount(() => {
                   <span v-else>{{ token.text }}</span>
                 </template>
               </p>
-            </template>
-          </div>
-        </article>
-        <article v-for="card in cardList" :key="card.cardId" class="stock-card" data-testid="stock-summary-card">
-          <div class="stock-card-heading">
-            <div>
-              <span class="card-kicker">{{ card.cardType === 'movement-list' ? '近期库存变化' : (card.status === 'CANDIDATES' || card.status === 'SUBMITTING' || (!card.status && card.cardType === 'clarification-choice')) ? '请从下面选择一个物品' : (card.cardType === 'clarification-choice' ? '候选确认' : '库存摘要') }}</span>
-              <strong>{{ card.itemName ?? card.stocks[0]?.itemName ?? (card.selectedCandidateName ? card.selectedCandidateName : '物品库存') }}</strong>
+              </template>
             </div>
-            <span v-if="card.queriedAt" class="card-time">{{ card.queriedAt }}</span>
-          </div>
-          <div v-if="card.cardType === 'clarification-choice' || card.status === 'CANDIDATES' || card.candidates?.length" class="candidate-section">
-            <div v-if="card.status === 'CANDIDATES' || card.status === 'SUBMITTING' || !card.status" class="candidate-list">
-              <div class="candidate-header">
-                <span class="candidate-hint">请点击选择一个物品：</span>
-                <button type="button" class="text-button candidate-switch-btn" :disabled="isRunning" @click="confirmSwitchToFreeText">
-                  改为直接提问
+          </article>
+          <article v-else class="stock-card" data-testid="stock-summary-card" :data-message-id="item.card.messageId || undefined">
+            <div class="stock-card-heading">
+              <div>
+                <span class="card-kicker">{{ item.card.cardType === 'movement-list' ? '近期库存变化' : item.card.cardType === 'item-location' ? '物品所在位置' : item.card.cardType === 'location-contents' ? '库位库存' : item.card.cardType === 'clarification-choice' ? candidateCardTitle(item.card) : '库存摘要' }}</span>
+                <strong>{{ cardSubject(item.card) }}</strong>
+              </div>
+              <span v-if="item.card.queriedAt" class="card-time">{{ formatDateTime(item.card.queriedAt) }}</span>
+            </div>
+            <div v-if="item.card.cardType === 'clarification-choice' || item.card.status === 'CANDIDATES' || item.card.candidates?.length" class="candidate-section">
+              <div v-if="item.card.status === 'CANDIDATES' || item.card.status === 'SUBMITTING' || !item.card.status" class="candidate-list">
+                <div class="candidate-header">
+                  <span class="candidate-hint">{{ item.card.candidateKind === 'LOCATION' ? '请点击选择一个仓库和库位：' : '请点击选择一个物品：' }}</span>
+                  <button type="button" class="text-button candidate-switch-btn" :disabled="isRunning" @click="confirmSwitchToFreeText">
+                    改为直接提问
+                  </button>
+                </div>
+                <button
+                  v-for="candidate in item.card.candidates"
+                  :key="`${candidate.code}-${candidate.name}`"
+                  type="button"
+                  class="candidate-button"
+                  :disabled="isRunning || item.card.status === 'SUBMITTING'"
+                  @click="selectAndSubmitCandidate(item.card, candidate)"
+                >
+                  <strong>{{ candidate.name }}</strong><small>{{ candidate.code }}<span v-if="candidate.warehouseName"> · {{ candidate.warehouseName }}</span><span v-else-if="candidate.baseUnit"> · {{ candidate.baseUnit }}</span></small>
                 </button>
               </div>
-              <button
-                v-for="candidate in card.candidates"
-                :key="`${candidate.code}-${candidate.name}`"
-                type="button"
-                class="candidate-button"
-                :disabled="isRunning || card.status === 'SUBMITTING'"
-                @click="selectAndSubmitCandidate(card, candidate)"
-              >
-                <strong>{{ candidate.name }}</strong><small>{{ candidate.code }}<span v-if="candidate.baseUnit"> · {{ candidate.baseUnit }}</span></small>
-              </button>
+              <div v-else-if="item.card.status === 'COMPLETED' || item.card.status === 'ACCEPTED'" class="candidate-status candidate-status--completed">
+                <span>已选择：{{ selectedCandidateLabel(item.card) }}</span>
+              </div>
+              <div v-else-if="item.card.status === 'FAILED'" class="candidate-status candidate-status--failed">
+                <span>已选择：{{ selectedCandidateLabel(item.card) }}（查询未完成）</span>
+                <button
+                  v-if="item.card.selectedCandidateName || item.card.selectedCandidateCode || item.card.itemName"
+                  type="button"
+                  class="text-button candidate-retry-button"
+                  :disabled="isRunning"
+                  @click="retryCandidateQuery(item.card)"
+                >
+                  重新查询
+                </button>
+              </div>
+              <div v-else-if="item.card.status === 'EXPIRED'" class="candidate-status candidate-status--expired">
+                <span>候选已失效，请重新查询。</span>
+              </div>
             </div>
-            <div v-else-if="card.status === 'COMPLETED' || card.status === 'ACCEPTED'" class="candidate-status candidate-status--completed">
-              <span>已选择：{{ card.selectedCandidateName || card.itemName || '已选物品' }}</span>
+            <div v-if="!item.card.stocks.length && item.card.cardType !== 'clarification-choice' && item.card.status !== 'CANDIDATES' && !item.card.candidates?.length" class="agent-muted">{{ cardEmptyText(item.card) }}</div>
+            <div v-for="(stock, index) in item.card.stocks" :key="`${item.card.cardId}-${index}`" class="stock-row">
+              <span class="stock-item">
+                <strong>{{ stock.itemName || '未命名物品' }}</strong>
+                <small v-if="stock.itemCode">{{ stock.itemCode }}</small>
+              </span>
+              <span v-if="stock.warehouseName || stock.locationName" class="stock-place">{{ [stock.warehouseName, stock.locationName].filter(Boolean).join(' / ') }}</span>
+              <span v-if="stock.movementType || stock.occurredAt" class="stock-movement-meta">{{ stock.movementType ? movementTypeLabel(stock.movementType) : '' }}<span v-if="stock.occurredAt"> · {{ formatDateTime(stock.occurredAt) }}</span></span>
+              <span class="stock-quantity"><span>{{ stock.quantity ?? '暂无数量' }}</span><small v-if="stock.baseUnit ?? item.card.baseUnit">{{ stock.baseUnit ?? item.card.baseUnit }}</small></span>
             </div>
-            <div v-else-if="card.status === 'FAILED'" class="candidate-status candidate-status--failed">
-              <span>已选择：{{ card.selectedCandidateName || card.itemName || '已选物品' }}（查询未完成）</span>
-              <button
-                v-if="card.selectedCandidateName || card.selectedCandidateCode || card.itemName"
-                type="button"
-                class="text-button candidate-retry-button"
-                :disabled="isRunning"
-                @click="retryCandidateQuery(card)"
-              >
-                重新查询
-              </button>
+            <div class="stock-card-actions">
+              <button v-if="canCopy" type="button" class="text-button" @click="copyCard(item.card)"><el-icon><CopyDocument /></el-icon>复制摘要</button>
+              <button v-if="canOpenRoute && item.card.stocks[0]" type="button" class="text-button" @click="openCard(item.card)"><el-icon><TopRight /></el-icon>{{ item.card.cardType === 'movement-list' || item.card.cardType === 'location-contents' ? '查看库存' : '查看物品' }}</button>
+              <button v-if="canOpenOperations && item.card.cardType !== 'movement-list' && item.card.stocks.length" type="button" class="text-button" @click="openOperations"><el-icon><TopRight /></el-icon>办理库存操作</button>
             </div>
-            <div v-else-if="card.status === 'EXPIRED'" class="candidate-status candidate-status--expired">
-              <span>候选已失效，请重新查询。</span>
-            </div>
-          </div>
-          <div v-if="!card.stocks.length && card.cardType !== 'clarification-choice' && card.status !== 'CANDIDATES' && !card.candidates?.length" class="agent-muted">{{ cardEmptyText(card) }}</div>
-          <div v-for="(stock, index) in card.stocks" :key="`${card.cardId}-${index}`" class="stock-row">
-            <span v-if="stock.warehouseName || stock.locationName" class="stock-place">{{ [stock.warehouseName, stock.locationName].filter(Boolean).join(' / ') }}</span>
-            <span class="stock-quantity"><span>{{ stock.quantity ?? '暂无数量' }}</span><small v-if="stock.baseUnit ?? card.baseUnit">{{ stock.baseUnit ?? card.baseUnit }}</small></span>
-          </div>
-          <div class="stock-card-actions">
-            <button v-if="canCopy" type="button" class="text-button" @click="copyCard(card)"><el-icon><CopyDocument /></el-icon>复制摘要</button>
-            <button v-if="canOpenRoute && card.stocks[0]?.itemCode" type="button" class="text-button" @click="openItem(card)"><el-icon><TopRight /></el-icon>查看物品</button>
-          </div>
-        </article>
+          </article>
+        </template>
       </section>
 
       <p v-if="runNotice" class="agent-notice" :class="{ 'agent-notice--error': runState === 'failed' }">{{ runNotice }}</p>
       <div class="agent-composer">
         <div v-if="hasActiveCandidates && draft.trim()" class="composer-switch-banner">
-          <span>当前有待选物品。若想直接问新问题，请确认：</span>
+          <span>{{ Object.values(cards).some((card) => card.candidateKind === 'LOCATION' && (card.status === 'CANDIDATES' || !card.status)) ? '当前有待确认选项。若想直接问新问题，请确认：' : '当前有待选物品。若想直接问新问题，请确认：' }}</span>
           <button type="button" class="text-button" :disabled="isRunning" @click="confirmSwitchToFreeText">改为直接提问</button>
         </div>
         <textarea v-model="draft" rows="3" maxlength="4000" :disabled="isRunning" aria-label="输入问题" placeholder="例如：物品 A100 现在有哪些库存？" @input="onDraftInput" @keydown.enter.exact.prevent="onEnterPress" />
@@ -1625,9 +1790,30 @@ onBeforeUnmount(() => {
   padding: 7px 0;
   border-top: 1px solid var(--ui-border);
 }
+.stock-item {
+  display: inline-flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--ui-text-strong);
+}
+.stock-item strong {
+  overflow-wrap: anywhere;
+  font-size: .82rem;
+}
+.stock-item small {
+  color: var(--ui-text-muted);
+  font-size: .72rem;
+}
 .stock-place {
   color: var(--ui-text-muted);
   font-size: .8rem;
+}
+.stock-movement-meta {
+  margin-left: auto;
+  color: var(--ui-text-muted);
+  font-size: .75rem;
+  text-align: right;
 }
 .stock-quantity {
   display: inline-flex;

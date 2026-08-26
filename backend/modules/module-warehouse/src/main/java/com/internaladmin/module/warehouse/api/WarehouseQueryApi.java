@@ -17,6 +17,15 @@ public interface WarehouseQueryApi {
                                                String locationKeyword, int limit,
                                                WarehouseAccessScopeDTO scope);
 
+    /** 按物品业务关键词查询其所在仓库与库位。 */
+    WarehouseStockTaskResult queryItemLocationsTask(String itemKeyword, int limit,
+                                                    WarehouseAccessScopeDTO scope);
+
+    /** 按仓库/库位业务关键词查询位置内的库存内容。 */
+    WarehouseLocationTaskResult queryLocationContentsTask(String warehouseKeyword,
+                                                          String locationKeyword, int limit,
+                                                          WarehouseAccessScopeDTO scope);
+
     /** 以真实时间范围查询当前可见的近期库存变化。 */
     WarehouseMovementTaskResult queryRecentMovementTask(int recentDays, String itemKeyword,
                                                         String warehouseKeyword, String locationKeyword,

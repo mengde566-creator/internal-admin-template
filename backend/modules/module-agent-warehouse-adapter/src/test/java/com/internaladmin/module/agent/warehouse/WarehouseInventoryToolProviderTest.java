@@ -8,6 +8,8 @@ import com.internaladmin.module.iam.api.IamActorDTO;
 import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.iam.api.ScopeMode;
 import com.internaladmin.module.warehouse.api.WarehouseAccessScopeDTO;
+import com.internaladmin.module.warehouse.api.WarehouseLocationCandidate;
+import com.internaladmin.module.warehouse.api.WarehouseLocationTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseMovementTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseMovementTaskRow;
 import com.internaladmin.module.warehouse.api.WarehouseQueryApi;
@@ -36,7 +38,7 @@ class WarehouseInventoryToolProviderTest {
     void registersOnlyBusinessKeywordToolsWithStrictSchemas() {
         WarehouseInventoryToolProvider provider = provider(mock(WarehouseQueryApi.class), mock(IamActorApi.class));
         ToolCallback[] callbacks = provider.getToolCallbacks();
-        assertEquals(2, callbacks.length);
+        assertEquals(4, callbacks.length);
         for (ToolCallback callback : callbacks) {
             String schema = callback.getToolDefinition().inputSchema();
             assertTrue(schema.contains("additionalProperties"));
@@ -47,6 +49,8 @@ class WarehouseInventoryToolProviderTest {
         }
         assertTrue(callbacks[0].getToolDefinition().inputSchema().contains("itemKeyword"));
         assertTrue(callbacks[1].getToolDefinition().inputSchema().contains("recentDays"));
+        assertTrue(callbacks[2].getToolDefinition().inputSchema().contains("itemKeyword"));
+        assertTrue(callbacks[3].getToolDefinition().inputSchema().contains("locationKeyword"));
         assertTrue(callbacks[0].getToolDefinition().description().contains("查看当前库存"));
         assertFalse(callbacks[0].getToolDefinition().description().matches(".*(内部ID|有界|limit|兜底|Tool|system|developer).*"));
         assertFalse(callbacks[1].getToolDefinition().description().matches(".*(内部ID|有界|limit|兜底|Tool|system|developer).*"));
@@ -105,7 +109,48 @@ class WarehouseInventoryToolProviderTest {
                 "{\"itemKeyword\":\"轴承\"}", new ToolContext(Map.of("agent.execution", context(card))));
         assertTrue(card.get().contains("\"cardType\":\"clarification-choice\""));
         assertTrue(card.get().contains("\"options\""));
+        assertTrue(card.get().contains("\"candidateIntent\":\"CURRENT_STOCK\""));
         assertFalse(output.contains("optionToken"), "模型工具结果不应携带浏览器候选凭据");
+    }
+
+    @Test
+    void itemLocationClarificationCardKeepsItsTaskIntent() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryItemLocationsTask(eq("轴承"), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("ITEM-A", "轴承A", "件")), java.time.Instant.now(), false));
+        AtomicReference<String> card = new AtomicReference<>();
+        provider(warehouse, iam).getToolCallbacks()[2].call(
+                "{\"itemKeyword\":\"轴承\"}", new ToolContext(Map.of("agent.execution", context(card))));
+        assertNotNull(card.get());
+        assertTrue(card.get().contains("\"candidateIntent\":\"ITEM_LOCATIONS\""));
+    }
+
+    @Test
+    void itemLocationsAndLocationContentsRenderBusinessCardsWithoutIds() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryItemLocationsTask(eq("深沟球轴承"), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("STOCK_RESULT", List.of(
+                        new WarehouseStockTaskRow(11L, "ITEM-6204", "深沟球轴承", "件", 21L, "WH-01", "一号仓库", 31L, "LOC-01", "一号库位", "12.0000", 2)), List.of(), java.time.Instant.now()));
+        when(warehouse.queryLocationContentsTask(eq("一号仓库"), eq("一号库位"), eq(20), any()))
+                .thenReturn(new WarehouseLocationTaskResult("LOCATION_RESULT", List.of(
+                        new WarehouseStockTaskRow(11L, "ITEM-6204", "深沟球轴承", "件", 21L, "WH-01", "一号仓库", 31L, "LOC-01", "一号库位", "12.0000", 2)), List.of(), java.time.Instant.now(), false));
+        WarehouseInventoryToolProvider provider = provider(warehouse, iam);
+        ToolCallback[] callbacks = provider.getToolCallbacks();
+        AtomicReference<String> locationCard = new AtomicReference<>();
+        AtomicReference<String> contentsCard = new AtomicReference<>();
+        String locations = callbacks[2].call("{\"itemKeyword\":\"深沟球轴承\"}", new ToolContext(Map.of("agent.execution", context(locationCard))));
+        String contents = callbacks[3].call("{\"warehouseKeyword\":\"一号仓库\",\"locationKeyword\":\"一号库位\"}", new ToolContext(Map.of("agent.execution", context(contentsCard))));
+        assertTrue(locationCard.get().contains("item-location"));
+        assertTrue(contentsCard.get().contains("location-contents"));
+        assertFalse(locations.contains("itemId"));
+        assertFalse(contents.contains("locationId"));
+        verify(warehouse).queryItemLocationsTask(eq("深沟球轴承"), eq(20), any());
+        verify(warehouse).queryLocationContentsTask(eq("一号仓库"), eq("一号库位"), eq(20), any());
     }
 
     private WarehouseInventoryToolProvider provider(WarehouseQueryApi warehouse, IamActorApi iam) {
