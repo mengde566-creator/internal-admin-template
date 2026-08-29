@@ -1,6 +1,8 @@
 package com.internaladmin.module.agent.warehouse;
 
 import com.internaladmin.module.agent.api.AgentToolProvider;
+import com.internaladmin.module.agent.api.AgentErrorCode;
+import com.internaladmin.module.agent.api.AgentToolException;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.iam.api.IamActorApi;
@@ -16,6 +18,9 @@ import com.internaladmin.module.warehouse.api.WarehouseQueryApi;
 import com.internaladmin.module.warehouse.api.WarehouseStockCandidate;
 import com.internaladmin.module.warehouse.api.WarehouseStockTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseStockTaskRow;
+import com.internaladmin.platform.web.response.ApiResponse;
+import com.internaladmin.platform.kernel.error.BusinessException;
+import org.springframework.dao.DataAccessException;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.DefaultToolDefinition;
@@ -27,8 +32,13 @@ import tools.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.time.Instant;
+import java.util.function.Function;
+import java.util.concurrent.TimeoutException;
+import java.text.Normalizer;
 
 /** 模型只能提交业务关键词；身份与部门范围由服务端在每次调用前重解析。 */
 @Component
@@ -80,7 +90,7 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
 
         AgentExecutionContext context(ToolContext toolContext) {
             if (toolContext == null || !(toolContext.getContext().get(CONTEXT_KEY) instanceof AgentExecutionContext value)) {
-                throw new IllegalStateException("缺少可信运行上下文");
+                throw new AgentToolException(AgentErrorCode.TOOL_FORBIDDEN, "缺少可信运行上下文");
             }
             return value;
         }
@@ -88,7 +98,7 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
         IamActorDTO actor(AgentExecutionContext execution) {
             IamActorDTO actor = iam.resolve(execution.actor().userId());
             if (actor == null || !actor.getAuthorities().contains(PermissionCodes.WAREHOUSE_READ)) {
-                throw new IllegalStateException("缺少仓储查询权限");
+                throw new AgentToolException(AgentErrorCode.TOOL_FORBIDDEN, "缺少仓储查询权限");
             }
             return actor;
         }
@@ -124,9 +134,77 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
             var names = new java.util.HashSet<String>();
             names.addAll(root.propertyNames());
             if (!allowed.containsAll(names)) throw new IllegalArgumentException("工具参数包含不支持的字段");
-            if (required != null && (root.get(required) == null || root.get(required).isNull())) {
+            if (required != null && (root.get(required) == null || root.get(required).isNull()
+                    || (root.get(required).isTextual() && root.get(required).asText().isBlank()))) {
                 throw new IllegalArgumentException(required + "不能为空");
             }
+        }
+
+        String success(AgentExecutionContext execution, String message, Object data) throws Exception {
+            String result = json.writeValueAsString(ApiResponse.ok(message, data));
+            execution.recordToolSuccess(toolName(), result);
+            return result;
+        }
+
+        String success(AgentExecutionContext execution, String message, Object data, String arguments) throws Exception {
+            String result = json.writeValueAsString(ApiResponse.ok(message, data));
+            execution.recordToolSuccess(toolName(), arguments, result);
+            return result;
+        }
+
+        String failure(AgentExecutionContext execution, Throwable error, long started) {
+            return failure(execution, error, started, null);
+        }
+
+        String failure(AgentExecutionContext execution, Throwable error, long started, String arguments) {
+            AgentErrorCode code = errorCode(error);
+            try {
+                String result = json.writeValueAsString(ApiResponse.error(code, code.getMessage()));
+                execution.recordToolFailure(toolName(), arguments, code.getCode(), result);
+                record(execution, "FAILED", started, code.getCode());
+                return result;
+            } catch (Exception serializationFailure) {
+                throw new IllegalStateException("工具结果序列化失败", serializationFailure);
+            }
+        }
+
+        abstract String toolName();
+
+        AgentErrorCode errorCode(Throwable error) {
+            Throwable current = error;
+            while (current != null) {
+                if (current instanceof AgentToolException tool) return tool.getErrorCode();
+                if (current instanceof TimeoutException) return AgentErrorCode.TOOL_TIMEOUT;
+                if (current instanceof DataAccessException || current instanceof java.sql.SQLException) {
+                    return AgentErrorCode.TOOL_DATABASE_UNAVAILABLE;
+                }
+                if (current instanceof BusinessException business) {
+                    return switch (business.getErrorCode().getCode()) {
+                        case "FORBIDDEN" -> AgentErrorCode.TOOL_FORBIDDEN;
+                        case "PARAM_ERROR" -> AgentErrorCode.PARAMETER_INVALID;
+                        case "BUSINESS_REJECTED", "CONFLICT" -> AgentErrorCode.BUSINESS_REJECTED;
+                        case "NOT_FOUND" -> AgentErrorCode.CANDIDATE_INVALID;
+                        default -> AgentErrorCode.TOOL_EXECUTION_FAILED;
+                    };
+                }
+                current = current.getCause();
+            }
+            for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+                if (cause instanceof IllegalArgumentException) return AgentErrorCode.PARAMETER_INVALID;
+            }
+            return AgentErrorCode.TOOL_EXECUTION_FAILED;
+        }
+
+        String outcome(String status) {
+            return switch (status) {
+                case "STOCK_RESULT", "LOCATION_RESULT", "RESULT" -> "ANSWERED";
+                case "CANDIDATES" -> "CLARIFICATION";
+                default -> "NO_DATA";
+            };
+        }
+
+        String normalizedArguments(Map<String, Object> arguments) throws Exception {
+            return json.writeValueAsString(arguments);
         }
 
         Map<String, Object> stockRow(WarehouseStockTaskRow row) {
@@ -144,7 +222,7 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
             safe.put("warehouseCode", row.warehouseCode()); safe.put("warehouseName", row.warehouseName());
             safe.put("locationCode", row.locationCode()); safe.put("locationName", row.locationName());
             safe.put("movementType", row.movementType()); safe.put("quantity", row.deltaQuantity());
-            safe.put("occurredAt", row.occurredAt());
+            safe.put("occurredAt", row.occurredAt() == null ? null : row.occurredAt().toString());
             return safe;
         }
 
@@ -185,6 +263,69 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
         }
     }
 
+    /** 候选复核只使用候选自身的完整业务值，不根据用户话术猜测匹配方式。 */
+    private WarehouseStockTaskResult requeryUniqueCandidate(String originalMessage,
+                                                             WarehouseStockTaskResult initial,
+                                                             Function<String, WarehouseStockTaskResult> query) {
+        if (!"CANDIDATES".equals(initial.status())) return initial;
+        WarehouseStockCandidate candidate = uniqueCandidateInMessage(originalMessage, initial.candidates());
+        return candidate == null ? initial : query.apply(candidate.code());
+    }
+
+    private WarehouseStockCandidate uniqueCandidateInMessage(String originalMessage,
+                                                              List<WarehouseStockCandidate> candidates) {
+        if (originalMessage == null || originalMessage.isBlank()) return null;
+        List<WarehouseStockCandidate> matches = candidates.stream()
+                .filter(candidate -> appearsExactlyOnce(originalMessage, candidate.code())
+                        || appearsExactlyOnce(originalMessage, candidate.name()))
+                .toList();
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    private boolean appearsExactlyOnce(String message, String candidate) {
+        if (candidate == null || candidate.isBlank()) return false;
+        String source = normalizeEvidence(message);
+        String target = normalizeEvidence(candidate);
+        boolean codeLike = target.chars().allMatch(value -> value < 128
+                && (Character.isLetterOrDigit(value) || value == '-' || value == '_'));
+        int matches = 0;
+        int from = 0;
+        while (from < source.length()) {
+            int index = source.indexOf(target, from);
+            if (index < 0) break;
+            int end = index + target.length();
+            if (!codeLike || isBusinessValueBoundary(source, index, end)) matches++;
+            from = end;
+        }
+        return matches == 1;
+    }
+
+    private boolean isBusinessValueBoundary(String source, int start, int end) {
+        return (start == 0 || !isBusinessValueChar(source.charAt(start - 1)))
+                && (end == source.length() || !isBusinessValueChar(source.charAt(end)));
+    }
+
+    private boolean isBusinessValueChar(char value) {
+        return value < 128 && (Character.isLetterOrDigit(value) || value == '-' || value == '_');
+    }
+
+    private String normalizeEvidence(String value) {
+        return Normalizer.normalize(value, Normalizer.Form.NFKC)
+                .replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
+    public record StockToolData(String outcome, int resultCount, boolean truncated, Instant queriedAt,
+                                List<Map<String, Object>> rows, List<Map<String, Object>> candidates) {
+    }
+
+    public record LocationToolData(String outcome, int resultCount, boolean truncated, Instant queriedAt,
+                                   List<Map<String, Object>> rows, List<Map<String, Object>> candidates) {
+    }
+
+    public record MovementToolData(String outcome, int resultCount, boolean truncated, Instant queriedAt,
+                                   List<Map<String, Object>> rows) {
+    }
+
     private final class CurrentStockCallback extends BaseCallback {
         CurrentStockCallback() {
             super(CURRENT_STOCK_TOOL, "帮助用户查看当前库存；可以按物品、仓库或库位名称来查，也可以先展示一部分库存供用户选择",
@@ -192,15 +333,32 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
         }
 
         @Override
+        String toolName() { return CURRENT_STOCK_TOOL; }
+
+        @Override
         public String call(String toolInput, ToolContext toolContext) {
             long started = System.nanoTime();
             AgentExecutionContext execution = context(toolContext);
+            String normalized = null;
             try {
                 JsonNode root = json.readTree(toolInput);
                 strictObject(root, Set.of("itemKeyword", "warehouseKeyword", "locationKeyword", "limit"), null);
-                WarehouseStockTaskResult result = warehouse.queryCurrentStock(value(root, "itemKeyword"),
-                        value(root, "warehouseKeyword"), value(root, "locationKeyword"),
-                        integer(root, "limit", 20, 1, 20), scope(actor(execution)));
+                String itemKeyword = value(root, "itemKeyword");
+                String warehouseKeyword = value(root, "warehouseKeyword");
+                String locationKeyword = value(root, "locationKeyword");
+                int limit = integer(root, "limit", 20, 1, 20);
+                Map<String, Object> args = new LinkedHashMap<>();
+                args.put("itemKeyword", itemKeyword);
+                args.put("warehouseKeyword", warehouseKeyword);
+                args.put("locationKeyword", locationKeyword);
+                args.put("limit", limit);
+                normalized = normalizedArguments(args);
+                WarehouseAccessScopeDTO accessScope = scope(actor(execution));
+                WarehouseStockTaskResult result = warehouse.queryCurrentStock(itemKeyword,
+                        warehouseKeyword, locationKeyword, limit, accessScope);
+                result = requeryUniqueCandidate(execution.message(), result,
+                        candidateCode -> warehouse.queryCurrentStock(candidateCode, warehouseKeyword,
+                                locationKeyword, limit, scope(actor(execution))));
                 List<Map<String, Object>> rows = result.rows().stream().map(this::stockRow).toList();
                 List<Map<String, Object>> candidates = new ArrayList<>();
                 List<Map<String, Object>> modelCandidates = new ArrayList<>();
@@ -217,16 +375,12 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                     modelOption.put("baseUnit", candidate.baseUnit());
                     modelCandidates.add(modelOption);
                 }
-                Map<String, Object> payload = new LinkedHashMap<>();
-                payload.put("outcome", result.outcome()); payload.put("reasonCode", result.reasonCode());
-                payload.put("schemaVersion", result.schemaVersion()); payload.put("resultCount", result.resultCount());
-                payload.put("truncated", result.truncated()); payload.put("rows", rows); payload.put("candidates", modelCandidates);
-                payload.put("queriedAt", result.queriedAt());
-                String output = json.writeValueAsString(payload);
+                StockToolData payload = new StockToolData(outcome(result.status()), result.resultCount(),
+                        result.truncated(), result.queriedAt(), rows, modelCandidates);
                 Map<String, Object> card = new LinkedHashMap<>();
                 card.put("cardId", execution.taskId() == null ? "stock-summary" : execution.taskId());
                 card.put("revision", execution.taskRevision());
-                boolean ambiguous = "AMBIGUOUS".equals(result.outcome());
+                boolean ambiguous = "CLARIFICATION".equals(payload.outcome());
                 card.put("cardType", ambiguous ? "clarification-choice" : "stock-summary");
                 if (ambiguous) {
                     card.put("clarificationId", execution.taskId());
@@ -237,23 +391,23 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                     card.put("options", candidates);
                     card.put("allowFreeText", false);
                 }
-                card.put("schemaVersion", result.schemaVersion());
                 card.put("resultCount", result.resultCount());
                 card.put("truncated", result.truncated());
-                card.put("outcome", result.outcome());
-                card.put("reasonCode", result.reasonCode());
+                card.put("status", result.status());
+                card.put("outcome", payload.outcome());
                 card.put("queriedAt", result.queriedAt());
                 card.put("rows", rows);
                 execution.toolCardEmitter().accept(json.writeValueAsString(card));
                 execution.markToolOutputProduced();
                 record(execution, "SUCCEEDED", started, null);
-                return output;
+                return success(execution, "库存查询完成", payload, normalized);
             } catch (RuntimeException ex) {
-                record(execution, "FAILED", started, "TOOL_FAILED"); throw ex;
+                return failure(execution, ex, started, normalized);
             } catch (Exception ex) {
-                record(execution, "FAILED", started, "TOOL_FAILED"); throw new IllegalStateException("库存查询失败", ex);
+                return failure(execution, ex, started, normalized);
             }
         }
+
     }
 
     private final class ItemLocationsCallback extends BaseCallback {
@@ -263,28 +417,36 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
         }
 
         @Override
+        String toolName() { return ITEM_LOCATIONS_TOOL; }
+
+        @Override
         public String call(String toolInput, ToolContext toolContext) {
             long started = System.nanoTime();
             AgentExecutionContext execution = context(toolContext);
+            String normalized = null;
             try {
                 JsonNode root = json.readTree(toolInput);
                 strictObject(root, Set.of("itemKeyword", "limit"), "itemKeyword");
                 String keyword = value(root, "itemKeyword");
                 if (keyword == null || keyword.isBlank()) throw new IllegalArgumentException("itemKeyword不能为空");
-                WarehouseStockTaskResult result = warehouse.queryItemLocationsTask(keyword,
-                        integer(root, "limit", 20, 1, 20), scope(actor(execution)));
+                int limit = integer(root, "limit", 20, 1, 20);
+                Map<String, Object> args = new LinkedHashMap<>();
+                args.put("itemKeyword", keyword);
+                args.put("limit", limit);
+                normalized = normalizedArguments(args);
+                WarehouseStockTaskResult result = warehouse.queryItemLocationsTask(keyword, limit, scope(actor(execution)));
+                result = requeryUniqueCandidate(execution.message(), result,
+                        candidateCode -> warehouse.queryItemLocationsTask(candidateCode,
+                                limit, scope(actor(execution))));
                 List<Map<String, Object>> rows = stockRows(result.rows());
                 List<Map<String, Object>> modelOptions = modelCandidates(result.candidates());
                 List<Map<String, Object>> cardOptions = cardCandidates(result.candidates());
-                Map<String, Object> output = new LinkedHashMap<>();
-                output.put("outcome", result.outcome()); output.put("reasonCode", result.reasonCode());
-                output.put("schemaVersion", result.schemaVersion()); output.put("resultCount", result.resultCount());
-                output.put("truncated", result.truncated()); output.put("rows", rows); output.put("candidates", modelOptions);
-                output.put("queriedAt", result.queriedAt());
+                LocationToolData output = new LocationToolData(outcome(result.status()), result.resultCount(),
+                        result.truncated(), result.queriedAt(), rows, modelOptions);
                 Map<String, Object> card = new LinkedHashMap<>();
                 card.put("cardId", execution.taskId() == null ? "item-location" : execution.taskId());
                 card.put("revision", execution.taskRevision());
-                boolean ambiguous = "AMBIGUOUS".equals(result.outcome());
+                boolean ambiguous = "CLARIFICATION".equals(output.outcome());
                 card.put("cardType", ambiguous ? "clarification-choice" : "item-location");
                 if (ambiguous) {
                     card.put("clarificationId", execution.taskId()); card.put("question", "请从下面选择一个物品");
@@ -292,17 +454,16 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                     card.put("candidateIntent", "ITEM_LOCATIONS");
                     card.put("selectionMode", "SINGLE"); card.put("options", cardOptions); card.put("allowFreeText", false);
                 }
-                card.put("schemaVersion", result.schemaVersion()); card.put("resultCount", result.resultCount());
-                card.put("truncated", result.truncated()); card.put("outcome", result.outcome());
-                card.put("reasonCode", result.reasonCode()); card.put("queriedAt", result.queriedAt()); card.put("rows", rows);
-                String outputJson = json.writeValueAsString(output);
+                card.put("resultCount", result.resultCount());
+                card.put("truncated", result.truncated()); card.put("status", result.status()); card.put("outcome", output.outcome());
+                card.put("queriedAt", result.queriedAt()); card.put("rows", rows);
                 execution.toolCardEmitter().accept(json.writeValueAsString(card));
                 execution.markToolOutputProduced(); record(execution, "SUCCEEDED", started, null);
-                return outputJson;
+                return success(execution, "物品位置查询完成", output, normalized);
             } catch (RuntimeException ex) {
-                record(execution, "FAILED", started, "TOOL_FAILED"); throw ex;
+                return failure(execution, ex, started, normalized);
             } catch (Exception ex) {
-                record(execution, "FAILED", started, "TOOL_FAILED"); throw new IllegalStateException("物品位置查询失败", ex);
+                return failure(execution, ex, started, normalized);
             }
         }
     }
@@ -314,9 +475,13 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
         }
 
         @Override
+        String toolName() { return LOCATION_CONTENTS_TOOL; }
+
+        @Override
         public String call(String toolInput, ToolContext toolContext) {
             long started = System.nanoTime();
             AgentExecutionContext execution = context(toolContext);
+            String normalized = null;
             try {
                 JsonNode root = json.readTree(toolInput);
                 strictObject(root, Set.of("warehouseKeyword", "locationKeyword", "limit"), null);
@@ -325,8 +490,14 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                 if ((warehouseKeyword == null || warehouseKeyword.isBlank()) && (locationKeyword == null || locationKeyword.isBlank())) {
                     throw new IllegalArgumentException("请提供仓库或库位名称");
                 }
+                int limit = integer(root, "limit", 20, 1, 20);
+                Map<String, Object> args = new LinkedHashMap<>();
+                args.put("warehouseKeyword", warehouseKeyword);
+                args.put("locationKeyword", locationKeyword);
+                args.put("limit", limit);
+                normalized = normalizedArguments(args);
                 WarehouseLocationTaskResult result = warehouse.queryLocationContentsTask(warehouseKeyword, locationKeyword,
-                        integer(root, "limit", 20, 1, 20), scope(actor(execution)));
+                        limit, scope(actor(execution)));
                 List<Map<String, Object>> rows = stockRows(result.rows());
                 List<Map<String, Object>> modelOptions = locationCandidates(result.candidates());
                 List<Map<String, Object>> cardOptions = new ArrayList<>();
@@ -338,15 +509,12 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                     option.put("warehouseCode", candidate.warehouseCode()); option.put("warehouseName", candidate.warehouseName());
                     cardOptions.add(option);
                 }
-                Map<String, Object> output = new LinkedHashMap<>();
-                output.put("outcome", result.outcome()); output.put("reasonCode", result.reasonCode());
-                output.put("schemaVersion", result.schemaVersion()); output.put("resultCount", result.resultCount());
-                output.put("truncated", result.truncated()); output.put("rows", rows); output.put("candidates", modelOptions);
-                output.put("queriedAt", result.queriedAt());
+                LocationToolData output = new LocationToolData(outcome(result.status()), result.resultCount(),
+                        result.truncated(), result.queriedAt(), rows, modelOptions);
                 Map<String, Object> card = new LinkedHashMap<>();
                 card.put("cardId", execution.taskId() == null ? "location-contents" : execution.taskId());
                 card.put("revision", execution.taskRevision());
-                boolean ambiguous = "AMBIGUOUS".equals(result.outcome());
+                boolean ambiguous = "CLARIFICATION".equals(output.outcome());
                 card.put("cardType", ambiguous ? "clarification-choice" : "location-contents");
                 if (ambiguous) {
                     card.put("clarificationId", execution.taskId()); card.put("question", "请从下面选择一个仓库和库位");
@@ -354,17 +522,16 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                     card.put("candidateIntent", "LOCATION_CONTENTS");
                     card.put("selectionMode", "SINGLE"); card.put("options", cardOptions); card.put("allowFreeText", false);
                 }
-                card.put("schemaVersion", result.schemaVersion()); card.put("resultCount", result.resultCount());
-                card.put("truncated", result.truncated()); card.put("outcome", result.outcome());
-                card.put("reasonCode", result.reasonCode()); card.put("queriedAt", result.queriedAt()); card.put("rows", rows);
-                String outputJson = json.writeValueAsString(output);
+                card.put("resultCount", result.resultCount());
+                card.put("truncated", result.truncated()); card.put("status", result.status()); card.put("outcome", output.outcome());
+                card.put("queriedAt", result.queriedAt()); card.put("rows", rows);
                 execution.toolCardEmitter().accept(json.writeValueAsString(card));
                 execution.markToolOutputProduced(); record(execution, "SUCCEEDED", started, null);
-                return outputJson;
+                return success(execution, "库位内容查询完成", output, normalized);
             } catch (RuntimeException ex) {
-                record(execution, "FAILED", started, "TOOL_FAILED"); throw ex;
+                return failure(execution, ex, started, normalized);
             } catch (Exception ex) {
-                record(execution, "FAILED", started, "TOOL_FAILED"); throw new IllegalStateException("库位内容查询失败", ex);
+                return failure(execution, ex, started, normalized);
             }
         }
     }
@@ -376,44 +543,51 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
         }
 
         @Override
+        String toolName() { return RECENT_MOVEMENTS_TOOL; }
+
+        @Override
         public String call(String toolInput, ToolContext toolContext) {
             long started = System.nanoTime();
             AgentExecutionContext execution = context(toolContext);
+            String normalized = null;
             try {
                 JsonNode root = json.readTree(toolInput);
                 strictObject(root, Set.of("recentDays", "itemKeyword", "warehouseKeyword", "locationKeyword", "limit"), "recentDays");
-                WarehouseMovementTaskResult result = warehouse.queryRecentMovementTask(integer(root, "recentDays", 0, 1, 30),
-                        value(root, "itemKeyword"), value(root, "warehouseKeyword"), value(root, "locationKeyword"),
-                        integer(root, "limit", 20, 1, 20), scope(actor(execution)));
+                int recentDays = integer(root, "recentDays", 0, 1, 30);
+                String itemKeyword = value(root, "itemKeyword");
+                String warehouseKeyword = value(root, "warehouseKeyword");
+                String locationKeyword = value(root, "locationKeyword");
+                int limit = integer(root, "limit", 20, 1, 20);
+                Map<String, Object> args = new LinkedHashMap<>();
+                args.put("recentDays", recentDays);
+                args.put("itemKeyword", itemKeyword);
+                args.put("warehouseKeyword", warehouseKeyword);
+                args.put("locationKeyword", locationKeyword);
+                args.put("limit", limit);
+                normalized = normalizedArguments(args);
+                WarehouseMovementTaskResult result = warehouse.queryRecentMovementTask(recentDays,
+                        itemKeyword, warehouseKeyword, locationKeyword, limit, scope(actor(execution)));
                 List<Map<String, Object>> rows = result.rows().stream().map(this::movementRow).toList();
-                Map<String, Object> movementPayload = new LinkedHashMap<>();
-                movementPayload.put("outcome", result.outcome());
-                movementPayload.put("reasonCode", result.reasonCode());
-                movementPayload.put("schemaVersion", result.schemaVersion());
-                movementPayload.put("resultCount", result.resultCount());
-                movementPayload.put("truncated", result.truncated());
-                movementPayload.put("rows", rows);
-                movementPayload.put("queriedAt", result.queriedAt());
-                String output = json.writeValueAsString(movementPayload);
+                MovementToolData movementPayload = new MovementToolData(outcome(result.status()), result.resultCount(),
+                        result.truncated(), result.queriedAt(), rows);
                 Map<String, Object> movementCard = new LinkedHashMap<>();
                 movementCard.put("cardId", execution.taskId() == null ? "movement-list" : execution.taskId() + ":movement");
                 movementCard.put("revision", execution.taskRevision());
                 movementCard.put("cardType", "movement-list");
-                movementCard.put("outcome", result.outcome());
-                movementCard.put("reasonCode", result.reasonCode());
-                movementCard.put("schemaVersion", result.schemaVersion());
+                movementCard.put("outcome", movementPayload.outcome());
                 movementCard.put("resultCount", result.resultCount());
                 movementCard.put("truncated", result.truncated());
+                movementCard.put("status", result.status());
                 movementCard.put("queriedAt", result.queriedAt());
                 movementCard.put("rows", rows);
                 execution.toolCardEmitter().accept(json.writeValueAsString(movementCard));
                 execution.markToolOutputProduced();
                 record(execution, "SUCCEEDED", started, null);
-                return output;
+                return success(execution, "库存变化查询完成", movementPayload, normalized);
             } catch (RuntimeException ex) {
-                record(execution, "FAILED", started, "TOOL_FAILED"); throw ex;
+                return failure(execution, ex, started, normalized);
             } catch (Exception ex) {
-                record(execution, "FAILED", started, "TOOL_FAILED"); throw new IllegalStateException("库存变化查询失败", ex);
+                return failure(execution, ex, started, normalized);
             }
         }
     }

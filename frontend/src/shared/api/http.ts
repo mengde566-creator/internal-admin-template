@@ -10,6 +10,7 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0
 
 /** 统一响应结构（与后端 ApiResponse 契约一致） */
 export interface ApiResponse<T> {
+  success: boolean
   code: string
   message: string
   data: T

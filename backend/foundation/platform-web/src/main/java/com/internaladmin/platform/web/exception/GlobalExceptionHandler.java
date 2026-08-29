@@ -33,7 +33,7 @@ public class GlobalExceptionHandler {
      *
      * <p>执行链路（共 3 步）：</p>
      * 1. 按错误码映射 HTTP 状态：UNAUTHORIZED→401、FORBIDDEN→403、其余业务异常→400；
-     * 2. 将 {@link BusinessException} 转换为 {@link ApiResponse#error(ErrorCode, String)}；
+     * 2. 将 {@link BusinessException} 转换为 {@link ApiResponse#error(com.internaladmin.platform.kernel.error.ErrorCodeContract, String)}；
      * 3. 返回对应状态码响应，不记录日志（业务拒绝是预期行为）。
      *
      * @param ex 业务异常
@@ -41,10 +41,10 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Void>> handleBusinessException(BusinessException ex, HttpServletRequest request) {
-        HttpStatus status = switch (ex.getErrorCode()) {
-            case UNAUTHORIZED -> HttpStatus.UNAUTHORIZED;
-            case FORBIDDEN -> HttpStatus.FORBIDDEN;
-            case CONFLICT -> request.getRequestURI().startsWith("/api/warehouse")
+        HttpStatus status = switch (ex.getErrorCode().getCode()) {
+            case "UNAUTHORIZED" -> HttpStatus.UNAUTHORIZED;
+            case "FORBIDDEN" -> HttpStatus.FORBIDDEN;
+            case "CONFLICT" -> request.getRequestURI().startsWith("/api/warehouse")
                     ? HttpStatus.CONFLICT : HttpStatus.BAD_REQUEST;
             default -> HttpStatus.BAD_REQUEST;
         };

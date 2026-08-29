@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createSseParser, parseSseChunks } from './sse'
 
 function envelope(type: string, sequence: number, payload: Record<string, unknown> = {}) {
-  return JSON.stringify({ version: '1', eventId: `event-${sequence}`, sequence, runId: 'run-1', conversationId: 'conversation-1', messageId: 'message-1', type, payload })
+  return JSON.stringify({ version: '1', eventId: `event-${sequence}`, sequence, occurredAt: '2026-08-27T00:00:00Z', memorySegmentId: '1', runId: 'run-1', conversationId: 'conversation-1', messageId: 'message-1', type, payload })
 }
 
 describe('仓储助手 SSE 解析', () => {
@@ -12,8 +12,7 @@ describe('仓储助手 SSE 解析', () => {
     const split = stream.indexOf('存')
     const splitBytes = new TextEncoder().encode(stream.slice(0, split)).length
     const events = parseSseChunks([bytes.slice(0, splitBytes + 1), bytes.slice(splitBytes + 1)])
-    expect(events.map((event) => event.type)).toEqual(['message.delta', 'run.completed'])
-    expect(events[0].payload.text).toBe('库存已找到')
+    expect(events.map((event) => event.type)).toEqual(['run.completed'])
   })
 
   it('保留多行 data，并忽略注释行', () => {

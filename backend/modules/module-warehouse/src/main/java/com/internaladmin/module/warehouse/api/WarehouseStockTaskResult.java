@@ -13,27 +13,19 @@ public record WarehouseStockTaskResult(String status, List<WarehouseStockTaskRow
     }
 
     public WarehouseStockTaskResult {
+        if (!java.util.Set.of("STOCK_RESULT", "CANDIDATES", "NO_MATCH", "NO_STOCK", "NO_DATA").contains(status)) {
+            throw new IllegalArgumentException("未知的库存查询状态");
+        }
         rows = List.copyOf(rows == null ? List.of() : rows);
         candidates = List.copyOf(candidates == null ? List.of() : candidates);
     }
 
     public String outcome() {
         return switch (status) {
-            case "STOCK_RESULT" -> "RESOLVED";
-            case "CANDIDATES" -> "AMBIGUOUS";
-            case "NO_MATCH" -> "NOT_FOUND";
+            case "STOCK_RESULT" -> "ANSWERED";
+            case "CANDIDATES" -> "CLARIFICATION";
             default -> "NO_DATA";
         };
     }
-
-    public String reasonCode() {
-        return switch (status) {
-            case "NO_MATCH" -> "NO_MATCHING_ITEM";
-            case "NO_STOCK" -> "ITEM_HAS_NO_STOCK";
-            default -> null;
-        };
-    }
-
-    public int schemaVersion() { return 1; }
     public int resultCount() { return rows.size() > 0 ? rows.size() : candidates.size(); }
 }

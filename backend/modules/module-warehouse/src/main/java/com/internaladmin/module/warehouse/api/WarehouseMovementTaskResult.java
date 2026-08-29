@@ -11,11 +11,12 @@ public record WarehouseMovementTaskResult(String status, List<WarehouseMovementT
     }
 
     public WarehouseMovementTaskResult {
+        if (!java.util.Set.of("RESULT", "NO_DATA").contains(status)) {
+            throw new IllegalArgumentException("未知的库存变化查询状态");
+        }
         rows = List.copyOf(rows == null ? List.of() : rows);
     }
 
-    public String outcome() { return "RESULT".equals(status) ? "RESOLVED" : "NO_DATA"; }
-    public String reasonCode() { return "NO_DATA".equals(status) ? "NO_MOVEMENT_IN_RANGE" : null; }
-    public int schemaVersion() { return 1; }
+    public String outcome() { return "RESULT".equals(status) ? "ANSWERED" : "NO_DATA"; }
     public int resultCount() { return rows.size(); }
 }

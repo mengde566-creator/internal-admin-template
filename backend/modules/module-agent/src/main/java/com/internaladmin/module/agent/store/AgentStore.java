@@ -39,12 +39,20 @@ public class AgentStore {
     public static final String TASK_CANCELLED = "CANCELLED";
     public static final String TASK_REPLACED = "REPLACED";
     public static final String TASK_EXPIRED = "EXPIRED";
+    public static final String RETRY_PLAN_KIND = "WAREHOUSE_RETRY_PLAN";
+    public static final int RETRY_PLAN_VERSION = 1;
+    private static final int MAX_RETRY_PLAN_CHARS = 20_000;
+    private static final java.util.Set<String> RETRYABLE_CODES = java.util.Set.of(
+            "AI_TOOL_TIMEOUT", "AI_TOOL_DATABASE_UNAVAILABLE", "AI_TOOL_EXECUTION_FAILED");
+    private static final java.util.Set<String> RETRYABLE_TOOLS = java.util.Set.of(
+            "warehouse_current_stock", "warehouse_item_locations", "warehouse_location_contents",
+            "warehouse_recent_movements");
 
     /** Narrow failure classification for the History/Observation/terminal success boundary. */
     public enum SuccessBoundaryFailure {
-        HISTORY_FAILED,
-        OBSERVATION_FAILED,
-        TERMINAL_CONFLICT
+        HISTORY_WRITE,
+        OBSERVATION_CLOSE,
+        TERMINAL_CAS
     }
 
     public static final class SuccessBoundaryException extends RuntimeException {
@@ -137,7 +145,7 @@ public class AgentStore {
                 (rs, row) -> new RunRow(rs.getString(1), rs.getString(2)),
                 conversationId, userId, clientRequestId);
         if (!existing.isEmpty()) {
-            RunRow row = existing.getFirst();
+            RunRow row = existing.get(0);
             if (RUNNING.equals(row.status())) {
                 throw new BusinessException(ErrorCode.CONFLICT, "该clientRequestId仍在运行");
             }
@@ -145,12 +153,12 @@ public class AgentStore {
                             + "WHERE run_id = ? AND role = ? ORDER BY created_at",
                     (rs, resultSetRow) -> rs.getString(1), row.runId(), "ASSISTANT");
             String assistantMessageId = assistantMessages.isEmpty()
-                    ? null : assistantMessages.getLast();
+                    ? null : assistantMessages.get(assistantMessages.size() - 1);
             Long segment = jdbc.queryForObject("SELECT COALESCE(memory_segment_no, 1) FROM ai_message "
                             + "WHERE run_id = ? AND role = ? ORDER BY sequence_no LIMIT 1",
                     Long.class, row.runId(), "USER");
             return new StartRun(conversationId, row.runId(), false, row.status(), assistantMessageId,
-                    segment == null ? 1L : segment);
+                    segment == null ? 1L : segment, null, 0L, null);
         }
         String runId = UUID.randomUUID().toString();
         String assistantMessageId = UUID.randomUUID().toString();
@@ -178,7 +186,85 @@ public class AgentStore {
                 effectiveScopeFingerprint, segment);
         jdbc.update("UPDATE ai_conversation SET updated_at = ? WHERE id = ?", now, conversationId);
         return new StartRun(conversationId, runId, true, RUNNING, assistantMessageId, segment,
-                task.taskId(), task.revision(), effectiveUserMessage);
+                task.taskId(), task.revision(), effectiveUserMessage, null);
+    }
+
+    /** Atomically consumes a server-created retry plan and creates its child Run. */
+    @Transactional
+    public StartRun startRetryRun(String requestedConversationId, String clientRequestId,
+                                  String retryOfRunId, Long userId, String scopeFingerprint,
+                                  Duration idleTtl) {
+        ConversationRow conversation = requireConversation(requestedConversationId, userId);
+        String conversationId = conversation.conversationId();
+        // Retry requests share the ordinary client idempotency boundary. A repeated
+        // completed request must return the existing child run rather than consume
+        // the source plan a second time.
+        List<RunRow> existing = jdbc.query("SELECT run_id, status FROM ai_run "
+                        + "WHERE conversation_id = ? AND user_id = ? AND client_request_id = ?",
+                (rs, row) -> new RunRow(rs.getString("run_id"), rs.getString("status")),
+                conversationId, userId, clientRequestId);
+        if (!existing.isEmpty()) {
+            RunRow row = existing.get(0);
+            if (RUNNING.equals(row.status())) {
+                throw new BusinessException(ErrorCode.CONFLICT, "该clientRequestId仍在运行");
+            }
+            String assistantMessageId = jdbc.query("SELECT message_id FROM ai_message "
+                            + "WHERE run_id = ? AND role = ? ORDER BY created_at DESC",
+                    (rs, resultSetRow) -> rs.getString(1), row.runId(), "ASSISTANT")
+                    .stream().findFirst().orElse(null);
+            Long segment = jdbc.queryForObject("SELECT COALESCE(memory_segment_no, 1) FROM ai_message "
+                            + "WHERE run_id = ? AND role = ? ORDER BY sequence_no LIMIT 1",
+                    Long.class, row.runId(), "USER");
+            return new StartRun(conversationId, row.runId(), false, row.status(), assistantMessageId,
+                    segment == null ? 1L : segment, null, 0L, null, null);
+        }
+        List<RunSource> sourceRows = jdbc.query("SELECT run_id, conversation_id, user_id, task_id, status "
+                        + "FROM ai_run WHERE run_id = ? AND conversation_id = ? AND user_id = ?",
+                (rs, row) -> new RunSource(rs.getString("run_id"), rs.getString("conversation_id"),
+                        rs.getLong("user_id"), rs.getString("task_id"), rs.getString("status")),
+                retryOfRunId, conversationId, userId);
+        if (sourceRows.isEmpty()) throw new BusinessException(ErrorCode.CONFLICT, "这次重试已失效，请重新发起查询");
+        RunSource source = sourceRows.get(0);
+        if (!PARTIAL.equals(source.status()) && !FAILED.equals(source.status()) || source.taskId() == null) {
+            throw new BusinessException(ErrorCode.CONFLICT, "这次重试已失效，请重新发起查询");
+        }
+        TaskRow task = task(source.taskId());
+        String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
+        if (!conversationId.equals(task.conversationId()) || !effectiveScope.equals(task.scopeFingerprint())
+                || !TASK_COLLECTING.equals(task.status()) || task.expiresAt() == null
+                || !task.expiresAt().isAfter(Instant.now())) {
+            throw new BusinessException(ErrorCode.CONFLICT, "这次重试已失效，请重新发起查询");
+        }
+        RetryPlan plan = parseRetryPlan(task.confirmedConditions(), retryOfRunId);
+        if (plan == null || !retryOfRunId.equals(plan.sourceRunId())) {
+            throw new BusinessException(ErrorCode.CONFLICT, "这次重试已失效，请重新发起查询");
+        }
+        Integer active = jdbc.queryForObject("SELECT COUNT(*) FROM ai_conversation WHERE id = ? AND active_task_id = ?",
+                Integer.class, conversationId, task.taskId());
+        if (active == null || active != 1) throw new BusinessException(ErrorCode.CONFLICT, "这次重试已失效，请重新发起查询");
+        String runId = UUID.randomUUID().toString();
+        String assistantMessageId = UUID.randomUUID().toString();
+        Timestamp now = Timestamp.from(Instant.now());
+        if (jdbc.update("UPDATE ai_conversation SET active_run_id = ? WHERE id = ? AND active_run_id IS NULL",
+                runId, conversationId) != 1) {
+            throw new BusinessException(ErrorCode.CONFLICT, "该对话已有进行中的运行");
+        }
+        int consumed = jdbc.update("UPDATE ai_task SET revision = revision + 1, confirmed_conditions = ?, "
+                        + "updated_at = ? WHERE task_id = ? AND revision = ? AND status = ? "
+                        + "AND scope_fingerprint = ? AND expires_at > ?",
+                "{}", now, task.taskId(), task.revision(), TASK_COLLECTING, effectiveScope, now);
+        if (consumed != 1) throw new BusinessException(ErrorCode.CONFLICT, "这次重试已失效，请重新发起查询");
+        long sequence = nextMessageSequence(conversationId);
+        jdbc.update("INSERT INTO ai_run(run_id, conversation_id, user_id, client_request_id, task_id, status, created_at, retry_of_run_id) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                runId, conversationId, userId, clientRequestId, task.taskId(), RUNNING, now, retryOfRunId);
+        jdbc.update("INSERT INTO ai_message(message_id, conversation_id, run_id, sequence_no, role, content, state, created_at, scope_fingerprint, memory_segment_no) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                UUID.randomUUID().toString(), conversationId, runId, sequence, "USER", "重试未完成查询", "COMPLETE", now,
+                effectiveScope, task.memorySegmentNo());
+        jdbc.update("UPDATE ai_conversation SET updated_at = ? WHERE id = ?", now, conversationId);
+        return new StartRun(conversationId, runId, true, RUNNING, assistantMessageId, task.memorySegmentNo(),
+                task.taskId(), task.revision() + 1, "重试未完成查询", plan);
     }
 
     /** Isolated fixtures without an actor scope must never be eligible for model memory. */
@@ -321,36 +407,242 @@ public class AgentStore {
     public boolean completeSuccess(String conversationId, String runId, String assistantMessageId,
                                    String content, String scopeFingerprint, long durationMillis,
                                    AiObservationRecorder observations) {
+        return completeSuccess(conversationId, runId, assistantMessageId, content, scopeFingerprint,
+                durationMillis, null, 0L, null, false, observations);
+    }
+
+    /** Closes a successful run and completes its Task once in the same transaction when applicable. */
+    @Transactional
+    public boolean completeSuccess(String conversationId, String runId, String assistantMessageId,
+                                   String content, String scopeFingerprint, long durationMillis,
+                                   String taskId, long taskRevision, String taskIntent,
+                                   boolean clarificationProduced, AiObservationRecorder observations) {
         try {
             appendAssistant(conversationId, runId, assistantMessageId, content, "COMPLETE", scopeFingerprint);
         }
         catch (RuntimeException failure) {
-            throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_FAILED, failure);
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_WRITE, failure);
         }
         try {
             observations.record(runId, "HISTORY", "SUCCEEDED", durationMillis, null, null, null);
             if (!observations.finishRunChecked(runId, "SUCCESS", null)) {
-                throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_FAILED);
+                throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_CLOSE);
             }
         }
         catch (SuccessBoundaryException failure) {
             throw failure;
         }
         catch (RuntimeException failure) {
-            throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_FAILED, failure);
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_CLOSE, failure);
+        }
+        if (taskId != null && !clarificationProduced) {
+            try {
+                completeTaskInBoundary(taskId, taskRevision, scopeFingerprint, taskIntent);
+            }
+            catch (RuntimeException failure) {
+                throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS, failure);
+            }
         }
         try {
             if (!transition(runId, COMPLETE, null)) {
-                throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CONFLICT);
+                throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS);
             }
         }
         catch (SuccessBoundaryException failure) {
             throw failure;
         }
         catch (RuntimeException failure) {
-            throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CONFLICT, failure);
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS, failure);
         }
         return true;
+    }
+
+    /** Persist a partial assistant result and its Run terminal state atomically. */
+    @Transactional
+    public boolean completePartial(String conversationId, String runId, String assistantMessageId,
+                                   String content, String scopeFingerprint, long durationMillis,
+                                   String errorCode, AiObservationRecorder observations) {
+        return completePartial(conversationId, runId, assistantMessageId, content, scopeFingerprint,
+                durationMillis, errorCode, observations, null);
+    }
+
+    /** Partial boundary variant that persists a versioned retry plan in the same transaction. */
+    @Transactional
+    public boolean completePartial(String conversationId, String runId, String assistantMessageId,
+                                   String content, String scopeFingerprint, long durationMillis,
+                                   String errorCode, AiObservationRecorder observations,
+                                   RetryPlan retryPlan) {
+        try {
+            appendAssistant(conversationId, runId, assistantMessageId, content, PARTIAL, scopeFingerprint);
+        }
+        catch (RuntimeException failure) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_WRITE, failure);
+        }
+        try {
+            observations.record(runId, "HISTORY", PARTIAL, durationMillis, errorCode, null, null);
+            if (!observations.finishRunChecked(runId, PARTIAL, errorCode)) {
+                throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_CLOSE);
+            }
+        }
+        catch (SuccessBoundaryException failure) {
+            throw failure;
+        }
+        catch (RuntimeException failure) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_CLOSE, failure);
+        }
+        if (retryPlan != null) persistRetryPlan(runId, retryPlan);
+        if (!transition(runId, PARTIAL, errorCode)) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS);
+        }
+        return true;
+    }
+
+    private void completeTaskInBoundary(String taskId, long taskRevision,
+                                         String scopeFingerprint, String taskIntent) {
+        String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
+        int updated = jdbc.update("UPDATE ai_task SET status = ?, intent = ?, revision = revision + 1, "
+                        + "missing_fields = NULL, candidates = NULL, updated_at = ? "
+                        + "WHERE task_id = ? AND revision = ? AND status = ? AND scope_fingerprint = ?",
+                TASK_COMPLETED, taskIntent == null ? "MULTI_TOOL" : taskIntent,
+                Timestamp.from(Instant.now()), taskId, taskRevision, TASK_COLLECTING, effectiveScope);
+        if (updated != 1) {
+            throw new IllegalStateException("任务完成CAS失败");
+        }
+    }
+
+    /** Saves a validated all-tool failure as a visible failed assistant result without entering Memory. */
+    @Transactional
+    public boolean completeFailure(String conversationId, String runId, String assistantMessageId,
+                                   String content, String scopeFingerprint, long durationMillis,
+                                   String errorCode, AiObservationRecorder observations) {
+        return completeFailure(conversationId, runId, assistantMessageId, content, scopeFingerprint,
+                durationMillis, errorCode, observations, null);
+    }
+
+    /** Failed boundary variant that persists a versioned retry plan in the same transaction. */
+    @Transactional
+    public boolean completeFailure(String conversationId, String runId, String assistantMessageId,
+                                   String content, String scopeFingerprint, long durationMillis,
+                                   String errorCode, AiObservationRecorder observations,
+                                   RetryPlan retryPlan) {
+        try {
+            appendAssistant(conversationId, runId, assistantMessageId, content, "FAILED", scopeFingerprint);
+        }
+        catch (RuntimeException failure) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_WRITE, failure);
+        }
+        try {
+            observations.record(runId, "HISTORY", "FAILED", durationMillis, errorCode, null, null);
+            if (!observations.finishRunChecked(runId, FAILED, errorCode)) {
+                throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_CLOSE);
+            }
+        }
+        catch (SuccessBoundaryException failure) {
+            throw failure;
+        }
+        catch (RuntimeException failure) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_CLOSE, failure);
+        }
+        if (retryPlan != null) persistRetryPlan(runId, retryPlan);
+        if (!transition(runId, FAILED, errorCode)) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS);
+        }
+        return true;
+    }
+
+    private void persistRetryPlan(String runId, RetryPlan plan) {
+        if (plan.subtasks() == null || plan.subtasks().isEmpty() || plan.subtasks().size() > 20) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS);
+        }
+        String json = retryPlanJson(plan.withSourceRun(runId));
+        if (json.length() > MAX_RETRY_PLAN_CHARS) {
+            // The run still closes with its existing terminal state, but an
+            // over-budget plan is never made retryable or silently truncated.
+            return;
+        }
+        String taskId = jdbc.queryForObject("SELECT task_id FROM ai_run WHERE run_id = ?", String.class, runId);
+        if (taskId == null || taskId.isBlank()) throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS);
+        TaskRow task = task(taskId);
+        String scope = task.scopeFingerprint() == null ? "" : task.scopeFingerprint();
+        int updated = jdbc.update("UPDATE ai_task SET confirmed_conditions = ?, revision = revision + 1, updated_at = ? "
+                        + "WHERE task_id = ? AND revision = ? AND status = ? AND scope_fingerprint = ?",
+                json, Timestamp.from(Instant.now()), taskId, task.revision(), TASK_COLLECTING, scope);
+        if (updated != 1) throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS);
+    }
+
+    /** True only for the current source Run whose strict retry plan is still consumable. */
+    public boolean retryAvailable(String conversationId, String runId, Long userId, String scopeFingerprint) {
+        List<RunSource> sources = jdbc.query("SELECT r.run_id, r.conversation_id, r.user_id, r.task_id, r.status "
+                        + "FROM ai_run r JOIN ai_task t ON t.task_id = r.task_id "
+                        + "JOIN ai_conversation c ON c.active_task_id = t.task_id "
+                        + "WHERE r.run_id = ? AND r.conversation_id = ? AND r.user_id = ? "
+                        + "AND c.user_id = r.user_id AND c.id = r.conversation_id AND c.active_run_id IS NULL "
+                        + "AND r.status IN (?, ?) AND t.status = ? AND t.scope_fingerprint = ? AND t.expires_at > ?",
+                (rs, row) -> new RunSource(rs.getString("run_id"), rs.getString("conversation_id"),
+                        rs.getLong("user_id"), rs.getString("task_id"), rs.getString("status")),
+                runId, conversationId, userId, PARTIAL, FAILED, TASK_COLLECTING,
+                scopeFingerprint == null ? "" : scopeFingerprint, Timestamp.from(Instant.now()));
+        if (sources.isEmpty()) return false;
+        TaskRow task = task(sources.get(0).taskId());
+        return parseRetryPlan(task.confirmedConditions(), runId) != null;
+    }
+
+    public RetryPlan parseRetryPlan(String value, String expectedSourceRunId) {
+        if (value == null || value.isBlank() || value.length() > MAX_RETRY_PLAN_CHARS) return null;
+        try {
+            JsonNode root = JSON.readTree(value);
+            if (root == null || !root.isObject()) return null;
+            java.util.Set<String> names = new java.util.HashSet<>();
+            root.propertyNames().forEach(names::add);
+            if (!names.equals(java.util.Set.of("kind", "version", "sourceRunId", "taskIntent", "successfulCount", "subtasks"))) return null;
+            if (!RETRY_PLAN_KIND.equals(root.path("kind").asText()) || root.path("version").asInt() != RETRY_PLAN_VERSION
+                    || !root.path("sourceRunId").isTextual() || !Objects.equals(expectedSourceRunId, root.path("sourceRunId").asText())
+                    || !root.path("taskIntent").isTextual() || root.path("successfulCount").asInt(-1) < 0
+                    || !root.path("subtasks").isArray() || root.path("subtasks").size() < 1 || root.path("subtasks").size() > 20) return null;
+            List<RetrySubtask> subtasks = new ArrayList<>();
+            long previousOrder = 0;
+            for (JsonNode node : root.path("subtasks")) {
+                if (node == null || !node.isObject()) return null;
+                java.util.Set<String> fields = new java.util.HashSet<>(); node.propertyNames().forEach(fields::add);
+                if (!fields.equals(java.util.Set.of("order", "toolName", "arguments", "errorCode"))) return null;
+                if (!node.path("order").isIntegralNumber() || node.path("order").asLong() <= previousOrder) return null;
+                String toolName = node.path("toolName").asText(null);
+                String arguments = node.path("arguments").asText(null);
+                String errorCode = node.path("errorCode").asText(null);
+                if (!RETRYABLE_TOOLS.contains(toolName) || !RETRYABLE_CODES.contains(errorCode)
+                        || arguments == null || arguments.length() > 8_000) return null;
+                JsonNode argumentObject = JSON.readTree(arguments);
+                if (argumentObject == null || !argumentObject.isObject()) return null;
+                previousOrder = node.path("order").asLong();
+                subtasks.add(new RetrySubtask(node.path("order").asLong(), toolName, arguments, errorCode));
+            }
+            return new RetryPlan(expectedSourceRunId, root.path("taskIntent").asText(),
+                    root.path("successfulCount").asInt(), subtasks);
+        }
+        catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private String retryPlanJson(RetryPlan plan) {
+        try {
+            Map<String, Object> root = new LinkedHashMap<>();
+            root.put("kind", RETRY_PLAN_KIND);
+            root.put("version", RETRY_PLAN_VERSION);
+            root.put("sourceRunId", plan.sourceRunId());
+            root.put("taskIntent", plan.taskIntent());
+            root.put("successfulCount", plan.successfulCount());
+            root.put("subtasks", plan.subtasks().stream().map(item -> {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("order", item.order()); row.put("toolName", item.toolName());
+                row.put("arguments", item.arguments()); row.put("errorCode", item.errorCode());
+                return row;
+            }).toList());
+            return JSON.writeValueAsString(root);
+        }
+        catch (Exception exception) {
+            throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS, exception);
+        }
     }
 
     /**
@@ -457,7 +749,7 @@ public class AgentStore {
                         readInstant(rs, "expires_at"), rs.getString("confirmed_conditions"),
                         rs.getString("missing_fields"), rs.getString("candidates")), taskId);
         if (rows.isEmpty()) throw new BusinessException(ErrorCode.NOT_FOUND, "任务不存在");
-        return rows.getFirst();
+        return rows.get(0);
     }
 
     /**
@@ -481,7 +773,7 @@ public class AgentStore {
                         rs.getString("missing_fields"), rs.getString("candidates"),
                         rs.getString("active_run_id"), rs.getString("latest_run_status")),
                 conversationId, userId, effectiveScope, TASK_READY, TASK_COLLECTING, Timestamp.from(Instant.now()));
-        return rows.isEmpty() ? null : rows.getFirst();
+        return rows.isEmpty() ? null : rows.get(0);
     }
 
     private TaskResolution ensureTask(String conversationId, long segment, String scopeFingerprint, Duration idleTtl,
@@ -496,19 +788,29 @@ public class AgentStore {
                         readInstant(rs, "expires_at"), rs.getString("confirmed_conditions"),
                         rs.getString("missing_fields"), rs.getString("candidates")), conversationId, conversationId);
         if (clarificationId != null && !clarificationId.isBlank()) {
-            if (active.isEmpty() || active.getFirst().memorySegmentNo() != segment
-                    || !clarificationId.equals(active.getFirst().taskId())) {
+            if (active.isEmpty() || active.get(0).memorySegmentNo() != segment
+                    || !clarificationId.equals(active.get(0).taskId())) {
                 throw new BusinessException(ErrorCode.CONFLICT, "澄清任务已失效，请重新澄清");
             }
-            TaskSelection selection = selectClarification(conversationId, clarificationId, active.getFirst().revision(),
+            TaskSelection selection = selectClarification(conversationId, clarificationId, active.get(0).revision(),
                     scopeFingerprint, optionToken);
             return new TaskResolution(selection.task(), selection.effectiveUserMessage());
         }
         if (!active.isEmpty()) {
-            TaskRow current = active.getFirst();
+            TaskRow current = active.get(0);
             if (current.memorySegmentNo() == segment && scopeFingerprint.equals(current.scopeFingerprint())
                     && current.expiresAt().isAfter(now)
                     && TASK_COLLECTING.equals(current.status())) {
+                if (isRetryPlanEnvelope(current.confirmedConditions())) {
+                    int invalidated = jdbc.update("UPDATE ai_task SET confirmed_conditions = ?, revision = revision + 1, updated_at = ? "
+                                    + "WHERE task_id = ? AND revision = ? AND status = ? AND scope_fingerprint = ?",
+                            "{}", Timestamp.from(now), current.taskId(), current.revision(), TASK_COLLECTING,
+                            scopeFingerprint == null ? "" : scopeFingerprint);
+                    if (invalidated != 1) {
+                        throw new BusinessException(ErrorCode.CONFLICT, "当前查询条件已更新，请重新发起查询");
+                    }
+                    current = task(current.taskId());
+                }
                 return new TaskResolution(current, userMessage == null ? "" : userMessage);
             }
             boolean candidateWasSuperseded = TASK_READY.equals(current.status());
@@ -531,6 +833,19 @@ public class AgentStore {
         jdbc.update("UPDATE ai_conversation SET active_task_id = ? WHERE id = ? AND active_task_id IS NULL",
                 taskId, conversationId);
         return new TaskResolution(task(taskId), userMessage == null ? "" : userMessage);
+    }
+
+    private boolean isRetryPlanEnvelope(String value) {
+        if (value == null || value.isBlank() || value.length() > MAX_RETRY_PLAN_CHARS) return false;
+        try {
+            JsonNode root = JSON.readTree(value);
+            return root != null && root.isObject()
+                    && RETRY_PLAN_KIND.equals(root.path("kind").asText())
+                    && root.path("version").asInt() == RETRY_PLAN_VERSION;
+        }
+        catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private TaskSelection parseSelection(TaskRow task, String optionToken) {
@@ -629,12 +944,17 @@ public class AgentStore {
     public String status(String runId) {
         List<String> statuses = jdbc.query("SELECT status FROM ai_run WHERE run_id = ?",
                 (rs, row) -> rs.getString(1), runId);
-        return statuses.isEmpty() ? null : statuses.getFirst();
+        return statuses.isEmpty() ? null : statuses.get(0);
     }
 
     @Transactional
     public boolean partial(String runId) {
         return transition(runId, PARTIAL, null);
+    }
+
+    @Transactional
+    public boolean partial(String runId, String errorCode) {
+        return transition(runId, PARTIAL, errorCode);
     }
 
     @Transactional
@@ -678,7 +998,7 @@ public class AgentStore {
                         + "WHERE m.conversation_id = ? AND m.state = ? AND r.status = ? "
                         + "ORDER BY m.sequence_no DESC LIMIT 1",
                 (rs, row) -> rs.getString(1), conversationId, "COMPLETE", COMPLETE);
-        return states.getFirst().withLatestScope(latestScopes.isEmpty() ? null : latestScopes.getFirst(),
+        return states.get(0).withLatestScope(latestScopes.isEmpty() ? null : latestScopes.get(0),
                 !latestScopes.isEmpty());
     }
 
@@ -705,7 +1025,7 @@ public class AgentStore {
         if (rows.isEmpty()) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "对话不存在");
         }
-        return rows.getFirst();
+        return rows.get(0);
     }
 
     private long nextMessageSequence(String conversationId) {
@@ -777,10 +1097,12 @@ public class AgentStore {
 
     public record StartRun(String conversationId, String runId, boolean newRun, String status,
                            String assistantMessageId, long memorySegmentNo,
-                           String taskId, long taskRevision, String effectiveUserMessage) {
+                           String taskId, long taskRevision, String effectiveUserMessage,
+                           RetryPlan retryPlan) {
+
         public StartRun(String conversationId, String runId, boolean newRun, String status,
                         String assistantMessageId) {
-            this(conversationId, runId, newRun, status, assistantMessageId, 1L, null, 0L, null);
+            this(conversationId, runId, newRun, status, assistantMessageId, 1L, null, 0L, null, null);
         }
 
         public StartRun(String conversationId, String runId, boolean newRun, String status) {
@@ -789,16 +1111,26 @@ public class AgentStore {
 
         public StartRun(String conversationId, String runId, boolean newRun, String status,
                         String assistantMessageId, long memorySegmentNo) {
-            this(conversationId, runId, newRun, status, assistantMessageId, memorySegmentNo, null, 0L, null);
+            this(conversationId, runId, newRun, status, assistantMessageId, memorySegmentNo, null, 0L, null, null);
         }
 
         public StartRun(String conversationId, String runId, boolean newRun, String status,
                         String assistantMessageId, long memorySegmentNo, String taskId, long taskRevision) {
-            this(conversationId, runId, newRun, status, assistantMessageId, memorySegmentNo, taskId, taskRevision, null);
+            this(conversationId, runId, newRun, status, assistantMessageId, memorySegmentNo, taskId, taskRevision, null, null);
+        }
+
+        public StartRun(String conversationId, String runId, boolean newRun, String status,
+                        String assistantMessageId, long memorySegmentNo, String taskId, long taskRevision,
+                        String effectiveUserMessage) {
+            this(conversationId, runId, newRun, status, assistantMessageId, memorySegmentNo, taskId,
+                    taskRevision, effectiveUserMessage, null);
         }
     }
 
     private record RunRow(String runId, String status) {
+    }
+
+    private record RunSource(String runId, String conversationId, long userId, String taskId, String status) {
     }
 
     public record ConversationRow(String conversationId, Instant createdAt, Instant updatedAt) {
@@ -824,6 +1156,20 @@ public class AgentStore {
                        String candidates) {
             this(taskId, conversationId, memorySegmentNo, adapter, intent, status, revision,
                     scopeFingerprint, expiresAt, confirmedConditions, missingFields, candidates, null, null);
+        }
+    }
+
+    public record RetrySubtask(long order, String toolName, String arguments, String errorCode) {
+    }
+
+    public record RetryPlan(String sourceRunId, String taskIntent, int successfulCount,
+                            List<RetrySubtask> subtasks) {
+        public RetryPlan {
+            subtasks = subtasks == null ? List.of() : List.copyOf(subtasks);
+        }
+
+        public RetryPlan withSourceRun(String sourceRunId) {
+            return new RetryPlan(sourceRunId, taskIntent, successfulCount, subtasks);
         }
     }
 

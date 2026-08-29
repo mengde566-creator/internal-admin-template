@@ -27,6 +27,7 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -98,19 +99,23 @@ public class SecurityConfig {
                             response.setStatus(401);
                             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                             response.setCharacterEncoding("UTF-8");
-                            response.getWriter().write(objectMapper.writeValueAsString(
-                                    Map.of("code", ErrorCode.UNAUTHORIZED.getCode(),
-                                            "message", ErrorCode.UNAUTHORIZED.getMessage(),
-                                            "data", "")));
+                            Map<String, Object> body = new LinkedHashMap<>();
+                            body.put("success", false);
+                            body.put("code", ErrorCode.UNAUTHORIZED.getCode());
+                            body.put("message", ErrorCode.UNAUTHORIZED.getMessage());
+                            body.put("data", null);
+                            response.getWriter().write(objectMapper.writeValueAsString(body));
                         })
                         .accessDeniedHandler((request, response, exception) -> {
                             response.setStatus(403);
                             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                             response.setCharacterEncoding("UTF-8");
-                            response.getWriter().write(objectMapper.writeValueAsString(
-                                    Map.of("code", ErrorCode.FORBIDDEN.getCode(),
-                                            "message", ErrorCode.FORBIDDEN.getMessage(),
-                                            "data", "")));
+                            Map<String, Object> body = new LinkedHashMap<>();
+                            body.put("success", false);
+                            body.put("code", ErrorCode.FORBIDDEN.getCode());
+                            body.put("message", ErrorCode.FORBIDDEN.getMessage());
+                            body.put("data", null);
+                            response.getWriter().write(objectMapper.writeValueAsString(body));
                         }));
         return http.build();
     }

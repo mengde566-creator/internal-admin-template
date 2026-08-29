@@ -31,7 +31,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** Session + CSRF protected Gate B conversation and SSE entry; no SecurityContext access in async code. */
 @RestController
@@ -121,21 +120,25 @@ public class AgentConversationController {
         String optionToken = request.clarificationSelection() == null ? null
                 : request.clarificationSelection().optionToken();
         AgentStore.StartRun run = service.start(conversationId, request.clientRequestId(), request.text(), actor,
-                clarificationId, optionToken);
+                clarificationId, optionToken, request.retryOfRunId());
         SseEmitter emitter = new SseEmitter(120_000L);
         AtomicBoolean cancelled = new AtomicBoolean();
         emitter.onCompletion(() -> cancelled.set(true));
         emitter.onTimeout(() -> cancelled.set(true));
         emitter.onError(error -> cancelled.set(true));
         AtomicLong eventSequence = new AtomicLong();
+        Set<String> emittedCards = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        AtomicBoolean clarificationProduced = new AtomicBoolean();
         String messageId = run.assistantMessageId();
-        Set<String> emittedCards = ConcurrentHashMap.newKeySet();
         String effectiveMessage = run.effectiveUserMessage() == null ? request.text() : run.effectiveUserMessage();
         AgentExecutionContext execution = new AgentExecutionContext(actor, run.runId(), effectiveMessage,
                 card -> {
                     AgentConversationService.CardIdentity identity = service.inspectCard(card);
                     String cardKey = identity.key();
                     if (emittedCards.add(cardKey)) {
+                        if ("clarification-choice".equals(identity.cardType())) {
+                            clarificationProduced.set(true);
+                        }
                         AgentConversationService.PreparedCard prepared = service.recordCard(run, identity,
                                 actor.scopeFingerprint());
                         if (!send(emitter, AgentConversationService.envelopedEvent(
@@ -144,7 +147,7 @@ public class AgentConversationController {
                         }
                     }
                 },
-                new AtomicBoolean(), eventSequence, messageId, run.taskId(), run.taskRevision());
+                new AtomicBoolean(), eventSequence, messageId, run.taskId(), run.taskRevision(), clarificationProduced);
         CompletableFuture.runAsync(() -> service.execute(run, execution,
                 event -> send(emitter, event), cancelled));
         return emitter;
@@ -172,16 +175,22 @@ public class AgentConversationController {
 
     public record RunRequest(@NotBlank @Size(max = 128) String clientRequestId,
                              @Size(max = 4000) String text,
-                             @jakarta.validation.Valid ClarificationSelection clarificationSelection) {
+                             @jakarta.validation.Valid ClarificationSelection clarificationSelection,
+                             @Size(max = 36) String retryOfRunId) {
         public RunRequest(String clientRequestId, String text) {
-            this(clientRequestId, text, null);
+            this(clientRequestId, text, null, null);
+        }
+
+        public RunRequest(String clientRequestId, String text, ClarificationSelection clarificationSelection) {
+            this(clientRequestId, text, clarificationSelection, null);
         }
 
         @AssertTrue(message = "普通消息或候选选择必须且只能提供一种")
         public boolean hasExactlyOneInput() {
             boolean hasText = text != null && !text.isBlank();
             boolean hasSelection = clarificationSelection != null;
-            return hasSelection ? !hasText : hasText;
+            boolean hasRetry = retryOfRunId != null && !retryOfRunId.isBlank();
+            return (hasText ? 1 : 0) + (hasSelection ? 1 : 0) + (hasRetry ? 1 : 0) == 1;
         }
     }
 

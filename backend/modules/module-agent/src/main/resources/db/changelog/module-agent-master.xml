@@ -8,4 +8,5 @@
     <include file="db/changelog/2026-08-21-0002-message-scope-fingerprint.xml"/>
     <include file="db/changelog/2026-08-21-0003-memory-segment.xml"/>
     <include file="db/changelog/2026-08-23-0001-task-clarification-contract.xml"/>
+    <include file="db/changelog/2026-08-29-0001-retry-run-contract.xml"/>
 </databaseChangeLog>

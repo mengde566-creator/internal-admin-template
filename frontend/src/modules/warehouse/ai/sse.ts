@@ -2,7 +2,7 @@ import type { AgentSseEvent } from './agentApi'
 
 export type SseParserEvent = { name: string; data: string }
 
-const KNOWN_EVENTS = new Set(['run.started', 'message.delta', 'card.replace', 'message.completed', 'run.failed', 'run.completed'])
+const KNOWN_EVENTS = new Set(['run.started', 'card.replace', 'message.completed', 'run.failed', 'run.completed'])
 const TERMINAL_EVENTS = new Set(['run.failed', 'run.completed'])
 
 export function createSseParser(onEvent: (event: SseParserEvent) => void) {
@@ -55,9 +55,17 @@ function toAgentEvent(raw: SseParserEvent): AgentSseEvent | undefined {
   if (!KNOWN_EVENTS.has(raw.name)) return undefined
   try {
     const event = JSON.parse(raw.data) as Partial<AgentSseEvent>
-    if (event.version !== '1' || typeof event.eventId !== 'string' || typeof event.sequence !== 'number'
-      || typeof event.runId !== 'string' || typeof event.conversationId !== 'string' || typeof event.type !== 'string'
+    if (event.version !== '1' || typeof event.eventId !== 'string' || !event.eventId.trim()
+      || typeof event.sequence !== 'number' || !Number.isInteger(event.sequence) || event.sequence < 1
+      || typeof event.occurredAt !== 'string' || typeof event.memorySegmentId !== 'string'
+      || typeof event.messageId !== 'string' || typeof event.runId !== 'string'
+      || typeof event.conversationId !== 'string' || typeof event.type !== 'string'
+      || !event.messageId.trim() || !event.runId.trim() || !event.conversationId.trim()
       || !event.payload || typeof event.payload !== 'object' || event.type !== raw.name) return undefined
+    if (event.type === 'run.completed') {
+      const status = (event.payload as Record<string, unknown>).status
+      if (status !== 'SUCCESS' && status !== 'CANCELLED' && status !== 'PARTIAL') return undefined
+    }
     return event as AgentSseEvent
   } catch {
     return undefined

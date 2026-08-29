@@ -8,27 +8,19 @@ public record WarehouseLocationTaskResult(String status, List<WarehouseStockTask
                                           List<WarehouseLocationCandidate> candidates,
                                           Instant queriedAt, boolean truncated) {
     public WarehouseLocationTaskResult {
+        if (!java.util.Set.of("LOCATION_RESULT", "CANDIDATES", "NO_MATCH", "NO_DATA").contains(status)) {
+            throw new IllegalArgumentException("未知的库位查询状态");
+        }
         rows = List.copyOf(rows == null ? List.of() : rows);
         candidates = List.copyOf(candidates == null ? List.of() : candidates);
     }
 
     public String outcome() {
         return switch (status) {
-            case "LOCATION_RESULT" -> "RESOLVED";
-            case "CANDIDATES" -> "AMBIGUOUS";
-            case "NO_MATCH" -> "NOT_FOUND";
+            case "LOCATION_RESULT" -> "ANSWERED";
+            case "CANDIDATES" -> "CLARIFICATION";
             default -> "NO_DATA";
         };
     }
-
-    public String reasonCode() {
-        return switch (status) {
-            case "NO_MATCH" -> "NO_MATCHING_LOCATION";
-            case "NO_DATA" -> "LOCATION_HAS_NO_STOCK";
-            default -> null;
-        };
-    }
-
-    public int schemaVersion() { return 1; }
     public int resultCount() { return rows.size() > 0 ? rows.size() : candidates.size(); }
 }

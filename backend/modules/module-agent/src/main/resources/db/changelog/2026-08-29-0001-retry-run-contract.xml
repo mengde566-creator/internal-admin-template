@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-08-29-0001-retry-run" author="研发工程师">
+        <addColumn tableName="ai_run">
+            <column name="retry_of_run_id" type="VARCHAR(36)"/>
+        </addColumn>
+    </changeSet>
+</databaseChangeLog>

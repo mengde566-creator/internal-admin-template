@@ -2,7 +2,7 @@
 
 > 状态：已确认（第一版基线）
 > 版本：0.2
-> 日期：2026-08-20
+> 日期：2026-08-27
 > 上级索引：[`V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md`](V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md)
 > 维度：只定义产品功能、状态、交互和错误语义
 
@@ -64,7 +64,8 @@ SCN-CFG-01～04。
 - History仅本人可见，默认保留180天；
 - Memory按已确认的空闲TTL分段，过期History仍可见但不自动回灌；
 - 部门或权限范围变化时下一轮创建新Segment；
-- FAILED、CANCELLED和PARTIAL助手消息不作为完整回答进入后续Memory；
+- 通过入口校验的用户消息、通过后端校验的完整助手结果、后端生成的安全失败结果和已验证的PARTIAL结果进入History；非法模型输出、修正草稿、Tool原文和异常详情不进入History；
+- FAILED、CANCELLED和PARTIAL助手结果不进入后续Memory；模型下一轮默认不知道失败文本，继续任务所需的已确认业务条件只由服务端受控Task提供；
 - 用户明确开始新话题时结束当前未完成Task，但不删除History。
 
 ### 非目标
@@ -146,12 +147,18 @@ SLICE-01提供按用户可表达关键词查当前库存和按真实最近天数
 
 ### Tool结果语义
 
-```text
-outcome = RESOLVED | AMBIGUOUS | NO_DATA | NOT_FOUND
-DENIED | INVALID | UNAVAILABLE
+Tool结果只使用四字段顶层外壳：
+
+```json
+{
+  "success": true,
+  "code": "SUCCESS",
+  "message": "库存查询完成",
+  "data": null
+}
 ```
 
-仓储窄DTO可以用`reasonCode`区分`NO_MATCHING_ITEM`、`ITEM_HAS_NO_STOCK`和`NO_MOVEMENT_IN_RANGE`，但不得再建立一套与`outcome`竞争的结果状态。所有列表结果必须包含`schemaVersion=1`、`resultCount`、`truncated`和`queriedAt`；查询采用`limit + 1`或等价机制证明是否截断。`AMBIGUOUS`只进入FUN-02，已解析事实才生成库存卡片。DENIED不能泄露目标对象存在性；UNAVAILABLE不能伪装成空结果。
+成功码固定为`SUCCESS`；查询零结果和有限候选澄清仍是成功。`data`由当前具体仓储Tool DTO定义，可以包含`outcome = ANSWERED | CLARIFICATION | NO_DATA`、`resultCount`、`truncated`、`queriedAt`、受信行或候选等当前任务字段，不创建统一`blocks/type/payload`容器，也不使用`schemaVersion`。失败使用`FORBIDDEN`、`PARAM_ERROR`、`CONFLICT`或`WAREHOUSE_QUERY_TIMEOUT`等可读稳定语义码，`data=null`。谁最先掌握确定事实，谁产生结果码，后续层只能受控传递。查询采用`limit + 1`或等价机制证明是否截断；候选只进入FUN-02，已解析事实才生成库存卡片；权限拒绝不能泄露目标对象存在性，系统不可用不能伪装成空结果。
 
 ### 对应场景
 
@@ -216,6 +223,14 @@ SCN-N-01～03、SCN-D-01、SCN-S-06、SCN-B-01/02。
 
 辱骂中有合法仓储请求时继续处理；纯辱骂不反击、不说教；离题时简短说明能力边界。首版不建设情绪画像或内容审核平台。
 
+### 模型最终结果
+
+- 模型最终回复只使用`success`、`code`、`message`、`data`四个顶层字段，当前仓储助手最终`data=null`，受信业务事实和候选继续由服务端卡片承载；
+- 无Tool的正常澄清、离题说明和情绪化输入安全回应使用`success=true`、`code=SUCCESS`；模型不能把自然语言判断变成新的错误码；
+- Tool失败时模型只能逐字传递本轮Tool已经产生的失败码并组织用户说明；后端以本轮实际结果集合校验来源，禁止模型编造、翻译或改写错误码；
+- 后端严格校验单个JSON对象、四字段及具体类型、`success/code`一致性、禁止字段、长度、控制字符和本轮错误码来源；不宽松补全非法JSON、不再次查库验证模型、不增加第二个裁判模型；
+- 内部物品ID、用户ID、部门范围、Cookie、Session、密钥、SQL、隐藏推理和未经登记的动作不得进入最终结果。
+
 ### 对应场景
 
 SCN-I-*、SCN-AU-*、SCN-S-*、SCN-O-*、SCN-B-02。
@@ -259,12 +274,15 @@ SCN-K-01～03、SCN-N-04、SCN-S-05、SCN-E-01/03。
 - 相同clientRequestId不重复执行模型和Tool；
 - 用户主动重试创建新Run并关联retryOfRunId；
 - 折叠和导航不取消，明确停止和网络断开分别记录；
-- 无可见输出前用户取消为CANCELLED；已有文字、引用或卡片后中止为PARTIAL；
+- 无已验证可见输出前用户取消为CANCELLED；已有受信卡片、引用或已提交的完整消息后中止为PARTIAL；未经验证的模型增量不算可保留结果；
 - 迟到事件不能覆盖新Run或已形成的终态；
 - Attempt只用于明确瞬时故障，不等于模型工具迭代或用户重试；
 - 每个外部模型或Embedding步骤首次调用失败后最多自动重试2次，即该步骤最多3个Attempt；Spring AI或供应商SDK的隐藏重试必须关闭，由项目层统一计数和观测；
 - 只有超时、限流、连接瞬断和明确的供应商5xx可以自动重试；配置、认证、参数、权限、Schema、业务拒绝、无数据和无证据不得重试；
-- 已发送任何文字、引用或卡片，或者已经执行Tool后，不得透明重跑整个Run；后续模型总结失败时可以复用本Run已缓存的Tool结果，但不得再次执行Tool；
+- 已发送任何已验证文字、引用或卡片，或者已经执行Tool后，不得透明重跑整个Run；后续模型总结失败时可以复用本Run已缓存的Tool结果，但不得再次执行Tool；
+- 模型最终回复在服务端完整缓冲，严格校验通过后才一次性发送`message.completed`；SSE仍可增量发送运行状态和已验证的Tool卡片，但不再发送未经验证的模型`message.delta`；
+- 模型最终JSON首次校验失败时只允许自动修正一次；修正调用禁用全部Tool，只使用本Run缓存的安全Tool结果，不重新查询数据库；再次失败由后端返回`AI_MODEL_OUTPUT_INVALID`；
+- 一轮多个Tool全部成功时最终为`success=true/code=SUCCESS`；部分失败时保留成功卡片、Run终态为PARTIAL、最终为`success=false`，错误码从失败Tool实际产生的代码中按权限安全优先、再按用户子任务顺序确定，新Run只重试失败部分；
 - Tool结果触发的下一次模型推理属于新的Model Iteration，不占用前一Iteration的Attempt次数，仍受单Run模型与Tool总预算约束。
 
 ### 对应场景
@@ -272,6 +290,10 @@ SCN-K-01～03、SCN-N-04、SCN-S-05、SCN-E-01/03。
 SCN-C-*、SCN-E-02/05/06。
 
 ## 10. FUN-08：用户结果、异常表达与效果反馈
+
+### 通用结果外壳
+
+前后端通用API、Tool结果和模型最终结果均只使用`success`、`code`、`message`、`data`四个顶层字段，但三者责任不同：API表达HTTP边界结果；Tool产生最靠近业务事实的确定结果；模型只组织用户说明并受控传递本轮Tool错误码。成功码固定为`SUCCESS`，失败使用可读稳定英文大写语义码，例如`WAREHOUSE_QUERY_TIMEOUT`、`AI_MODEL_OUTPUT_INVALID`。不使用`schemaVersion`、双编码、`codeName`、`toolCallId`、`resultRef`或`evidenceRef`；后续兼容优先追加当前具体DTO的必要字段，真正不兼容的语义使用新的具体DTO或事件类型。
 
 ### 用户结果
 

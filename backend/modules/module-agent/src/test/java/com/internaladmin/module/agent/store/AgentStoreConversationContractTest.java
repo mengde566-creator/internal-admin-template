@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /** Contract evidence for server-generated Conversation IDs, ownership and stable History paging. */
 class AgentStoreConversationContractTest {
@@ -52,7 +53,7 @@ class AgentStoreConversationContractTest {
         AgentStore.ConversationPage page = store.pageConversations(7L, 1, 100);
         assertEquals(2, page.total());
         assertEquals(2, page.records().size());
-        assertEquals(first.conversationId(), page.records().getFirst().conversationId(),
+        assertEquals(first.conversationId(), page.records().get(0).conversationId(),
                 "最近有消息的 Conversation 必须排在前面");
         assertThrows(BusinessException.class, () -> store.pageConversations(7L, 1, 101));
     }
@@ -100,11 +101,11 @@ class AgentStoreConversationContractTest {
 
         AgentStore.ConversationPage conversations = store.pageConversations(99L, 1, 20);
         assertEquals(1, conversations.total());
-        assertNotNull(conversations.records().getFirst().updatedAt());
+        assertNotNull(conversations.records().get(0).updatedAt());
 
         AgentStore.MessagePage messages = store.pageMessages("legacy-conversation", 99L, 1, 20);
         assertEquals(1, messages.total());
-        assertEquals("历史消息", messages.records().getFirst().content());
+        assertEquals("历史消息", messages.records().get(0).content());
 
         String conversationSchema = jdbc.queryForObject(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ai_conversation'",
@@ -126,7 +127,7 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         appendCompletedRun(store, conversationId, "memory-complete", "轴承", "memory-assistant", "已确认物品", "scope-7");
         AgentStore.StartRun failed = store.startRun(conversationId, "memory-failed", "不要注入", 7L, "scope-7");
-        assertTrue(store.fail(failed.runId(), "MODEL_FAILED"));
+        assertTrue(store.fail(failed.runId(), "AI_MODEL_UNAVAILABLE"));
 
         var memory = store.loadMemory(conversationId, 7L, "scope-7", 1L, 40, 2000);
         assertEquals(2, memory.size());
@@ -289,11 +290,222 @@ class AgentStoreConversationContractTest {
                 () -> transaction.executeWithoutResult(status ->
                 store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(),
                         "库存结果", "scope-7", 1L, observations)));
-        assertEquals(AgentStore.SuccessBoundaryFailure.OBSERVATION_FAILED, failure.failure());
+        assertEquals(AgentStore.SuccessBoundaryFailure.OBSERVATION_CLOSE, failure.failure());
         assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM ai_message WHERE run_id = ? AND role = 'ASSISTANT'",
                 Integer.class, run.runId()));
         assertEquals(AgentStore.RUNNING, jdbc.queryForObject("SELECT status FROM ai_run WHERE run_id = ?",
                 String.class, run.runId()));
+    }
+
+    @Test
+    void completePartialPersistsVisiblePartialAndKeepsItOutOfMemory() throws Exception {
+        JdbcTemplate jdbc = database("conversation-partial-boundary");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, "partial-boundary", "库存和变化", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(run.runId()), eq(AgentStore.PARTIAL),
+                eq("AI_TOOL_DATABASE_UNAVAILABLE"))).thenReturn(true);
+
+        assertTrue(store.completePartial(conversationId, run.runId(), run.assistantMessageId(),
+                "库存已查到，变化暂不可用", "scope-7", 2L,
+                "AI_TOOL_DATABASE_UNAVAILABLE", observations));
+        assertEquals(AgentStore.PARTIAL, jdbc.queryForObject(
+                "SELECT status FROM ai_run WHERE run_id = ?", String.class, run.runId()));
+        assertEquals("AI_TOOL_DATABASE_UNAVAILABLE", jdbc.queryForObject(
+                "SELECT error_code FROM ai_run WHERE run_id = ?", String.class, run.runId()));
+        assertEquals(AgentStore.PARTIAL, jdbc.queryForObject(
+                "SELECT state FROM ai_message WHERE run_id = ? AND role = 'ASSISTANT'",
+                String.class, run.runId()));
+        assertEquals(0, store.loadMemory(conversationId, 7L, "scope-7", 1L, 40, 2_000).size());
+    }
+
+    @Test
+    void retryPlanIsConsumedOnceAndChildLinksDirectParent() throws Exception {
+        JdbcTemplate jdbc = database("conversation-retry-plan");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun source = store.startRun(conversationId, "retry-source", "库存和变化", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(source.runId()), eq(AgentStore.PARTIAL),
+                eq("AI_TOOL_DATABASE_UNAVAILABLE"))).thenReturn(true);
+        AgentStore.RetryPlan plan = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 1,
+                List.of(new AgentStore.RetrySubtask(2, "warehouse_recent_movements",
+                        "{\"recentDays\":7}", "AI_TOOL_DATABASE_UNAVAILABLE")));
+
+        assertTrue(store.completePartial(conversationId, source.runId(), source.assistantMessageId(),
+                "库存已查到，变化暂不可用", "scope-7", 2L,
+                "AI_TOOL_DATABASE_UNAVAILABLE", observations, plan));
+        assertTrue(store.retryAvailable(conversationId, source.runId(), 7L, "scope-7"));
+        assertEquals(AgentStore.PARTIAL, store.status(source.runId()));
+
+        AgentStore.StartRun child = store.startRetryRun(conversationId, "retry-child", source.runId(),
+                7L, "scope-7", Duration.ofHours(1));
+        assertTrue(child.newRun());
+        assertEquals(plan.sourceRunId(), child.retryPlan().sourceRunId());
+        assertEquals(source.taskRevision() + 2, child.taskRevision(),
+                "计划持久化和消费各推进一次Task revision");
+        assertEquals(source.runId(), jdbc.queryForObject("SELECT retry_of_run_id FROM ai_run WHERE run_id = ?",
+                String.class, child.runId()));
+        assertFalse(store.retryAvailable(conversationId, source.runId(), 7L, "scope-7"));
+
+        assertThrows(BusinessException.class, () -> store.startRetryRun(conversationId, "retry-other",
+                source.runId(), 7L, "scope-7", Duration.ofHours(1)),
+                "同一计划在活动子Run期间不能被第二个clientRequestId消费");
+        assertTrue(store.fail(child.runId(), "AI_TOOL_DATABASE_UNAVAILABLE"));
+
+        AgentStore.StartRun replay = store.startRetryRun(conversationId, "retry-child", source.runId(),
+                7L, "scope-7", Duration.ofHours(1));
+        assertFalse(replay.newRun());
+        assertEquals(child.runId(), replay.runId(), "相同clientRequestId只返回既有子Run");
+    }
+
+    @Test
+    void concurrentRetryPlanConsumersHaveOneAtomicWinner() throws Exception {
+        JdbcTemplate jdbc = database("conversation-retry-concurrent");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun source = store.startRun(conversationId, "retry-concurrent-source", "库存和变化", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(source.runId()), eq(AgentStore.PARTIAL),
+                eq("AI_TOOL_TIMEOUT"))).thenReturn(true);
+        AgentStore.RetryPlan plan = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 1,
+                List.of(new AgentStore.RetrySubtask(2, "warehouse_recent_movements",
+                        "{\"recentDays\":7}", "AI_TOOL_TIMEOUT")));
+        store.completePartial(conversationId, source.runId(), source.assistantMessageId(),
+                "库存已查到，变化超时", "scope-7", 1L, "AI_TOOL_TIMEOUT", observations, plan);
+
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(2);
+        var winners = new java.util.concurrent.atomic.AtomicInteger();
+        var conflicts = new java.util.concurrent.atomic.AtomicInteger();
+        List<java.util.concurrent.Future<?>> futures = List.of(
+                executor.submit(() -> consumeRetry(store, conversationId, source.runId(), "retry-a", gate, winners, conflicts)),
+                executor.submit(() -> consumeRetry(store, conversationId, source.runId(), "retry-b", gate, winners, conflicts)));
+        gate.countDown();
+        for (var future : futures) future.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        executor.shutdownNow();
+        assertEquals(1, winners.get());
+        assertEquals(1, conflicts.get(), "第二个消费者必须看到明确冲突");
+        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM ai_run WHERE conversation_id = ?",
+                Integer.class, conversationId), "只应创建一个重试子Run");
+    }
+
+    @Test
+    void retryPlanOverBudgetIsNeitherPersistedNorAdvertised() throws Exception {
+        JdbcTemplate jdbc = database("conversation-retry-plan-budget");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun source = store.startRun(conversationId, "retry-budget-source", "库存和变化", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(source.runId()), eq(AgentStore.FAILED),
+                eq("AI_TOOL_EXECUTION_FAILED"))).thenReturn(true);
+        String largeArguments = largeArguments(7_900);
+        AgentStore.RetryPlan oversized = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 0,
+                List.of(
+                        new AgentStore.RetrySubtask(1, "warehouse_current_stock", largeArguments, "AI_TOOL_EXECUTION_FAILED"),
+                        new AgentStore.RetrySubtask(2, "warehouse_item_locations", largeArguments, "AI_TOOL_EXECUTION_FAILED"),
+                        new AgentStore.RetrySubtask(3, "warehouse_recent_movements", largeArguments, "AI_TOOL_EXECUTION_FAILED")));
+
+        assertTrue(store.completeFailure(conversationId, source.runId(), source.assistantMessageId(),
+                "查询暂时未完成", "scope-7", 1L, "AI_TOOL_EXECUTION_FAILED", observations, oversized));
+        String conditions = jdbc.queryForObject("SELECT confirmed_conditions FROM ai_task WHERE task_id = ?",
+                String.class, source.taskId());
+        assertEquals("{}", conditions, "超出总字符预算的计划不得写入Task");
+        assertFalse(store.retryAvailable(conversationId, source.runId(), 7L, "scope-7"));
+    }
+
+    @Test
+    void ordinaryTextRunInvalidatesExistingRetryPlanBeforeExecution() throws Exception {
+        JdbcTemplate jdbc = database("conversation-retry-plan-invalidated");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun source = store.startRun(conversationId, "retry-invalidation-source", "库存和变化", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(source.runId()), eq(AgentStore.PARTIAL),
+                eq("AI_TOOL_TIMEOUT"))).thenReturn(true);
+        AgentStore.RetryPlan plan = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 1,
+                List.of(new AgentStore.RetrySubtask(2, "warehouse_recent_movements",
+                        "{\"recentDays\":7}", "AI_TOOL_TIMEOUT")));
+        store.completePartial(conversationId, source.runId(), source.assistantMessageId(),
+                "库存已查到，变化超时", "scope-7", 1L, "AI_TOOL_TIMEOUT", observations, plan);
+        assertTrue(store.retryAvailable(conversationId, source.runId(), 7L, "scope-7"));
+
+        AgentStore.StartRun ordinary = store.startRun(conversationId, "ordinary-after-failure", "换一个查询", 7L, "scope-7");
+        assertEquals(source.taskRevision() + 2, ordinary.taskRevision(), "普通新问题废止计划时必须推进Task revision");
+        assertFalse(store.retryAvailable(conversationId, source.runId(), 7L, "scope-7"));
+        assertEquals("{}", jdbc.queryForObject("SELECT confirmed_conditions FROM ai_task WHERE task_id = ?",
+                String.class, ordinary.taskId()));
+        assertTrue(store.fail(ordinary.runId(), "AI_MODEL_UNAVAILABLE"));
+        assertThrows(BusinessException.class, () -> store.startRetryRun(conversationId, "stale-plan-submit",
+                source.runId(), 7L, "scope-7", Duration.ofHours(1)));
+    }
+
+    private static String largeArguments(int targetLength) {
+        StringBuilder value = new StringBuilder(targetLength);
+        value.append("{\"value\":\"");
+        while (value.length() < targetLength - 2) value.append('x');
+        value.append("\"}");
+        return value.toString();
+    }
+
+    private void consumeRetry(AgentStore store, String conversationId, String sourceRunId,
+                              String clientRequestId, java.util.concurrent.CountDownLatch gate,
+                              java.util.concurrent.atomic.AtomicInteger winners,
+                              java.util.concurrent.atomic.AtomicInteger conflicts) {
+        try {
+            gate.await();
+            store.startRetryRun(conversationId, clientRequestId, sourceRunId, 7L,
+                    "scope-7", Duration.ofHours(1));
+            winners.incrementAndGet();
+        }
+        catch (BusinessException expected) {
+            conflicts.incrementAndGet();
+        }
+        catch (Exception unexpected) {
+            throw new AssertionError("重试计划竞争应返回明确冲突", unexpected);
+        }
+    }
+
+    @Test
+    void successfulMultiToolBoundaryCompletesTaskOnceAfterAllCards() throws Exception {
+        JdbcTemplate jdbc = database("conversation-multi-tool-boundary");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, "multi-tool-boundary", "库存和变化", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+
+        assertTrue(store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(),
+                "已完成两项查询", "scope-7", 3L, run.taskId(), run.taskRevision(),
+                "MULTI_TOOL", false, observations));
+        assertEquals(AgentStore.TASK_COMPLETED, store.task(run.taskId()).status());
+        assertEquals(run.taskRevision() + 1, store.task(run.taskId()).revision());
+        assertEquals(AgentStore.COMPLETE, jdbc.queryForObject(
+                "SELECT status FROM ai_run WHERE run_id = ?", String.class, run.runId()));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ai_message WHERE run_id = ? AND role = 'ASSISTANT'",
+                Integer.class, run.runId()));
+    }
+
+    @Test
+    void successfulRunWithClarificationCardLeavesTaskReady() throws Exception {
+        JdbcTemplate jdbc = database("conversation-clarification-boundary");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, "clarification-boundary", "轴承", 7L, "scope-7");
+        store.recordTaskCandidates(run.taskId(), run.taskRevision(), "scope-7",
+                Instant.now().plus(Duration.ofHours(1)), "轴承", "ITEM",
+                "[{\"optionToken\":\"token\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"}]",
+                "CURRENT_STOCK");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+
+        assertTrue(store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(),
+                "请从下面选择", "scope-7", 1L, run.taskId(), run.taskRevision(),
+                "CURRENT_STOCK", true, observations));
+        assertEquals(AgentStore.TASK_READY, store.task(run.taskId()).status());
+        assertEquals(run.taskRevision() + 1, store.task(run.taskId()).revision());
     }
 
     @Test

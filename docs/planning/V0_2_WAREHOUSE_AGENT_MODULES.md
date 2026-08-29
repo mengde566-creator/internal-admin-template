@@ -2,7 +2,7 @@
 
 > 状态：已确认（第一版基线）
 > 版本：0.2
-> 日期：2026-08-20
+> 日期：2026-08-27
 > 上级索引：[`V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md`](V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md)
 > 维度：只定义模块职责、依赖、公开契约、数据和安全边界
 
@@ -34,8 +34,10 @@ app-server
 - 恰好一个显式配置的Spring AI `ToolCallingAdvisor`负责循环，并关闭框架自动注册；一个放在循环内的窄Advisor只记录Model Iteration和执行单Run预算，不执行Tool、不保存History；不并行注册第二个Tool Advisor，也不首版手写完整循环；
 - 语义理解、澄清、纠正、离题和拒绝决策；
 - 通用Tool注册入口和结果接收契约；
+- 模型最终结构化结果的缓冲、严格解析、具体Schema校验、安全校验和本轮错误码来源校验；
+- 非法模型结果最多一次且禁用Tool的修正；修正只复用本Run缓存的安全Tool结果，不重新执行Tool或查询数据库；
 - History唯一事实源及Memory选择；
-- 固定响应资产的通用信封，不拥有仓储字段。
+- 固定响应资产的通用信封，不拥有仓储字段；不增加第二个裁判模型、万能结果容器或宽松JSON解析器。
 
 ### 公开契约
 
@@ -63,7 +65,7 @@ FUN-01、FUN-02、FUN-05、FUN-07、FUN-08。
 - 模型参数到WarehouseQueryApi查询DTO的转换；
 - 可信Actor到Warehouse自有访问范围DTO的转换；
 - Tool类型化结果到仓储业务卡片、候选卡和routeKey的转换；
-- 业务参数Schema版本和Tool执行去重键。
+- 业务参数Schema和Tool执行去重键。
 
 ### 依赖
 
@@ -86,14 +88,18 @@ module-agent-warehouse-adapter
 
 ### Tool结果边界
 
-Tool公共信封只使用：
+Tool结果只使用四字段顶层外壳：
 
-```text
-RESOLVED | AMBIGUOUS | NO_DATA | NOT_FOUND
-DENIED | INVALID | UNAVAILABLE
+```json
+{
+  "success": true,
+  "code": "SUCCESS",
+  "message": "库存查询完成",
+  "data": null
+}
 ```
 
-仓储适配DTO用窄`reasonCode`表达未匹配物品、物品无库存或时间范围无变化，并携带`schemaVersion/resultCount/truncated/queriedAt`及构建受信资产所需DTO。`AMBIGUOUS`只生成`clarification-choice`；`stock-summary`、`movement-list`等事实卡不得同时承担候选选择。业务文字仍是不可信数据，不能派生新工具和动作。
+成功结果固定使用`SUCCESS`，查询零结果和有限候选仍为成功；具体仓储DTO在`data`内表达`ANSWERED`、`CLARIFICATION`或`NO_DATA`以及`resultCount`、`truncated`、`queriedAt`和构建受信资产所需字段。失败结果使用可读稳定语义码并令`data=null`。适配器在每次Tool调用时重新鉴权，权限、参数、业务拒绝、候选失效、超时、数据库不可用和未知执行异常必须区分；只有无法进一步安全分类的逃逸异常才使用通用Tool执行失败码。Tool和卡片均不使用`schemaVersion`，不建立`reasonCode`与`code`竞争的第二套错误状态。候选只生成`clarification-choice`；`stock-summary`、`movement-list`等事实卡不得同时承担候选选择。业务文字仍是不可信数据，不能派生新工具和动作。
 
 ### 禁止
 
@@ -304,6 +310,10 @@ requestStartedAt
 
 业务结果卡和候选卡只能由服务端构建。模型文本不产生任意HTML、URL、组件名、routeKey和隐藏字段。未知cardType、routeKey和多余参数明确拒绝。
 
+SSE可以增量发送`run.started`、已验证的`card.replace`和运行状态；模型最终JSON必须在服务端完整缓冲并通过严格解析、具体Schema、`success/code`一致性、错误码来源和安全校验后，才一次性发送`message.completed`。禁止通过`message.delta`展示未经验证的模型草稿。History、Observation和Run完整成功边界成立后才能发送成功终态；SSE写失败必须形成真实失败或PARTIAL状态，不能静默完成为SUCCESS。
+
+前后端通用API、Tool结果和模型最终结果均只使用`success`、`code`、`message`、`data`四个顶层字段。三者共享形状但不共享责任或`data`类型；成功码固定为`SUCCESS`，失败码采用可读稳定英文大写语义码。模型只能传递本轮Tool实际产生的失败码，后端保存本轮允许集合并确定性校验。不使用`schemaVersion`、双编码、`codeName`、统一`blocks/type/payload`、`toolCallId`、`resultRef`或`evidenceRef`。
+
 ## 10. 数据所有权
 
 | 数据 | 所有模块 | 主库/知识库 | 关键生命周期 |
@@ -326,7 +336,7 @@ requestStartedAt
 | 表 | 关键字段 | 关键约束 |
 | --- | --- | --- |
 | `ai_conversation` | id、user_id、active_memory_segment_no、active_run_id、last_memory_activity_at、created_at、updated_at | user_id与最后活动时间索引；通过`active_run_id IS NULL`条件更新占用，保证同一Conversation只有一个活动Run |
-| `ai_message` | message_id、conversation_id、run_id、sequence_no、role、state、content、scope_fingerprint、created_at | conversation_id+sequence_no唯一；同一run的角色消息不得重复；仅COMPLETE助手消息进入Memory |
+| `ai_message` | message_id、conversation_id、run_id、sequence_no、role、state、content、scope_fingerprint、created_at | conversation_id+sequence_no唯一；同一run的角色消息不得重复；通过后端校验的COMPLETE、后端安全失败结果和已验证PARTIAL可以进入History，仅COMPLETE助手消息进入Memory；非法模型输出、修正草稿、Tool原文和异常详情不写入 |
 | `ai_run` | run_id、conversation_id、user_id、client_request_id、memory_segment_no、task_id、status、error_code、created_at、completed_at | conversation_id+client_request_id唯一；终态条件更新只允许首个合法终态生效 |
 | `ai_task` | task_id、conversation_id、memory_segment_no、intent_type、status、confirmed_slots_text、missing_fields_text、revision、scope_fingerprint、expires_at | 每个Segment最多一个活动Task；revision防过期选择 |
 | `ai_observation_run` | run_id、task_id、conversation_id、memory_segment_no、client_request_id、retry_of_run_id、user_message_id、assistant_message_id、user_id、scope_fingerprint、status、outcome、provider、model、started_at、first_event_at、completed_at、error_source、error_code | run_id唯一；user_id+conversation_id+client_request_id唯一；终态只能成功写入一次 |
@@ -369,6 +379,11 @@ Memory空闲TTL默认4小时；History默认180天；Run/Step默认90天；Feedb
 | `AI_CONFIGURATION_INVALID` | 启动 | 缺Key、部分知识数据源配置、模型或维度不一致时启动失败 |
 | `AI_KNOWLEDGE_MIGRATION_FAILED` | 启动 | 扩展、Liquibase或结构校验失败时启动失败 |
 | `AI_CHAT_PROVIDER_UNAVAILABLE` | 运行 | 无可见输出则FAILED，已有输出则PARTIAL |
+| `AI_MODEL_OUTPUT_INVALID` | 运行 | 模型最终JSON严格校验失败且一次禁用Tool的修正仍失败；后端生成安全失败结果 |
+| `AI_MODEL_RESULT_MISMATCH` | 运行 | 模型`success/code`与本轮Tool确定事实不一致；拒绝模型结果，不重新查库 |
+| `AI_HISTORY_WRITE_FAILED` | 运行 | History无法形成完整结果时不得宣称SUCCESS |
+| `AI_OBSERVATION_FINALIZE_FAILED` | 运行 | Observation无法形成终态时不得宣称SUCCESS |
+| `AI_STREAM_DELIVERY_FAILED` | 运行 | SSE无法交付终态；服务端保留真实Run状态，不自动重放请求 |
 | `AI_EMBEDDING_UNAVAILABLE` | 导入/检索 | 导入明确失败；运行查询发可见知识降级 |
 | `AI_KNOWLEDGE_UNAVAILABLE` | 运行 | 不等同零命中，不用模型常识补知识 |
 | `AI_KNOWLEDGE_NO_EVIDENCE` | 运行 | 成功完成检索但无依据，outcome为NO_EVIDENCE |

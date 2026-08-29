@@ -8,7 +8,7 @@ package com.internaladmin.platform.kernel.error;
  */
 public class BusinessException extends RuntimeException {
 
-    private final ErrorCode errorCode;
+    private final ErrorCodeContract errorCode;
 
     /**
      * 创建业务异常。
@@ -16,13 +16,21 @@ public class BusinessException extends RuntimeException {
      * @param errorCode 错误码
      * @param message   面向调用方的错误描述，禁止包含堆栈、SQL 与内部路径
      */
-    public BusinessException(ErrorCode errorCode, String message) {
+    public BusinessException(ErrorCodeContract errorCode, String message) {
         super(message);
+        if (errorCode == null) {
+            throw new IllegalArgumentException("errorCode不能为空");
+        }
         this.errorCode = errorCode;
     }
 
+    /** 保留已编译模块对基础错误枚举构造签名的二进制兼容，语义仍归属于统一契约。 */
+    public BusinessException(ErrorCode errorCode, String message) {
+        this((ErrorCodeContract) errorCode, message);
+    }
+
     /** 返回错误码。 */
-    public ErrorCode getErrorCode() {
+    public ErrorCodeContract getErrorCode() {
         return errorCode;
     }
 }

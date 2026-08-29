@@ -62,6 +62,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.text.Normalizer;
 import java.time.LocalDateTime;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -463,13 +464,19 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
                                                       WarehouseAccessScopeDTO scope) {
         scope = validateTrustedScope(scope);
         int bounded = boundedTaskLimit(limit);
-        String itemPattern = likePattern(itemKeyword);
+        String normalizedItemKeyword = normalizeItemKeyword(itemKeyword);
+        boolean hasItemKeyword = !normalizedItemKeyword.isEmpty();
+        String itemPattern = likePattern(normalizedItemKeyword);
         String warehousePattern = likePattern(warehouseKeyword);
         String locationPattern = likePattern(locationKeyword);
         Long departmentId = scope.allDepartments() ? null : scope.departmentId();
-        List<ItemDO> candidateItems = itemKeyword != null && !itemKeyword.isBlank()
-                ? itemMapper.selectPageOptions(itemPattern, 0, bounded + 1)
-                : List.of();
+        List<ItemDO> candidateItems = List.of();
+        if (hasItemKeyword) {
+            List<ItemDO> exactItems = itemMapper.selectEnabledExact(normalizedItemKeyword, 2);
+            candidateItems = exactItems.isEmpty()
+                    ? itemMapper.selectLiteralCandidates(prefixPattern(normalizedItemKeyword), itemPattern, 0, bounded + 1)
+                    : exactItems;
+        }
         List<WarehouseStockCandidate> candidates = candidateItems.stream()
                 .map(item -> new WarehouseStockCandidate(item.getCode(), item.getName(), item.getBaseUnit())).toList();
         if (candidates.size() > 1) {
@@ -477,7 +484,10 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
             List<WarehouseStockCandidate> visible = candidates.stream().limit(bounded).toList();
             return new WarehouseStockTaskResult("CANDIDATES", List.of(), visible, Instant.now(), truncated);
         }
-        Long resolvedItemId = candidateItems.size() == 1 ? candidateItems.getFirst().getId() : null;
+        if (hasItemKeyword && candidateItems.isEmpty()) {
+            return new WarehouseStockTaskResult("NO_MATCH", List.of(), List.of(), Instant.now(), false);
+        }
+        Long resolvedItemId = candidateItems.size() == 1 ? candidateItems.get(0).getId() : null;
         List<StockPageRowDTO> rows = balanceMapper.selectTaskStock(resolvedItemId == null ? itemPattern : "%",
                 warehousePattern, locationPattern, departmentId, bounded + 1, resolvedItemId);
         boolean truncated = rows.size() > bounded;
@@ -490,7 +500,7 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
         if (!resultRows.isEmpty()) {
             status = "STOCK_RESULT";
         }
-        else if (itemKeyword == null || itemKeyword.isBlank()) {
+        else if (!hasItemKeyword) {
             status = "NO_DATA";
         }
         else if (candidates.isEmpty()) {
@@ -506,10 +516,11 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
     @Transactional(readOnly = true)
     public WarehouseStockTaskResult queryItemLocationsTask(String itemKeyword, int limit,
                                                            WarehouseAccessScopeDTO scope) {
-        if (itemKeyword == null || itemKeyword.isBlank()) {
+        String normalizedItemKeyword = normalizeItemKeyword(itemKeyword);
+        if (normalizedItemKeyword.isEmpty()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "请提供物品名称或编码");
         }
-        return queryCurrentStock(itemKeyword, null, null, limit, scope);
+        return queryCurrentStock(normalizedItemKeyword, null, null, limit, scope);
     }
 
     @Override
@@ -531,7 +542,7 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
         if (matches.isEmpty()) {
             return new WarehouseLocationTaskResult("NO_MATCH", List.of(), List.of(), Instant.now(), false);
         }
-        WarehouseLocationCandidateRowDTO match = matches.getFirst();
+        WarehouseLocationCandidateRowDTO match = matches.get(0);
         Long departmentId = scope.allDepartments() ? null : scope.departmentId();
         List<StockPageRowDTO> rows = balanceMapper.selectStockPage("%%", departmentId, null,
                 match.warehouseId(), match.locationId(), 0, bounded + 1);
@@ -578,6 +589,16 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
     static String likePattern(String value) {
         String keyword = value == null ? "" : value.trim();
         return "%" + keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
+    }
+
+    private static String prefixPattern(String value) {
+        String keyword = value == null ? "" : value;
+        return keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
+    }
+
+    private static String normalizeItemKeyword(String value) {
+        if (value == null) return "";
+        return Normalizer.normalize(value, Normalizer.Form.NFKC).trim().replaceAll("\\s+", " ");
     }
 
     public List<InventoryMovementDTO> queryRecentMovements(int page, int size, WarehouseAccessScopeDTO scope) {

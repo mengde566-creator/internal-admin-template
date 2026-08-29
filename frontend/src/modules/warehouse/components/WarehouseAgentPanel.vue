@@ -28,10 +28,12 @@ import { formatDateTime } from '../../../shared/utils/dateTime'
 
 type UiMessage = {
   messageId: string
+  runId: string
   role: 'USER' | 'ASSISTANT'
   content: string
   createdAt: string
   pending?: boolean
+  retryAvailable?: boolean
 }
 
 type StockRow = {
@@ -55,7 +57,6 @@ type StockSummaryCard = {
   messageId?: string
   cardType: 'stock-summary' | 'item-location' | 'location-contents' | 'movement-list' | 'clarification-choice'
   outcome?: string
-  reasonCode?: string
   status?: string
   itemName?: string
   selectedCandidateCode?: string
@@ -148,6 +149,7 @@ const shellBounds = ref<ShellBounds | null>(null)
 const expandedRestoreHeight = ref(0)
 const MIN_PANEL_HEIGHT = 520
 const MIN_MESSAGES_HEIGHT = 180
+const STREAM_INTERRUPTED_NOTICE = '连接已中断，结果可能已经保存，请刷新当前对话查看。'
 
 const maxWidth = computed(() => {
   if (props.workspaceWidth > 0) {
@@ -209,7 +211,7 @@ const panelStyle = computed(() => {
   const panelHeight = panelIsExpanded.value && bounds
     ? bounds.height
     : clampedOverlayHeight.value
-  return {
+    return {
     '--agent-panel-width': `${clampedWidth.value}px`,
     '--agent-panel-height': panelHeight ? `${panelHeight}px` : undefined,
     '--agent-shell-top': bounds ? `${bounds.top}px` : undefined,
@@ -509,20 +511,22 @@ function messageLabel(message: UiMessage) {
 }
 
 function cardEmptyText(card: StockSummaryCard) {
-  if (card.reasonCode === 'NO_MATCHING_ITEM' || card.status === 'NO_MATCH') return '没有找到匹配的物品，请换一个业务名称或编码。'
-  if (card.reasonCode === 'NO_MATCHING_LOCATION') return '没有找到匹配的仓库或库位，请换一个业务名称或编码。'
-  if (card.reasonCode === 'ITEM_HAS_NO_STOCK' || card.status === 'NO_STOCK') return '当前可见范围内暂无库存。'
-  if (card.reasonCode === 'LOCATION_HAS_NO_STOCK') return '这个库位当前没有库存。'
-  if (card.reasonCode === 'NO_MOVEMENT_IN_RANGE' || card.status === 'NO_DATA') return '所选时间范围内没有库存变化。'
+  if (card.status === 'NO_MATCH') return '没有找到匹配的物品，请换一个业务名称或编码。'
+  if (card.status === 'NO_MATCHING_LOCATION') return '没有找到匹配的仓库或库位，请换一个业务名称或编码。'
+  if (card.status === 'NO_STOCK') return '当前可见范围内暂无库存。'
+  if (card.status === 'LOCATION_HAS_NO_STOCK') return '这个库位当前没有库存。'
+  if (card.status === 'NO_DATA') return '所选时间范围内没有库存变化。'
   return '当前没有可展示的库存记录。'
 }
 
 function toUiMessage(message: Message): UiMessage {
   return {
     messageId: message.messageId,
+    runId: message.runId,
     role: message.role.toUpperCase() === 'USER' ? 'USER' : 'ASSISTANT',
     content: message.content,
-    createdAt: message.createdAt
+    createdAt: message.createdAt,
+    retryAvailable: (message as Message & { retryAvailable?: boolean }).retryAvailable === true
   }
 }
 
@@ -596,7 +600,7 @@ function restoreClarificationCard(task: ClarificationTask | null | undefined) {
       revision: task.revision,
       cardType: 'clarification-choice',
       status: 'FAILED',
-      outcome: 'AMBIGUOUS',
+      outcome: 'CLARIFICATION',
       candidateKind,
       candidateIntent,
       selectedCandidateCode: task.selectedCode,
@@ -614,7 +618,7 @@ function restoreClarificationCard(task: ClarificationTask | null | undefined) {
     revision: task.revision,
     cardType: 'clarification-choice',
     status: 'CANDIDATES',
-    outcome: 'AMBIGUOUS',
+    outcome: 'CLARIFICATION',
     candidateKind,
     candidateIntent,
     candidates: task.options.map((option) => ({
@@ -659,8 +663,8 @@ function newRequestId() {
   return globalThis.crypto?.randomUUID?.() ?? `warehouse-agent-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
-function addUserMessage(text: string) {
-  messages.value.push({ messageId: `local-${Date.now()}`, role: 'USER', content: text, createdAt: new Date().toISOString() })
+function addUserMessage(text: string, runId = '') {
+  messages.value.push({ messageId: `local-${Date.now()}`, runId, role: 'USER', content: text, createdAt: new Date().toISOString() })
 }
 
 function onDraftInput() {
@@ -681,24 +685,43 @@ function confirmSwitchToFreeText() {
   runNotice.value = '已切换为直接提问，可直接发送新问题。'
 }
 
-function ensureAssistantMessage(messageId?: string | null) {
+function ensureAssistantMessage(messageId?: string | null, runId?: string | null) {
   const existingById = messageId
     ? messages.value.find((message) => message.role === 'ASSISTANT' && message.messageId === messageId)
     : undefined
-  if (existingById) return existingById
+  if (existingById) {
+    if (runId) existingById.runId = runId
+    return existingById
+  }
   const existing = messages.value.find((message) => message.pending)
   if (existing) {
     if (messageId && !existing.messageId) existing.messageId = messageId
+    if (runId) existing.runId = runId
     return existing
   }
-  const message: UiMessage = { messageId: messageId ?? '', role: 'ASSISTANT', content: '', createdAt: new Date().toISOString(), pending: true }
+  const message: UiMessage = { messageId: messageId ?? '', runId: runId ?? '', role: 'ASSISTANT', content: '', createdAt: new Date().toISOString(), pending: true }
   messages.value.push(message)
   return message
+}
+
+function assistantMessageForRun(runId?: string | null, messageId?: string | null) {
+  if (messageId) {
+    const byMessage = messages.value.find((message) => message.role === 'ASSISTANT' && message.messageId === messageId)
+    if (byMessage) return byMessage
+  }
+  if (runId) {
+    const byRun = messages.value.find((message) => message.role === 'ASSISTANT' && message.runId === runId)
+    if (byRun) return byRun
+  }
+  return messages.value.find((message) => message.pending)
 }
 
 function parseStockCard(payload: Record<string, unknown>, messageId?: string): StockSummaryCard | null {
   if (!['stock-summary', 'item-location', 'location-contents', 'movement-list', 'clarification-choice'].includes(String(payload.cardType))
     || typeof payload.cardId !== 'string' || !payload.cardId.trim() || typeof payload.revision !== 'number') return null
+  const outcome = payload.outcome
+  if (outcome !== undefined && outcome !== 'ANSWERED' && outcome !== 'CLARIFICATION' && outcome !== 'NO_DATA') return null
+  if (payload.cardType === 'clarification-choice' && outcome !== 'CLARIFICATION') return null
   const rawStocks = Array.isArray(payload.rows) ? payload.rows : (Array.isArray(payload.stocks) ? payload.stocks : [])
   const stocks = rawStocks.filter((row): row is Record<string, unknown> => Boolean(row && typeof row === 'object')).map((row) => ({
     quantity: typeof row.quantity === 'string' ? row.quantity : undefined,
@@ -731,7 +754,6 @@ function parseStockCard(payload: Record<string, unknown>, messageId?: string): S
     cardType: payload.cardType as StockSummaryCard['cardType'],
     status: typeof payload.status === 'string' ? payload.status : (payload.cardType === 'clarification-choice' ? 'CANDIDATES' : undefined),
     outcome: typeof payload.outcome === 'string' ? payload.outcome : undefined,
-    reasonCode: typeof payload.reasonCode === 'string' ? payload.reasonCode : undefined,
     candidateKind: payload.candidateKind === 'LOCATION' ? 'LOCATION' : payload.candidateKind === 'ITEM' ? 'ITEM' : undefined,
     candidateIntent: payload.candidateIntent === 'ITEM_LOCATIONS' || payload.candidateIntent === 'LOCATION_CONTENTS' || payload.candidateIntent === 'CURRENT_STOCK'
       ? payload.candidateIntent
@@ -748,30 +770,59 @@ function parseStockCard(payload: Record<string, unknown>, messageId?: string): S
 
 function onEvent(event: AgentSseEvent) {
   if (event.conversationId !== selectedConversationId.value) return
-  if (event.type === 'message.delta') {
-    const text = typeof event.payload.text === 'string' ? event.payload.text : ''
-    ensureAssistantMessage(event.messageId).content += text
-    return
-  }
   if (event.type === 'message.completed') {
-    const message = ensureAssistantMessage(event.messageId)
-    if (typeof event.payload.text === 'string') message.content = event.payload.text
+    const message = ensureAssistantMessage(event.messageId, event.runId)
+    const payload = event.payload
+    const validCode = typeof payload.code === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(payload.code)
+    if ((payload.success !== true && payload.success !== false) || !validCode
+      || (payload.success === true && payload.code !== 'SUCCESS')
+      || (payload.success === false && payload.code === 'SUCCESS') || payload.data !== null
+      || typeof payload.message !== 'string' || !payload.message.trim()) {
+      message.content = '助手回复暂时不可用，请重新查询。'
+      message.pending = false
+      runState.value = 'failed'
+      runNotice.value = '这次查询没有完成，请重新查询。'
+      return
+    }
+    message.content = payload.message
     message.pending = false
+    if (payload.success === false) {
+      runState.value = 'failed'
+      runNotice.value = payload.message
+    }
     return
   }
   if (event.type === 'card.replace') {
     const card = parseStockCard(event.payload, event.messageId)
     if (card) {
-      ensureAssistantMessage(event.messageId)
+      ensureAssistantMessage(event.messageId, event.runId)
       cards.value[cardIdentity(card.cardId, card.messageId)] = card
     }
     return
   }
   if (event.type === 'run.failed') {
     runState.value = 'failed'
-    runNotice.value = '这次查询没有完成，请重新查询。'
-    const pendingMsg = messages.value.find((message) => message.pending)
-    if (pendingMsg) pendingMsg.pending = false
+    const code = typeof event.payload.code === 'string' ? event.payload.code : ''
+    const failureMessages: Record<string, string> = {
+      AI_TOOL_FORBIDDEN: '当前没有权限查看这部分库存。',
+      AI_TOOL_TIMEOUT: '库存查询超时，请稍后重试。',
+      AI_TOOL_DATABASE_UNAVAILABLE: '库存数据暂时不可用，请稍后重试。',
+      AI_TOOL_EXECUTION_FAILED: '库存查询暂时未完成，请稍后重试。',
+      AI_PARAMETER_INVALID: '查询条件不完整，请调整后重试。',
+      AI_BUSINESS_REJECTED: '当前查询无法办理，请调整后重试。',
+      AI_CANDIDATE_INVALID: '刚才的选择已失效，请重新选择。',
+      AI_STREAM_DELIVERY_FAILED: STREAM_INTERRUPTED_NOTICE,
+      AI_MODEL_OUTPUT_INVALID: '助手回复暂时不可用，请重新查询。',
+      AI_MODEL_RESULT_MISMATCH: '查询结果与助手回复不一致，请重新查询。',
+      AI_MODEL_UNAVAILABLE: '助手暂时不可用，请稍后重试。',
+      AI_HISTORY_WRITE_FAILED: '助手回复保存失败，请重新查询。',
+      AI_OBSERVATION_FAILED: '助手运行记录保存失败，请重新查询。',
+      AI_TERMINAL_CONFLICT: '助手运行状态发生变化，请重新查询。'
+    }
+    runNotice.value = failureMessages[code] ?? '这次查询没有完成，请重新查询。'
+    const assistant = assistantMessageForRun(event.runId, event.messageId)
+    if (assistant) assistant.pending = false
+    if (assistant) assistant.retryAvailable = event.payload.retryAvailable === true
     return
   }
   if (event.type === 'run.completed') {
@@ -781,8 +832,9 @@ function onEvent(event: AgentSseEvent) {
     else if (status === 'CANCELLED') runState.value = 'cancelled'
     if (status === 'PARTIAL') runNotice.value = '已展示部分结果，请重新查询。'
     if (status === 'CANCELLED') runNotice.value = '已取消本次查询。'
-    const pendingMsg = messages.value.find((message) => message.pending)
-    if (pendingMsg) pendingMsg.pending = false
+    const assistant = assistantMessageForRun(event.runId, event.messageId)
+    if (assistant) assistant.pending = false
+    if (assistant) assistant.retryAvailable = event.payload.retryAvailable === true
   }
 }
 
@@ -843,7 +895,7 @@ async function selectAndSubmitCandidate(card: StockSummaryCard, candidate: Stock
 
     if (runState.value === 'running') {
       runState.value = 'failed'
-      runNotice.value = '回复连接已结束，请重新查询。'
+      runNotice.value = STREAM_INTERRUPTED_NOTICE
       card.status = 'FAILED'
     } else if (runState.value === 'success') {
       card.status = 'COMPLETED'
@@ -927,7 +979,7 @@ async function retryCandidateQuery(card: StockSummaryCard) {
 
     if (runState.value === 'running') {
       runState.value = 'failed'
-      runNotice.value = '回复连接已结束，请重新查询。'
+      runNotice.value = STREAM_INTERRUPTED_NOTICE
       card.status = 'FAILED'
     } else if (runState.value === 'success') {
       card.status = 'COMPLETED'
@@ -977,11 +1029,53 @@ async function sendMessage() {
     await runAgent(selectedConversationId.value, newRequestId(), text, controller.signal, onEvent)
     if (runState.value === 'running') {
       runState.value = 'failed'
-      runNotice.value = '回复连接已结束，请稍后再试。'
+      runNotice.value = STREAM_INTERRUPTED_NOTICE
     }
     await loadConversations(1)
   } catch (error: any) {
     if (error?.name === 'AbortError') {
+      runState.value = 'cancelled'
+      runNotice.value = '已取消本次查询。'
+    } else {
+      runState.value = 'failed'
+      runNotice.value = error?.message || '这次查询没有完成，请稍后再试。'
+    }
+  } finally {
+    isRunning.value = false
+    abortController.value = null
+    const pendingMsg = messages.value.find((message) => message.pending)
+    if (pendingMsg) pendingMsg.pending = false
+  }
+}
+
+async function retryFailedRun(source: UiMessage) {
+  if (isRunning.value || !source.retryAvailable || !source.runId || !selectedConversationId.value) return
+  source.retryAvailable = false
+  isRunning.value = true
+  runState.value = 'running'
+  runNotice.value = ''
+  conversationNotice.value = ''
+  let accepted = false
+  const handleRetryEvent = (event: AgentSseEvent) => {
+    if (!accepted && event.type === 'run.started' && event.runId && event.runId !== source.runId) {
+      accepted = true
+      addUserMessage('重试未完成查询', event.runId)
+    }
+    onEvent(event)
+  }
+  try {
+    const controller = new AbortController()
+    abortController.value = controller
+    await runAgent(selectedConversationId.value, newRequestId(), '', controller.signal, handleRetryEvent, undefined, source.runId)
+    if (runState.value === 'running') {
+      runState.value = 'failed'
+      runNotice.value = STREAM_INTERRUPTED_NOTICE
+    }
+    await loadConversations(1)
+  } catch (error: any) {
+    if (error?.status === 409) {
+      runNotice.value = '这次重试已失效，请重新发起查询。'
+    } else if (error?.name === 'AbortError') {
       runState.value = 'cancelled'
       runNotice.value = '已取消本次查询。'
     } else {
@@ -1342,6 +1436,15 @@ onBeforeUnmount(() => {
                 </template>
               </p>
               </template>
+              <button
+                v-if="item.message.role === 'ASSISTANT' && item.message.retryAvailable"
+                type="button"
+                class="text-button retry-run-button"
+                :disabled="isRunning"
+                @click="retryFailedRun(item.message)"
+              >
+                重试未完成查询
+              </button>
             </div>
           </article>
           <article v-else class="stock-card" data-testid="stock-summary-card" :data-message-id="item.card.messageId || undefined">

@@ -1,6 +1,8 @@
 package com.internaladmin.module.agent.service;
 
 import com.internaladmin.module.agent.api.AgentRunContext;
+import com.internaladmin.module.agent.api.AgentErrorCode;
+import com.internaladmin.module.agent.api.AgentToolProvider;
 import com.internaladmin.module.agent.model.dto.ConversationDTO;
 import com.internaladmin.module.agent.model.dto.ConversationPageDTO;
 import com.internaladmin.module.agent.model.dto.MessageDTO;
@@ -14,9 +16,13 @@ import com.internaladmin.platform.kernel.error.BusinessException;
 import com.internaladmin.platform.kernel.error.ErrorCode;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClient.ChatClientRequestSpec;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.deepseek.DeepSeekChatOptions;
+import org.springframework.ai.deepseek.api.ResponseFormat;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
@@ -30,28 +36,40 @@ import java.io.IOException;
 import java.net.ConnectException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Autowired;
 
-/** Gate B run orchestration: one bounded model retry policy and one terminal CAS. */
+/** Structured 03A run orchestration with one bounded model retry policy. */
 @Service
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
 public class AgentConversationService {
-    private static final int MAX_MODEL_ATTEMPTS = 3;
+    private static final int MAX_MODEL_ATTEMPTS = 2;
     private final AgentStore store;
     private final ChatClient chatClient;
     private final AiObservationRecorder observations;
     private final AiProperties properties;
+    private final List<AgentToolProvider> toolProviders;
     private static final tools.jackson.databind.ObjectMapper JSON = JsonMapper.builder().build();
     private static final Logger LOG = LoggerFactory.getLogger(AgentConversationService.class);
     public AgentConversationService(AgentStore store, ChatClient chatClient,
                                     AiObservationRecorder observations, AiProperties properties) {
+        this(store, chatClient, observations, properties, List.of());
+    }
+
+    @Autowired
+    public AgentConversationService(AgentStore store, ChatClient chatClient,
+                                    AiObservationRecorder observations, AiProperties properties,
+                                    List<AgentToolProvider> toolProviders) {
         this.store = store;
         this.chatClient = chatClient;
         this.observations = observations;
         this.properties = properties;
+        this.toolProviders = toolProviders == null ? List.of() : List.copyOf(toolProviders);
     }
 
     public AgentStore.StartRun start(String conversationId, String clientRequestId,
@@ -63,10 +81,30 @@ public class AgentConversationService {
     public AgentStore.StartRun start(String conversationId, String clientRequestId,
                                      String userMessage, AgentRunContext actor,
                                      String clarificationId, String optionToken) {
+        return start(conversationId, clientRequestId, userMessage, actor, clarificationId, optionToken, null);
+    }
+
+    /** Starts either a normal run, a clarification continuation, or a server-directed retry run. */
+    public AgentStore.StartRun start(String conversationId, String clientRequestId,
+                                     String userMessage, AgentRunContext actor,
+                                     String clarificationId, String optionToken,
+                                     String retryOfRunId) {
+
         if (clientRequestId == null || clientRequestId.isBlank() || clientRequestId.length() > 128) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "clientRequestId不能为空且长度不能超过128");
         }
         boolean hasSelection = clarificationId != null || optionToken != null;
+        boolean hasRetry = retryOfRunId != null && !retryOfRunId.isBlank();
+        if (hasRetry) {
+            if (hasSelection || (userMessage != null && !userMessage.isBlank())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "重试请求不能同时携带新消息或候选选择");
+            }
+            if (!actor.hasAuthority("warehouse:read")) {
+                throw new BusinessException(ErrorCode.FORBIDDEN, "缺少仓储查询权限");
+            }
+            return store.startRetryRun(conversationId, clientRequestId, retryOfRunId, actor.userId(),
+                    actor.scopeFingerprint(), properties.getMemory().getIdleTtl());
+        }
         if (hasSelection) {
             if (clarificationId == null || clarificationId.isBlank() || optionToken == null || optionToken.isBlank()
                     || (userMessage != null && !userMessage.isBlank())) {
@@ -74,6 +112,9 @@ public class AgentConversationService {
             }
         } else if (userMessage == null || userMessage.isBlank() || userMessage.length() > 4000) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "消息不能为空且长度不能超过4000");
+        }
+        if (userMessage != null && containsUnsafeInput(userMessage)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "消息包含敏感信息或不可接受字符，请删除后重试");
         }
         if (!actor.hasAuthority("warehouse:read")) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "缺少仓储查询权限");
@@ -149,7 +190,7 @@ public class AgentConversationService {
                 ? null : store.activeClarification(conversationId, userId, scopeFingerprint);
         return new MessagePageDTO(result.records().stream()
                         .map(row -> new MessageDTO(row.messageId(), row.runId(), row.role(), row.state(),
-                                row.content(), row.createdAt()))
+                                row.content(), row.createdAt(), store.retryAvailable(conversationId, row.runId(), userId, scopeFingerprint)))
                         .toList(), result.total(), result.page(), result.size(), toClarificationTask(task));
     }
 
@@ -263,15 +304,11 @@ public class AgentConversationService {
             if (run.taskId() == null) {
                 return new PreparedCard(identity.json(), identity.cardId(), identity.revision());
             }
-            String intent = switch (identity.cardType()) {
-                case "movement-list" -> "RECENT_MOVEMENTS";
-                case "item-location" -> "ITEM_LOCATIONS";
-                case "location-contents" -> "LOCATION_CONTENTS";
-                default -> "CURRENT_STOCK";
-            };
-            AgentStore.TaskRow task = store.completeTask(run.taskId(), run.taskRevision(), scopeFingerprint, intent);
-            object.put("revision", task.revision());
-            return new PreparedCard(object.toString(), identity.cardId(), task.revision());
+            // Ordinary result cards are facts produced by this run.  They must not
+            // advance/complete the clarification Task one-by-one: a run can emit
+            // more than one card, and the task transition is closed once at the
+            // successful run boundary only.
+            return new PreparedCard(object.toString(), identity.cardId(), identity.revision());
         } catch (BusinessException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -290,8 +327,8 @@ public class AgentConversationService {
             }
             String cardType = requiredText(root, "cardType", 40);
             java.util.Set<String> common = new java.util.HashSet<>(java.util.Set.of(
-                    "cardId", "revision", "cardType", "schemaVersion", "resultCount", "truncated",
-                    "outcome", "reasonCode", "queriedAt", "rows"));
+                    "cardId", "revision", "cardType", "resultCount", "truncated",
+                    "outcome", "queriedAt", "rows", "status"));
             java.util.Set<String> allowed = new java.util.HashSet<>(common);
             if ("clarification-choice".equals(cardType)) {
                 allowed.addAll(java.util.Set.of("clarificationId", "question", "selectionMode", "options", "allowFreeText", "candidateKind", "candidateIntent"));
@@ -301,21 +338,26 @@ public class AgentConversationService {
             }
             java.util.Set<String> actual = new java.util.HashSet<>();
             actual.addAll(root.propertyNames());
+            boolean hasStatus = actual.remove("status");
+            allowed.remove("status");
             if (!allowed.equals(actual)) {
                 throw new BusinessException(ErrorCode.CONFLICT, "卡片字段不受支持，请重新查询");
+            }
+            if (hasStatus && (root.get("status") == null || !root.get("status").isTextual()
+                    || root.get("status").asText().length() > 32)) {
+                throw new BusinessException(ErrorCode.CONFLICT, "卡片状态无效，请重新查询");
             }
             String cardId = requiredText(root, "cardId", 128);
             JsonNode revision = root.get("revision");
             if (revision == null || !revision.isIntegralNumber() || revision.asLong() < 0) {
                 throw new BusinessException(ErrorCode.CONFLICT, "卡片修订号无效，请重新查询");
             }
-            requireNumber(root, "schemaVersion", 1);
             requireNumber(root, "resultCount", 20);
             if (root.get("truncated") == null || !root.get("truncated").isBoolean()) {
                 throw new BusinessException(ErrorCode.CONFLICT, "卡片结果无效，请重新查询");
             }
             String outcome = requiredText(root, "outcome", 32);
-            if (!java.util.Set.of("RESOLVED", "AMBIGUOUS", "NO_DATA", "NOT_FOUND", "DENIED", "INVALID", "UNAVAILABLE")
+            if (!java.util.Set.of("ANSWERED", "CLARIFICATION", "NO_DATA")
                     .contains(outcome)) {
                 throw new BusinessException(ErrorCode.CONFLICT, "卡片结果无效，请重新查询");
             }
@@ -324,7 +366,7 @@ public class AgentConversationService {
             }
             String optionsJson = null;
             if ("clarification-choice".equals(cardType)) {
-                if (!"AMBIGUOUS".equals(outcome) || root.get("options") == null || !root.get("options").isArray()
+                if (!"CLARIFICATION".equals(outcome) || root.get("options") == null || !root.get("options").isArray()
                         || root.get("options").size() < 1 || root.get("options").size() > 20) {
                     throw new BusinessException(ErrorCode.CONFLICT, "候选卡片无效，请重新查询");
                 }
@@ -433,15 +475,22 @@ public class AgentConversationService {
                         execution.messageId(), statusPayload(run.status())));
             } else if (AgentStore.FAILED.equals(run.status())) {
                 emitter.accept(envelopedEvent("run.failed", run, execution.eventSequence(),
-                        execution.messageId(), "{\"code\":\"RUN_FAILED\"}"));
+                        execution.messageId(), "{\"code\":\"" + AgentErrorCode.MODEL_UNAVAILABLE.getCode() + "\"}"));
             }
             return;
         }
 
         emitter.accept(envelopedEvent("run.started", run, execution.eventSequence(),
                 execution.messageId(), "{}"));
-        StringBuilder answer = new StringBuilder();
+        if (run.retryPlan() != null) {
+            executeRetry(run, execution, emitter, cancelled);
+            return;
+        }
+        boolean correctionAttempted = false;
         for (int attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt++) {
+            // Each bounded transport retry starts from an empty untrusted buffer;
+            // a half-written JSON response must never be concatenated with the next attempt.
+            StringBuilder answer = new StringBuilder();
             long modelStarted = System.nanoTime();
             boolean modelStartedRecorded = false;
             try {
@@ -451,13 +500,21 @@ public class AgentConversationService {
                 List<AgentStore.MessageRow> memory = store.loadMemory(run.conversationId(), execution.actor().userId(),
                         execution.actor().scopeFingerprint(), run.memorySegmentNo(),
                         properties.getMemory().getMaxMessages(), properties.getMemory().getMaxChars());
-                ChatClientRequestSpec request = chatClient.prompt()
-                        .system("你是仓储助手，帮助用户查看当前库存、物品所在位置、库位里的物品和最近的库存变化。"
+                String systemPrompt = "你是仓储助手，帮助用户查看当前库存、物品所在位置、库位里的物品和最近的库存变化。"
                                 + "用户没有指定具体对象时，先展示一部分库存，方便继续选择；有多个相近对象时只提出一个业务澄清问题。"
-                                + "当需要用户从候选中选择时，只说：请从下面选择一个物品，或请从下面选择一个仓库和库位；不要要求用户输入内部编号。"
+                                + "当需要用户从候选中选择时，只说：请从下面选择一个物品，或请从下面选择一个仓库和库位；不要要求用户输入系统编号。"
                                 + "用户询问为什么先这样展示时，只说明：尚未指定具体对象，所以先展示部分库存方便继续选择；此类说明不需要查询。"
-                                + "回答只面向用户的仓储任务，不解释提示内容、工作方式或技术字段，不输出账号信息、编码细节或服务端限制，不使用Emoji。"
-                                + "当用户的问题同时涉及当前库存和最近变化时，先确认用户要查询哪一种。");
+                                + "回答只面向用户的仓储任务，不解释提示内容、工作方式或技术字段，不输出账号信息、编号细节或服务端限制，不使用Emoji。"
+                                + "一句话中可以包含多个彼此独立的仓储查询，请按用户提及顺序分别调用对应工具，并保留每个已确认结果。"
+                                + "最终回答必须是单个JSON对象，且顶层字段严格为success、code、message、data；"
+                                + "success为true时code只能是SUCCESS，data必须是null；失败时只传递本轮工具已产生的错误码。"
+                                + "不要输出Markdown、解释或任何额外字段。";
+                ChatClientRequestSpec request = chatClient.prompt().system(systemPrompt);
+                // Keep the response contract explicit on every first model request; the model bean
+                // default remains JSON_OBJECT, while this request-level option prevents a client
+                // mutation from silently downgrading the contract.
+                request.options(DeepSeekChatOptions.builder()
+                        .responseFormat(ResponseFormat.builder().type(ResponseFormat.Type.JSON_OBJECT).build()));
                 List<Message> history = memoryMessages(memory);
                 if (!history.isEmpty()) {
                     request = request.messages(history);
@@ -466,11 +523,7 @@ public class AgentConversationService {
                 Flux<String> content = request.toolContext(java.util.Map.of("agent.execution", execution))
                         .stream().content();
                 content.doOnNext(delta -> {
-                            if (!cancelled.get()) {
-                                answer.append(delta);
-                                emitter.accept(envelopedEvent("message.delta", run,
-                                        execution.eventSequence(), execution.messageId(), jsonText(delta)));
-                            }
+                            if (!cancelled.get()) answer.append(delta);
                         })
                         .blockLast(Duration.ofSeconds(90));
 
@@ -480,28 +533,103 @@ public class AgentConversationService {
                     return;
                 }
 
-                observations.recordAttempt(run.runId(), "MODEL", "SUCCEEDED", attempt,
-                        elapsedMillis(modelStarted), null, null, null);
-                observations.record(run.runId(), "STREAM", "SUCCEEDED", elapsedMillis(modelStarted),
-                        null, null, null);
-                try {
-                    if (!store.completeSuccess(run.conversationId(), run.runId(), execution.messageId(),
-                            answer.toString(), execution.actor().scopeFingerprint(), elapsedMillis(modelStarted),
-                            observations)) {
-                        throw new AgentStore.SuccessBoundaryException(
-                                AgentStore.SuccessBoundaryFailure.TERMINAL_CONFLICT);
-                    }
-                } catch (AgentStore.SuccessBoundaryException boundaryFailure) {
-                    failAfterSuccessBoundary(run, execution, emitter, boundaryFailure.failure().name());
+                // The bounded outcome ledger is a safety boundary, not a lossy
+                // pagination mechanism.  Once it overflows, do not let a model
+                // response turn the truncated view into an apparent success.
+                if (execution.hasOutcomeOverflow()) {
+                    completeGeneratedFailure(run, execution, emitter,
+                            AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), modelStarted, attempt);
                     return;
                 }
-                emitter.accept(envelopedEvent("message.completed", run, execution.eventSequence(),
-                        execution.messageId(), jsonText(answer.toString())));
-                emitter.accept(envelopedEvent("run.completed", run, execution.eventSequence(),
-                        execution.messageId(), statusPayload("SUCCESS")));
+
+                ModelResult modelResult;
+                try {
+                    modelResult = validateOrCorrect(answer.toString(), execution, correctionAttempted);
+                    correctionAttempted = modelResult.correctionAttempted();
+                } catch (ModelResultException invalid) {
+                    safeRecordModelTerminal(run.runId(), "FAILED", attempt, elapsedMillis(modelStarted), invalid.code());
+                    completeGeneratedFailure(run, execution, emitter, invalid.code(), modelStarted, attempt);
+                    return;
+                }
+                if (!modelResult.success()) {
+                    AgentStore.RetryPlan retryPlan = buildRetryPlan(run, execution,
+                            execution.successfulToolCount(), taskIntent(execution));
+                    try {
+                        if (hasMixedToolOutcome(execution)) {
+                            if (!completePartialBoundary(run, execution, modelResult.message(),
+                                    elapsedMillis(modelStarted), execution.toolErrorCode(), retryPlan)) {
+                                throw new AgentStore.SuccessBoundaryException(
+                                        AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
+                            }
+                        } else if (!completeFailureBoundary(run, execution, modelResult.message(),
+                                elapsedMillis(modelStarted), modelResult.code(), retryPlan)) {
+                            throw new AgentStore.SuccessBoundaryException(
+                                    AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
+                        }
+                    } catch (AgentStore.SuccessBoundaryException boundaryFailure) {
+                        failAfterSuccessBoundary(run, execution, emitter, boundaryCode(boundaryFailure.failure()));
+                        return;
+                    }
+                    boolean retryAvailable = persistedRetryAvailable(run, execution, retryPlan);
+                    if (hasMixedToolOutcome(execution)) {
+                        emitValidatedPartial(run, execution, emitter, modelResult.json(), execution.toolErrorCode(), retryAvailable);
+                    } else {
+                        emitValidatedFailure(run, execution, emitter, modelResult.json(), modelResult.code(), retryAvailable);
+                    }
+                    return;
+                }
+                try {
+                    if (!completeSuccessfulRun(run, execution, modelResult.message(), elapsedMillis(modelStarted))) {
+                        throw new AgentStore.SuccessBoundaryException(
+                                AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
+                    }
+                } catch (AgentStore.SuccessBoundaryException boundaryFailure) {
+                    failAfterSuccessBoundary(run, execution, emitter, boundaryCode(boundaryFailure.failure()));
+                    return;
+                }
+                emitValidatedTerminal(run, execution, emitter, modelResult.json(), AgentStore.COMPLETE,
+                        modelStarted, attempt);
                 return;
             } catch (Exception ex) {
                 boolean hasVisibleOutput = visible(answer, execution);
+                if (execution.hasSuccessfulTool() && !execution.hasToolFailure() && hasVisibleOutput) {
+                    // A trusted card already reached the client.  Do not silently
+                    // turn a subsequent model/transport failure into a bare
+                    // terminal event; persist a safe partial result instead.
+                    completeGeneratedFailure(run, execution, emitter,
+                            errorCode(ex), modelStarted, attempt);
+                    return;
+                }
+                if (execution.hasToolFailure()) {
+                    String toolCode = execution.toolErrorCode();
+                    String toolMessage = toolFailureMessage(toolCode);
+                    AgentStore.RetryPlan retryPlan = buildRetryPlan(run, execution,
+                            execution.successfulToolCount(), taskIntent(execution));
+                    try {
+                        if (hasMixedToolOutcome(execution)) {
+                            if (!completePartialBoundary(run, execution, toolMessage,
+                                    elapsedMillis(modelStarted), toolCode, retryPlan)) {
+                                throw new AgentStore.SuccessBoundaryException(
+                                        AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
+                            }
+                        } else if (!completeFailureBoundary(run, execution, toolMessage,
+                                elapsedMillis(modelStarted), toolCode, retryPlan)) {
+                            throw new AgentStore.SuccessBoundaryException(
+                                    AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
+                        }
+                    } catch (AgentStore.SuccessBoundaryException boundaryFailure) {
+                        failAfterSuccessBoundary(run, execution, emitter, boundaryCode(boundaryFailure.failure()));
+                        return;
+                    }
+                    boolean retryAvailable = persistedRetryAvailable(run, execution, retryPlan);
+                    if (hasMixedToolOutcome(execution)) {
+                        emitValidatedPartial(run, execution, emitter, failureResultJson(toolCode, toolMessage), toolCode, retryAvailable);
+                    } else {
+                        emitValidatedFailure(run, execution, emitter,
+                                failureResultJson(toolCode, toolMessage), toolCode, retryAvailable);
+                    }
+                    return;
+                }
                 boolean retry = modelStartedRecorded && !hasVisibleOutput && attempt < MAX_MODEL_ATTEMPTS
                         && isRetryable(ex);
                 if (retry) {
@@ -510,11 +638,384 @@ public class AgentConversationService {
                     continue;
                 }
                 String status = hasVisibleOutput ? AgentStore.PARTIAL : AgentStore.FAILED;
-                String code = hasVisibleOutput ? "PARTIAL" : (modelStartedRecorded ? errorCode(ex) : "OBSERVATION_FAILED");
+                String code = modelStartedRecorded ? errorCode(ex) : AgentErrorCode.OBSERVATION_FAILED.getCode();
+                if (AgentStore.FAILED.equals(status)
+                        && AgentErrorCode.MODEL_UNAVAILABLE.getCode().equals(code)) {
+                    completeGeneratedFailure(run, execution, emitter, code, modelStarted, attempt);
+                    return;
+                }
                 finishTerminal(run, execution, emitter, status, code, modelStarted, attempt);
                 return;
             }
         }
+    }
+
+    private ModelResult validateOrCorrect(String raw, AgentExecutionContext execution,
+                                          boolean correctionAttempted) {
+        try {
+            return validateModelResult(raw, execution, false);
+        } catch (ModelResultException invalid) {
+            boolean correctable = AgentErrorCode.MODEL_OUTPUT_INVALID.getCode().equals(invalid.code())
+                    || AgentErrorCode.MODEL_RESULT_MISMATCH.getCode().equals(invalid.code());
+            if (!correctable || correctionAttempted) {
+                throw invalid;
+            }
+            String trusted = execution.correctionSafeResults();
+            if (execution.hasOutcomeOverflow() || execution.hasCorrectionOverflow() || trusted.length() > 20_000) {
+                throw new ModelResultException(AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(),
+                        AgentErrorCode.TOOL_EXECUTION_FAILED.getMessage(), true);
+            }
+            String corrected = requestCorrection(execution);
+            try {
+                return validateModelResult(corrected, execution, true);
+            } catch (ModelResultException second) {
+                throw new ModelResultException(AgentErrorCode.MODEL_OUTPUT_INVALID.getCode(),
+                        AgentErrorCode.MODEL_OUTPUT_INVALID.getMessage(), true);
+            }
+        }
+    }
+
+    /** Executes a persisted retry plan without re-entering the model or replaying successful tools. */
+    private void executeRetry(AgentStore.StartRun run, AgentExecutionContext execution,
+                              Consumer<StreamEvent> emitter, AtomicBoolean cancelled) {
+        AgentStore.RetryPlan plan = run.retryPlan();
+        if (cancelled.get()) {
+            finishTerminal(run, execution, emitter, AgentStore.CANCELLED, null, System.nanoTime(), 0);
+            return;
+        }
+        Map<String, ToolCallback> callbacks = toolProviders.stream()
+                .flatMap(provider -> java.util.Arrays.stream(provider.getToolCallbacks()))
+                .collect(Collectors.toMap(callback -> callback.getToolDefinition().name(), callback -> callback,
+                        (left, right) -> left, java.util.LinkedHashMap::new));
+        long previousOrder = 0;
+        for (AgentStore.RetrySubtask subtask : plan.subtasks()) {
+            if (cancelled.get()) {
+                finishTerminal(run, execution, emitter, AgentStore.PARTIAL, execution.toolErrorCode(), System.nanoTime(), 0);
+                return;
+            }
+            if (subtask.order() <= previousOrder || !callbacks.containsKey(subtask.toolName())) {
+                execution.recordToolFailure(subtask.toolName(), subtask.arguments(),
+                        AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), null);
+                break;
+            }
+            previousOrder = subtask.order();
+            int before = execution.toolOutcomes().size();
+            try {
+                callbacks.get(subtask.toolName()).call(subtask.arguments(),
+                        new ToolContext(Map.of("agent.execution", execution)));
+            }
+            catch (RuntimeException failure) {
+                if (execution.toolOutcomes().size() == before) {
+                    execution.recordToolFailure(subtask.toolName(), subtask.arguments(),
+                            subtask.errorCode(), null);
+                }
+            }
+            if (execution.toolOutcomes().size() == before) {
+                execution.recordToolFailure(subtask.toolName(), subtask.arguments(),
+                        AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), null);
+            }
+        }
+        if (execution.hasToolFailure()) {
+            int totalSuccess = plan.successfulCount() + execution.successfulToolCount();
+            AgentStore.RetryPlan nextPlan = buildRetryPlan(run, execution, totalSuccess, plan.taskIntent());
+            String code = execution.toolErrorCode();
+            String message = totalSuccess > 0 ? "部分查询仍未完成，请稍后重试" : toolFailureMessage(code);
+            boolean partial = totalSuccess > 0;
+            try {
+                boolean closed = partial
+                        ? store.completePartial(run.conversationId(), run.runId(), execution.messageId(), message,
+                        execution.actor().scopeFingerprint(), 0L, code, observations, nextPlan)
+                        : store.completeFailure(run.conversationId(), run.runId(), execution.messageId(), message,
+                        execution.actor().scopeFingerprint(), 0L, code, observations, nextPlan);
+                if (!closed) throw new AgentStore.SuccessBoundaryException(AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
+            }
+            catch (AgentStore.SuccessBoundaryException boundaryFailure) {
+                failAfterSuccessBoundary(run, execution, emitter, boundaryCode(boundaryFailure.failure()));
+                return;
+            }
+            boolean retryAvailable = persistedRetryAvailable(run, execution, nextPlan);
+            if (partial) emitValidatedPartial(run, execution, emitter, failureResultJson(code, message), code, retryAvailable);
+            else emitValidatedFailure(run, execution, emitter, failureResultJson(code, message), code, retryAvailable);
+            return;
+        }
+        String message = "未完成的查询已完成";
+        try {
+            if (!store.completeSuccess(run.conversationId(), run.runId(), execution.messageId(), message,
+                    execution.actor().scopeFingerprint(), 0L, run.taskId(), run.taskRevision(),
+                    plan.taskIntent(), execution.hasClarificationProduced(), observations)) {
+                throw new AgentStore.SuccessBoundaryException(AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
+            }
+        }
+        catch (AgentStore.SuccessBoundaryException boundaryFailure) {
+            failAfterSuccessBoundary(run, execution, emitter, boundaryCode(boundaryFailure.failure()));
+            return;
+        }
+        emitValidatedTerminal(run, execution, emitter,
+                "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"未完成的查询已完成\",\"data\":null}",
+                AgentStore.COMPLETE, System.nanoTime(), 0);
+    }
+
+    private AgentStore.RetryPlan buildRetryPlan(AgentStore.StartRun run, AgentExecutionContext execution,
+                                                int successfulCount, String taskIntent) {
+        if (!execution.hasToolFailure() || execution.hasOutcomeOverflow() || execution.hasCorrectionOverflow()) return null;
+        List<AgentStore.RetrySubtask> failures = new java.util.ArrayList<>();
+        for (AgentExecutionContext.ToolOutcome outcome : execution.toolOutcomes()) {
+            if (!outcome.success()) {
+                if (outcome.arguments() == null || outcome.arguments().isBlank()
+                        || !java.util.Set.of("AI_TOOL_TIMEOUT", "AI_TOOL_DATABASE_UNAVAILABLE", "AI_TOOL_EXECUTION_FAILED")
+                        .contains(outcome.errorCode())) return null;
+                failures.add(new AgentStore.RetrySubtask(outcome.sequence(), outcome.toolName(),
+                        outcome.arguments(), outcome.errorCode()));
+            }
+        }
+        return failures.isEmpty() ? null : new AgentStore.RetryPlan(run.runId(), taskIntent, successfulCount, failures);
+    }
+
+    /**
+     * Reads retryability from the Store after the terminal transaction has closed.
+     * The Store is the sole authority for whether a plan was actually persisted;
+     * in particular, an over-budget plan must never be advertised from its
+     * in-memory candidate alone.
+     */
+    private boolean persistedRetryAvailable(AgentStore.StartRun run,
+                                            AgentExecutionContext execution,
+                                            AgentStore.RetryPlan plan) {
+        if (plan == null) return false;
+        try {
+            return store.retryAvailable(run.conversationId(), run.runId(),
+                    execution.actor().userId(), execution.actor().scopeFingerprint());
+        } catch (RuntimeException failure) {
+            LOG.warn("AI retry availability lookup failed for runId={}", run.runId(), failure);
+            return false;
+        }
+    }
+
+    private boolean hasMixedToolOutcome(AgentExecutionContext execution) {
+        return execution.hasSuccessfulTool() && execution.hasToolFailure();
+    }
+
+    /** Close a successful run, completing an attached Task exactly once after all tools finish. */
+    private boolean completeSuccessfulRun(AgentStore.StartRun run, AgentExecutionContext execution,
+                                          String message, long durationMillis) {
+        if (run.taskId() != null && execution.hasToolOutcomes()) {
+            return store.completeSuccess(run.conversationId(), run.runId(), execution.messageId(), message,
+                    execution.actor().scopeFingerprint(), durationMillis, run.taskId(), run.taskRevision(),
+                    taskIntent(execution), execution.hasClarificationProduced(), observations);
+        }
+        return store.completeSuccess(run.conversationId(), run.runId(), execution.messageId(), message,
+                execution.actor().scopeFingerprint(), durationMillis, observations);
+    }
+
+    private boolean completePartialBoundary(AgentStore.StartRun run, AgentExecutionContext execution,
+                                            String message, long durationMillis, String code,
+                                            AgentStore.RetryPlan plan) {
+        if (plan == null) {
+            return store.completePartial(run.conversationId(), run.runId(), execution.messageId(), message,
+                    execution.actor().scopeFingerprint(), durationMillis, code, observations);
+        }
+        return store.completePartial(run.conversationId(), run.runId(), execution.messageId(), message,
+                execution.actor().scopeFingerprint(), durationMillis, code, observations, plan);
+    }
+
+    private boolean completeFailureBoundary(AgentStore.StartRun run, AgentExecutionContext execution,
+                                            String message, long durationMillis, String code,
+                                            AgentStore.RetryPlan plan) {
+        if (plan == null) {
+            return store.completeFailure(run.conversationId(), run.runId(), execution.messageId(), message,
+                    execution.actor().scopeFingerprint(), durationMillis, code, observations);
+        }
+        return store.completeFailure(run.conversationId(), run.runId(), execution.messageId(), message,
+                execution.actor().scopeFingerprint(), durationMillis, code, observations, plan);
+    }
+
+    private String taskIntent(AgentExecutionContext execution) {
+        java.util.Set<String> toolNames = new java.util.LinkedHashSet<>();
+        for (AgentExecutionContext.ToolOutcome outcome : execution.toolOutcomes()) {
+            if (outcome.toolName() != null && !outcome.toolName().isBlank()) toolNames.add(outcome.toolName());
+        }
+        if (toolNames.size() > 1) return "MULTI_TOOL";
+        String tool = toolNames.isEmpty() ? "" : toolNames.iterator().next();
+        return switch (tool) {
+            case "warehouse_recent_movements" -> "RECENT_MOVEMENTS";
+            case "warehouse_item_locations" -> "ITEM_LOCATIONS";
+            case "warehouse_location_contents" -> "LOCATION_CONTENTS";
+            default -> "CURRENT_STOCK";
+        };
+    }
+
+    private String requestCorrection(AgentExecutionContext execution) {
+        String allowed = execution.toolErrorCode();
+        if (allowed == null || allowed.isBlank()) {
+            allowed = "无工具错误码";
+        }
+        String trustedResults = execution.correctionSafeResults();
+        try {
+            ChatClientRequestSpec correction = chatClient.prompt()
+                    .advisors(java.util.List.of())
+                    .toolCallbacks(java.util.List.of())
+                    .system("只返回一个合法JSON对象，字段必须严格为success、code、message、data。"
+                            + "data必须为null；success为true时code必须为SUCCESS；失败时code只能从已确认错误码中选择。"
+                            + "不得输出解释、Markdown或其他字段。")
+                    .user("本次运行已确认的错误码：" + allowed + "。本次运行已验证的业务结果如下："
+                            + trustedResults + "。请仅根据这些受信事实生成符合要求的JSON，不要新增事实。");
+            correction.options(DeepSeekChatOptions.builder()
+                    .responseFormat(ResponseFormat.builder().type(ResponseFormat.Type.JSON_OBJECT).build()));
+            String value = correction.call().content();
+            if (value == null || value.isBlank()) throw new IllegalStateException("empty correction");
+            return value;
+        } catch (RuntimeException failure) {
+            throw new ModelResultException(AgentErrorCode.MODEL_OUTPUT_INVALID.getCode(),
+                    AgentErrorCode.MODEL_OUTPUT_INVALID.getMessage(), true);
+        }
+    }
+
+    private ModelResult validateModelResult(String raw, AgentExecutionContext execution,
+                                            boolean corrected) {
+        try {
+            if (raw == null || raw.isBlank()) throw invalidResult();
+            JsonNode root;
+            try (var parser = JSON.createParser(raw)) {
+                root = JSON.readTree(parser);
+                if (parser.nextToken() != null) throw invalidResult();
+            }
+            if (root == null || !root.isObject()) throw invalidResult();
+            java.util.Set<String> fields = new java.util.HashSet<>();
+            root.propertyNames().forEach(fields::add);
+            if (!fields.equals(java.util.Set.of("success", "code", "message", "data"))) throw invalidResult();
+            JsonNode success = root.get("success");
+            JsonNode code = root.get("code");
+            JsonNode message = root.get("message");
+            JsonNode data = root.get("data");
+            if (success == null || !success.isBoolean() || code == null || !code.isTextual()
+                    || message == null || !message.isTextual() || message.asText().isBlank()
+                    || message.asText().length() > 2000 || containsControl(message.asText())
+                    || data == null || !data.isNull()) throw invalidResult();
+            String codeValue = code.asText();
+            boolean successValue = success.asBoolean();
+            if ((successValue && !"SUCCESS".equals(codeValue)) || (!successValue && "SUCCESS".equals(codeValue))) {
+                throw mismatchResult();
+            }
+            if (!successValue) {
+                String expectedCode = execution.toolErrorCode();
+                if (expectedCode == null || !expectedCode.equals(codeValue)) {
+                    throw mismatchResult();
+                }
+            } else if (execution.hasToolFailure()) {
+                throw mismatchResult();
+            }
+            String visible = message.asText();
+            if (containsSensitive(visible, execution)) throw invalidResult();
+            return new ModelResult(root.toString(), visible, corrected, successValue, codeValue);
+        } catch (ModelResultException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            throw invalidResult();
+        }
+    }
+
+    private static boolean containsControl(String value) {
+        return value.chars().anyMatch(character -> character < 0x20 && character != '\n' && character != '\r' && character != '\t');
+    }
+
+    private static boolean containsSensitive(String value, AgentExecutionContext execution) {
+        String lower = value.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("userid") || lower.contains("itemid") || lower.contains("departmentid")
+                || lower.contains("locationid") || lower.contains("cookie") || lower.contains("session")
+                || lower.contains("apikey") || lower.contains("api-key") || lower.contains("reasoning_content")
+                || lower.contains("toolcallid") || lower.contains("bearer ") || lower.contains("authorization")
+                || lower.contains("password") || lower.contains("passwd") || lower.contains("jdbc:")
+                || lower.contains("secret") || lower.matches(".*\\bhttps?://\\S+.*")) {
+            return true;
+        }
+        if (java.util.regex.Pattern.compile("(?i)(?:action|动作|tool|工具|function|函数)\\s*[:=]").matcher(value).find()) {
+            return true;
+        }
+        if (java.util.regex.Pattern.compile("(?i)\\b(?:postgres(?:ql)?|mysql|oracle)://\\S+").matcher(value).find()) {
+            return true;
+        }
+        // A model must not turn a validated user-facing result into executable or
+        // connection data. Match explicit SQL/connection markers only; ordinary
+        // quantities such as “最近7天” remain valid.
+        if (java.util.regex.Pattern.compile("(?i)(?:^|[\\s：:])(?:sql|select|insert|update|delete|drop)\\b")
+                .matcher(value).find()
+                || java.util.regex.Pattern.compile("(?i)(?:server|host|database|uid|pwd)\\s*=\\s*[^\\s,;]+")
+                .matcher(value).find()) {
+            return true;
+        }
+        // Numeric IDs are not sensitive on their own (for example, “最近7天”); only
+        // reject them when the text explicitly labels the value as an internal ID.
+        if (java.util.regex.Pattern.compile(
+                        "(?i)(user\\s*id|item\\s*id|department\\s*id|location\\s*id|用户\\s*(?:id|编号|标识)|部门\\s*(?:id|编号|标识)|物品\\s*(?:id|编号|标识)|库位\\s*(?:id|编号|标识))\\s*[:=：]\\s*[\\\"']?[A-Za-z0-9_-]+")
+                .matcher(value).find()) {
+            return true;
+        }
+        return containsKnownActorId(value, execution);
+    }
+
+    /** Reject a known actor identifier only when the output labels it as an internal identifier. */
+    private static boolean containsKnownActorId(String value, AgentExecutionContext execution) {
+        if (execution == null || execution.actor() == null) return false;
+        for (String[] labeledId : new String[][]{
+                {"user\\s*(?:id|编号|标识)", execution.actor().userId() == null ? null : execution.actor().userId().toString()},
+                {"department\\s*(?:id|编号|标识)", execution.actor().departmentId() == null ? null : execution.actor().departmentId().toString()},
+                {"用户\\s*(?:id|编号|标识)", execution.actor().userId() == null ? null : execution.actor().userId().toString()},
+                {"部门\\s*(?:id|编号|标识)", execution.actor().departmentId() == null ? null : execution.actor().departmentId().toString()}
+        }) {
+            if (labeledId[1] != null && java.util.regex.Pattern.compile(
+                            "(?i)(?:" + labeledId[0] + ")\\s*[:=：]\\s*[\\\"']?"
+                                    + java.util.regex.Pattern.quote(labeledId[1]) + "(?:\\b|[\\\"'])")
+                    .matcher(value).find()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsUnsafeInput(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char current = value.charAt(i);
+            if (Character.isISOControl(current) && current != '\n' && current != '\r' && current != '\t') {
+                return true;
+            }
+            if (Character.isSurrogate(current)) {
+                if (!Character.isHighSurrogate(current) || i + 1 >= value.length()
+                        || !Character.isLowSurrogate(value.charAt(++i))) {
+                    return true;
+                }
+            }
+        }
+        String lower = value.toLowerCase(java.util.Locale.ROOT);
+        return lower.matches("(?s).*\\b(?:api[_ -]?key|key|cookie|password|passwd|bearer\\s+|authorization\\s*[:=]|secret\\s*[:=]).*")
+                || lower.matches("(?s).*密钥\\s*[:=：].*")
+                || lower.matches("(?s).*\\b(?:jdbc:(?:sqlite|postgresql|mysql|oracle):|postgres(?:ql)?://|mysql://|oracle:).*");
+    }
+
+    private static ModelResultException invalidResult() {
+        return new ModelResultException(AgentErrorCode.MODEL_OUTPUT_INVALID.getCode(),
+                AgentErrorCode.MODEL_OUTPUT_INVALID.getMessage(), false);
+    }
+
+    private static ModelResultException mismatchResult() {
+        return new ModelResultException(AgentErrorCode.MODEL_RESULT_MISMATCH.getCode(),
+                AgentErrorCode.MODEL_RESULT_MISMATCH.getMessage(), false);
+    }
+
+    private record ModelResult(String json, String message, boolean correctionAttempted,
+                               boolean success, String code) {
+    }
+
+    private static final class ModelResultException extends RuntimeException {
+        private final String code;
+        private final boolean correctionAttempted;
+
+        private ModelResultException(String code, String message, boolean correctionAttempted) {
+            super(message);
+            this.code = code;
+            this.correctionAttempted = correctionAttempted;
+        }
+
+        String code() { return code; }
+        boolean correctionAttempted() { return correctionAttempted; }
     }
 
     private List<Message> memoryMessages(List<AgentStore.MessageRow> rows) {
@@ -532,6 +1033,102 @@ public class AgentConversationService {
         return List.copyOf(messages);
     }
 
+    /** Send the validated result only after the persistence boundary is closed. */
+    private void emitValidatedTerminal(AgentStore.StartRun run, AgentExecutionContext execution,
+                                      Consumer<StreamEvent> emitter, String resultJson,
+                                      String status, long started, int attempt) {
+        if (!emitSafely(run, execution, emitter, "message.completed", resultJson)) {
+            return;
+        }
+        if (!emitSafely(run, execution, emitter, "run.completed", statusPayload(
+                AgentStore.COMPLETE.equals(status) ? "SUCCESS" : status))) {
+            return;
+        }
+        try {
+            observations.recordAttempt(run.runId(), "MODEL", "SUCCEEDED", attempt,
+                    elapsedMillis(started), null, null, null);
+            observations.record(run.runId(), "STREAM", "SUCCEEDED", elapsedMillis(started), null, null, null);
+        } catch (RuntimeException observationFailure) {
+            LOG.warn("AI stream success observation write failed for runId={}", run.runId(), observationFailure);
+        }
+    }
+
+    private void emitValidatedFailure(AgentStore.StartRun run, AgentExecutionContext execution,
+                                      Consumer<StreamEvent> emitter, String resultJson, String code) {
+        emitValidatedFailure(run, execution, emitter, resultJson, code, false);
+    }
+
+    private void emitValidatedFailure(AgentStore.StartRun run, AgentExecutionContext execution,
+                                      Consumer<StreamEvent> emitter, String resultJson, String code,
+                                      boolean retryAvailable) {
+        emitSafely(run, execution, emitter, "message.completed", resultJson);
+        emitSafely(run, execution, emitter, "run.failed", "{\"code\":\""
+                + jsonEscape(code) + "\",\"retryAvailable\":" + retryAvailable + "}");
+    }
+
+    private void emitValidatedPartial(AgentStore.StartRun run, AgentExecutionContext execution,
+                                      Consumer<StreamEvent> emitter, String resultJson, String errorCode) {
+        emitValidatedPartial(run, execution, emitter, resultJson, errorCode, false);
+    }
+
+    private void emitValidatedPartial(AgentStore.StartRun run, AgentExecutionContext execution,
+                                      Consumer<StreamEvent> emitter, String resultJson, String errorCode,
+                                      boolean retryAvailable) {
+        emitSafely(run, execution, emitter, "message.completed", resultJson);
+        emitSafely(run, execution, emitter, "run.completed", statusPayload(AgentStore.PARTIAL, errorCode, retryAvailable));
+    }
+
+    /** Persists a safe backend-generated four-field failure before exposing it to the user. */
+    private void completeGeneratedFailure(AgentStore.StartRun run, AgentExecutionContext execution,
+                                           Consumer<StreamEvent> emitter, String code,
+                                           long started, int attempt) {
+        String safeCode = code == null ? AgentErrorCode.MODEL_UNAVAILABLE.getCode() : code;
+        String safeMessage = errorMessage(safeCode);
+        try {
+            boolean closed;
+            if (execution.hasSuccessfulTool()) {
+                closed = store.completePartial(run.conversationId(), run.runId(), execution.messageId(), safeMessage,
+                        execution.actor().scopeFingerprint(), elapsedMillis(started), safeCode, observations);
+            } else {
+                closed = store.completeFailure(run.conversationId(), run.runId(), execution.messageId(), safeMessage,
+                        execution.actor().scopeFingerprint(), elapsedMillis(started), safeCode, observations);
+            }
+            if (!closed) throw new AgentStore.SuccessBoundaryException(AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
+        } catch (AgentStore.SuccessBoundaryException boundaryFailure) {
+            failAfterSuccessBoundary(run, execution, emitter, boundaryCode(boundaryFailure.failure()));
+            return;
+        }
+        safeRecordModelTerminal(run.runId(), execution.hasSuccessfulTool() ? AgentStore.PARTIAL : "FAILED",
+                attempt, elapsedMillis(started), safeCode);
+        if (execution.hasSuccessfulTool()) {
+            emitValidatedPartial(run, execution, emitter, failureResultJson(safeCode, safeMessage), safeCode);
+        } else {
+            emitValidatedFailure(run, execution, emitter, failureResultJson(safeCode, safeMessage), safeCode);
+        }
+    }
+
+    private boolean emitSafely(AgentStore.StartRun run, AgentExecutionContext execution,
+                               Consumer<StreamEvent> emitter, String type, String payload) {
+        try {
+            emitter.accept(envelopedEvent(type, run, execution.eventSequence(),
+                    execution.messageId(), payload));
+            return true;
+        } catch (RuntimeException deliveryFailure) {
+            recordStreamDeliveryFailure(run.runId());
+            LOG.warn("AI SSE delivery failed for runId={} type={}", run.runId(), type, deliveryFailure);
+            return false;
+        }
+    }
+
+    private void recordStreamDeliveryFailure(String runId) {
+        try {
+            observations.record(runId, "STREAM", "FAILED", 0,
+                    AgentErrorCode.STREAM_DELIVERY_FAILED.getCode(), null, null);
+        } catch (RuntimeException ignored) {
+            LOG.warn("AI stream delivery observation failed for runId={}", runId);
+        }
+    }
+
     private void finishTerminal(AgentStore.StartRun run, AgentExecutionContext execution,
                                 Consumer<StreamEvent> emitter, String status, String code,
                                 long started, int attempt) {
@@ -543,11 +1140,11 @@ public class AgentConversationService {
         }
         boolean transitioned;
         if (AgentStore.PARTIAL.equals(status)) {
-            transitioned = store.partial(run.runId());
+            transitioned = store.partial(run.runId(), code);
         } else if (AgentStore.CANCELLED.equals(status)) {
             transitioned = store.cancel(run.runId());
         } else {
-            transitioned = store.fail(run.runId(), code == null ? "MODEL_FAILED" : code);
+            transitioned = store.fail(run.runId(), code == null ? AgentErrorCode.MODEL_UNAVAILABLE.getCode() : code);
         }
         if (!transitioned) {
             return;
@@ -559,19 +1156,22 @@ public class AgentConversationService {
                     run.runId(), status, code, observationFailure);
         }
         if (AgentStore.PARTIAL.equals(status) || AgentStore.CANCELLED.equals(status)) {
-            emitter.accept(envelopedEvent("run.completed", run, execution.eventSequence(),
-                    execution.messageId(), statusPayload(status)));
+            emitSafely(run, execution, emitter, "run.completed", statusPayload(status, code));
         } else {
-            emitter.accept(envelopedEvent("run.failed", run, execution.eventSequence(),
-                    execution.messageId(), "{\"code\":\"" + jsonEscape(code == null ? "MODEL_FAILED" : code) + "\"}"));
+            emitSafely(run, execution, emitter, "run.failed", "{\"code\":\""
+                    + jsonEscape(code == null ? AgentErrorCode.MODEL_UNAVAILABLE.getCode() : code) + "\"}");
         }
     }
 
     private void failAfterSuccessBoundary(AgentStore.StartRun run, AgentExecutionContext execution,
                                           Consumer<StreamEvent> emitter, String code) {
+        // A trusted card may already have reached the client even though the final
+        // History/Observation boundary failed. Keep that run PARTIAL; otherwise the
+        // client would receive a FAILED terminal state for a result it can already see.
+        boolean partial = execution.toolOutputProduced().get();
         boolean transitioned;
         try {
-            transitioned = store.fail(run.runId(), code);
+            transitioned = partial ? store.partial(run.runId(), code) : store.fail(run.runId(), code);
         } catch (RuntimeException transitionFailure) {
             LOG.warn("AI terminal transition failed for runId={} code={}", run.runId(), code, transitionFailure);
             closeUncertainFailure(run, execution, emitter, code);
@@ -581,16 +1181,33 @@ public class AgentConversationService {
             closeUncertainFailure(run, execution, emitter, code);
             return;
         }
-        recordFailureObservation(run.runId(), code);
-        emitter.accept(envelopedEvent("run.failed", run, execution.eventSequence(),
-                execution.messageId(), "{\"code\":\"" + jsonEscape(code) + "\"}"));
+        if (partial) {
+            recordFailureObservation(run.runId(), AgentStore.PARTIAL, code);
+            emitSafely(run, execution, emitter, "run.completed", statusPayload(AgentStore.PARTIAL, code));
+        } else {
+            recordFailureObservation(run.runId(), code);
+            emitSafely(run, execution, emitter, "run.failed", "{\"code\":\""
+                    + jsonEscape(code) + "\"}");
+        }
+    }
+
+    private static String boundaryCode(AgentStore.SuccessBoundaryFailure failure) {
+        return switch (failure) {
+            case HISTORY_WRITE -> AgentErrorCode.HISTORY_WRITE_FAILED.getCode();
+            case OBSERVATION_CLOSE -> AgentErrorCode.OBSERVATION_FAILED.getCode();
+            case TERMINAL_CAS -> AgentErrorCode.TERMINAL_CONFLICT.getCode();
+        };
     }
 
     private void recordFailureObservation(String runId, String code) {
+        recordFailureObservation(runId, AgentStore.FAILED, code);
+    }
+
+    private void recordFailureObservation(String runId, String status, String code) {
         try {
-            observations.record(runId, "HISTORY", "FAILED", 0, code, null, null);
-            observations.record(runId, "STREAM", "FAILED", 0, code, null, null);
-            observations.finishRun(runId, "FAILED", code);
+            observations.record(runId, "HISTORY", status, 0, code, null, null);
+            observations.record(runId, "STREAM", status, 0, code, null, null);
+            observations.finishRun(runId, status, code);
         }
         catch (RuntimeException observationFailure) {
             LOG.warn("AI failure observation write failed for runId={} code={}", runId, code, observationFailure);
@@ -599,6 +1216,7 @@ public class AgentConversationService {
 
     private void closeUncertainFailure(AgentStore.StartRun run, AgentExecutionContext execution,
                                        Consumer<StreamEvent> emitter, String code) {
+        boolean partial = execution.toolOutputProduced().get();
         String currentStatus = null;
         try {
             currentStatus = store.status(run.runId());
@@ -611,9 +1229,14 @@ public class AgentConversationService {
                     run.runId(), code, currentStatus);
             return;
         }
-        recordFailureObservation(run.runId(), code);
-        emitter.accept(envelopedEvent("run.failed", run, execution.eventSequence(),
-                execution.messageId(), "{\"code\":\"" + jsonEscape(code) + "\"}"));
+        String status = partial ? AgentStore.PARTIAL : AgentStore.FAILED;
+        recordFailureObservation(run.runId(), status, partial ? code : code);
+        if (partial) {
+            emitSafely(run, execution, emitter, "run.completed", statusPayload(AgentStore.PARTIAL, code));
+        } else {
+            emitSafely(run, execution, emitter, "run.failed", "{\"code\":\""
+                    + jsonEscape(code) + "\"}");
+        }
     }
 
     private void safeRecordModelTerminal(String runId, String status, int attempt,
@@ -639,12 +1262,37 @@ public class AgentConversationService {
     }
 
     private static boolean visible(StringBuilder answer, AgentExecutionContext execution) {
-        return answer.length() > 0 || execution.toolOutputProduced().get();
+        // Model output is buffered and untrusted until validateModelResult succeeds;
+        // only a trusted card is visible before the terminal boundary closes.
+        return execution.toolOutputProduced().get();
     }
 
     private static String errorCode(Throwable error) {
-        return error.getMessage() != null && error.getMessage().contains("transient provider transport")
-                ? "MODEL_TRANSPORT" : "MODEL_FAILED";
+        return AgentErrorCode.MODEL_UNAVAILABLE.getCode();
+    }
+
+    private static String toolFailureMessage(String code) {
+        if (code != null) {
+            for (AgentErrorCode candidate : AgentErrorCode.values()) {
+                if (candidate.getCode().equals(code)) return candidate.getMessage();
+            }
+        }
+        return AgentErrorCode.TOOL_EXECUTION_FAILED.getMessage();
+    }
+
+    private static String errorMessage(String code) {
+        if (code != null) {
+            for (AgentErrorCode candidate : AgentErrorCode.values()) {
+                if (candidate.getCode().equals(code)) return candidate.getMessage();
+            }
+        }
+        return AgentErrorCode.MODEL_UNAVAILABLE.getMessage();
+    }
+
+    private static String failureResultJson(String code, String message) {
+        return "{\"success\":false,\"code\":\"" + jsonEscape(code == null
+                ? AgentErrorCode.TOOL_EXECUTION_FAILED.getCode() : code)
+                + "\",\"message\":\"" + jsonEscape(message) + "\",\"data\":null}";
     }
 
     private static long elapsedMillis(long started) {
@@ -652,7 +1300,18 @@ public class AgentConversationService {
     }
 
     private static String statusPayload(String status) {
-        return "{\"status\":\"" + status + "\"}";
+        return statusPayload(status, null);
+    }
+
+    private static String statusPayload(String status, String errorCode) {
+        return statusPayload(status, errorCode, false);
+    }
+
+    private static String statusPayload(String status, String errorCode, boolean retryAvailable) {
+        String suffix = errorCode == null || errorCode.isBlank()
+                ? "" : ",\"errorCode\":\"" + jsonEscape(errorCode) + "\"";
+        return "{\"status\":\"" + status + "\"" + suffix
+                + ",\"retryAvailable\":" + retryAvailable + "}";
     }
 
     public static StreamEvent envelopedEvent(String type, AgentStore.StartRun run,

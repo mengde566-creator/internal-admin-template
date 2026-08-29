@@ -5,7 +5,7 @@ package com.internaladmin.platform.kernel.error;
  *
  * <p>业务模块的专属错误码由各模块自行定义并继承本接口；本枚举只承载基础模块共用的错误语义。</p>
  */
-public enum ErrorCode {
+public enum ErrorCode implements ErrorCodeContract {
 
     /** 请求参数不合法。 */
     PARAM_ERROR("PARAM_ERROR", "请求参数不合法"),

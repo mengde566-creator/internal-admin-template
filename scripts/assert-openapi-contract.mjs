@@ -93,6 +93,15 @@ assert(typeof specification['x-generated-by'] === 'string'
   && specification['x-generated-by'].includes('springdoc-openapi 3.1.0'),
   '规范缺少 springdoc 运行时生成标记。')
 
+for (const [name, schema] of Object.entries(specification.components?.schemas ?? {})) {
+  if (!name.startsWith('ApiResponse')) continue
+  deepStrictEqual(Object.keys(schema.properties ?? {}).sort(), ['code', 'data', 'message', 'success'],
+    `${name} 必须严格使用 success、code、message、data 四字段。`)
+  assert(schema.properties.success.type === 'boolean', `${name}.success 必须是 boolean。`)
+  assert(schema.properties.code.type === 'string' && schema.properties.message.type === 'string',
+    `${name}.code/message 必须是 string。`)
+}
+
 const expectedPaths = [
   '/api/ai/capabilities',
   '/api/ai/conversations',
@@ -170,11 +179,12 @@ deepStrictEqual(methods('/api/ai/conversations/{conversationId}/runs'), ['post']
   'Run 路径必须仅暴露 POST')
 
 const runRequest = requestSchema('/api/ai/conversations/{conversationId}/runs', 'post')
-deepStrictEqual(Object.keys(runRequest.properties ?? {}).sort(), ['clarificationSelection', 'clientRequestId', 'text'],
-  'RunRequest 只能包含 clientRequestId、text 与可选 clarificationSelection')
+deepStrictEqual(Object.keys(runRequest.properties ?? {}).sort(), ['clarificationSelection', 'clientRequestId', 'retryOfRunId', 'text'],
+  'RunRequest 只能包含 clientRequestId、text、clarificationSelection 或 retryOfRunId')
 deepStrictEqual((runRequest.required ?? []).slice().sort(), ['clientRequestId'],
   'RunRequest 只要求 clientRequestId；text 与 clarificationSelection 由二选一请求校验')
 assert(!runRequest.properties?.message, 'RunRequest 不得保留 message 兼容字段')
+assert(runRequest.properties?.retryOfRunId?.type === 'string', 'RunRequest.retryOfRunId 必须是 string')
 const clarification = concreteSchema(property(runRequest, 'clarificationSelection', 'RunRequest'))
 assert(property(clarification, 'clarificationId', 'clarificationSelection'), 'clarificationSelection 缺少 clarificationId')
 assert(property(clarification, 'optionToken', 'clarificationSelection'), 'clarificationSelection 缺少 optionToken')

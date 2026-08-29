@@ -96,8 +96,8 @@ class DeepSeekToolCallingProtocolTest {
         assertEquals(2, rawChunks.get(), "首轮协议必须由两个分片组成");
         assertEquals(1, toolCalls.get(), "一个模型工具调用只能执行一次");
         assertEquals(2, prompts.size(), "首轮和工具续轮各一次出站请求");
-        assertEquals(List.of("system", "user"), prompts.getFirst().roles());
-        assertFalse(prompts.getFirst().assistantReasoningPresent());
+        assertEquals(List.of("system", "user"), prompts.get(0).roles());
+        assertFalse(prompts.get(0).assistantReasoningPresent());
         PromptShape followUp = prompts.get(1);
         assertEquals(List.of("system", "user", "assistant", "tool"), followUp.roles(),
                 "Prompt copy 后必须保留 system/user/assistant(tool_calls)/tool 顺序");
@@ -156,8 +156,8 @@ class DeepSeekToolCallingProtocolTest {
                 .toolCalls(List.of(new AssistantMessage.ToolCall("call-1", "function",
                         "warehouse_stock_by_item", "{\"itemId\":\"1\"}"))).build();
         return new ChatResponse(List.of(new Generation(message,
-                chunks.getLast().getResult().getMetadata())),
-                chunks.getLast().getMetadata());
+                chunks.get(chunks.size() - 1).getResult().getMetadata())),
+                chunks.get(chunks.size() - 1).getMetadata());
     }
 
     private static ChatResponse finalChunk() {

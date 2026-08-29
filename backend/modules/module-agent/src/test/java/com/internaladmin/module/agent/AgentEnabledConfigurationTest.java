@@ -6,6 +6,9 @@ import com.internaladmin.module.agent.store.AgentStore;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.deepseek.DeepSeekChatOptions;
+import org.springframework.ai.deepseek.api.ResponseFormat;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
@@ -42,7 +45,13 @@ class AgentEnabledConfigurationTest {
                         ServiceAssemblyConfiguration.class)
                 .withBean(DataSourceProperties.class, () -> business("jdbc:postgresql://127.0.0.1:15432/internal_admin"))
                 .withPropertyValues("app.ai.enabled=true")
-                .run(context -> assertThat(context).hasSingleBean(AgentConversationService.class));
+                .run(context -> {
+                    assertThat(context).hasSingleBean(AgentConversationService.class);
+                    DeepSeekChatOptions options = (DeepSeekChatOptions) context.getBean(ChatModel.class).getOptions();
+                    assertThat(options.getResponseFormat()).isNotNull();
+                    assertThat(options.getResponseFormat().getType()).isEqualTo(ResponseFormat.Type.JSON_OBJECT);
+                    assertThat(options.getModel()).isEqualTo("deepseek-v4-flash");
+                });
     }
 
     @TestConfiguration(proxyBeanMethods = false)

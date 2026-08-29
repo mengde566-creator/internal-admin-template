@@ -1,6 +1,9 @@
 package com.internaladmin.module.agent.config;
 
 import com.internaladmin.module.agent.api.AgentToolProvider;
+import com.internaladmin.module.agent.api.AgentErrorCode;
+import com.internaladmin.module.agent.api.AgentToolException;
+import com.internaladmin.platform.kernel.error.BusinessException;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.model.ChatModel;
@@ -37,8 +40,30 @@ public class AgentRuntimeConfiguration {
         return DefaultToolCallingManager.builder()
                 .observationRegistry(observations.getIfAvailable(() -> ObservationRegistry.NOOP))
                 .toolCallbackResolver(new StaticToolCallbackResolver(Arrays.asList(callbacks)))
-                .toolExecutionExceptionProcessor(error -> "工具执行失败")
+                .toolExecutionExceptionProcessor(error -> {
+                    String code = toolErrorCode(error);
+                    return "{\"success\":false,\"code\":\"" + code
+                            + "\",\"message\":\"库存查询暂时未完成\",\"data\":null}";
+                })
                 .build();
+    }
+
+    private static String toolErrorCode(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            if (current instanceof AgentToolException tool) {
+                return tool.getErrorCode().getCode();
+            }
+            if (current instanceof BusinessException business) {
+                return switch (business.getErrorCode().getCode()) {
+                    case "FORBIDDEN" -> AgentErrorCode.TOOL_FORBIDDEN.getCode();
+                    case "PARAM_ERROR" -> AgentErrorCode.PARAMETER_INVALID.getCode();
+                    case "BUSINESS_REJECTED", "CONFLICT" -> AgentErrorCode.BUSINESS_REJECTED.getCode();
+                    case "NOT_FOUND" -> AgentErrorCode.CANDIDATE_INVALID.getCode();
+                    default -> AgentErrorCode.TOOL_EXECUTION_FAILED.getCode();
+                };
+            }
+        }
+        return AgentErrorCode.TOOL_EXECUTION_FAILED.getCode();
     }
 
     @Bean

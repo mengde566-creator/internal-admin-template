@@ -2,8 +2,7 @@
 <databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
-    <!-- A Liquibase-owned historical fixture; the production reservation changeSet is included unchanged. -->
-    <changeSet id="agent-concurrency-historical-fixture" author="test">
+    <changeSet id="agent-adapter-concurrency-historical-fixture" author="test">
         <createTable tableName="ai_conversation">
             <column name="id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
             <column name="user_id" type="BIGINT"><constraints nullable="false"/></column>

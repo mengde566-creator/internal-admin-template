@@ -107,7 +107,7 @@ class AgentStoreConcurrencyTest {
                 return store.startRun(conversationId, client, "库存", 7L);
             }
             catch (com.internaladmin.platform.kernel.error.BusinessException exception) {
-                return new BusinessExceptionMarker(exception.getErrorCode().name());
+                return new BusinessExceptionMarker(exception.getErrorCode().getCode());
             }
         });
     }

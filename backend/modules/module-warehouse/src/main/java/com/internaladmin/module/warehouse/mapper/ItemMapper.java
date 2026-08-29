@@ -11,6 +11,32 @@ import java.util.List;
 
 @Mapper
 public interface ItemMapper extends BaseMapper<ItemDO> {
+    /** 查询启用物品的联合精确匹配，最多探测指定数量以区分唯一对象和候选。 */
+    @Select("SELECT id, code, name, base_unit, enabled, version, created_at, updated_at FROM (" +
+            "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at, " +
+            "ROW_NUMBER() OVER (ORDER BY code, id) AS row_num FROM wh_item " +
+            "WHERE enabled = 1 AND (LOWER(code) = LOWER(#{value}) OR LOWER(name) = LOWER(#{value}))) bounded " +
+            "WHERE row_num <= #{size}")
+    List<ItemDO> selectEnabledExact(@Param("value") String value, @Param("size") int size);
+
+    /** 查询启用物品的四级字面候选，并在数据库内完成稳定排序和有界读取。 */
+    @Select({"<script>",
+            "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at FROM (",
+            "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at,",
+            "ROW_NUMBER() OVER (ORDER BY CASE",
+            "WHEN LOWER(code) LIKE LOWER(#{prefixPattern}) ESCAPE '!' THEN 0",
+            "WHEN LOWER(name) LIKE LOWER(#{prefixPattern}) ESCAPE '!' THEN 1",
+            "WHEN LOWER(code) LIKE LOWER(#{containsPattern}) ESCAPE '!' THEN 2",
+            "ELSE 3 END, LOWER(code), id) AS row_num",
+            "FROM wh_item WHERE enabled = 1 AND (",
+            "LOWER(code) LIKE LOWER(#{containsPattern}) ESCAPE '!'",
+            "OR LOWER(name) LIKE LOWER(#{containsPattern}) ESCAPE '!')",
+            ") bounded WHERE row_num > #{offset} AND row_num <= (#{offset} + #{size})",
+            "</script>"})
+    List<ItemDO> selectLiteralCandidates(@Param("prefixPattern") String prefixPattern,
+                                          @Param("containsPattern") String containsPattern,
+                                          @Param("offset") int offset, @Param("size") int size);
+
     @Select("SELECT id, code, name, base_unit, enabled, version, created_at, updated_at FROM (" +
             "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at, " +
             "ROW_NUMBER() OVER (ORDER BY code, id) AS row_num FROM wh_item " +

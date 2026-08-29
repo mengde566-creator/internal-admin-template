@@ -8,6 +8,8 @@ import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.iam.api.ScopeMode;
 import com.internaladmin.module.warehouse.api.WarehouseAccessScopeDTO;
 import com.internaladmin.module.warehouse.api.WarehouseLocationTaskResult;
+import com.internaladmin.module.warehouse.api.WarehouseStockCandidate;
+import com.internaladmin.module.warehouse.api.WarehouseStockTaskResult;
 import com.internaladmin.module.warehouse.mapper.InventoryMovementMapper;
 import com.internaladmin.module.warehouse.mapper.InventoryOperationMapper;
 import com.internaladmin.module.warehouse.mapper.ItemMapper;
@@ -16,12 +18,14 @@ import com.internaladmin.module.warehouse.mapper.StockBalanceMapper;
 import com.internaladmin.module.warehouse.mapper.WarehouseMapper;
 import com.internaladmin.module.warehouse.model.dto.StockPageRowDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseLocationCandidateRowDTO;
+import com.internaladmin.module.warehouse.model.entity.ItemDO;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -44,9 +48,9 @@ class WarehouseServiceTaskQueryTest {
         WarehouseLocationTaskResult result = service.queryLocationContentsTask("一号仓库", "一号库位", 20,
                 new WarehouseAccessScopeDTO(7L, 3L, false));
 
-        assertEquals("RESOLVED", result.outcome());
-        assertEquals("ITEM-6204", result.rows().getFirst().itemCode());
-        assertEquals("12", result.rows().getFirst().quantity());
+        assertEquals("ANSWERED", result.outcome());
+        assertEquals("ITEM-6204", result.rows().get(0).itemCode());
+        assertEquals("12", result.rows().get(0).quantity());
         verify(balances).selectStockPage(eq("%%"), eq(3L), isNull(), eq(21L), eq(31L), eq(0), eq(21));
     }
 
@@ -65,14 +69,245 @@ class WarehouseServiceTaskQueryTest {
         WarehouseLocationTaskResult result = service(iam, locations, balances)
                 .queryLocationContentsTask(null, "一号库位", 20, new WarehouseAccessScopeDTO(7L, null, true));
 
-        assertEquals("AMBIGUOUS", result.outcome());
+        assertEquals("CLARIFICATION", result.outcome());
         assertEquals(2, result.candidates().size());
         assertTrue(result.rows().isEmpty());
         verifyNoInteractions(balances);
     }
 
+    @Test
+    void exactBusinessNameIsResolvedBeforeFuzzyOptions() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        ItemDO item = new ItemDO();
+        item.setId(11L); item.setCode("ITEM-0816-2226"); item.setName("E2E-WH-0816-2226 物品"); item.setBaseUnit("件");
+        when(items.selectEnabledExact(eq(item.getName()), eq(2))).thenReturn(List.of(item));
+        when(balances.selectTaskStock(eq("%"), eq("%%"), eq("%%"), eq(3L), eq(21), eq(11L)))
+                .thenReturn(List.of(new StockPageRowDTO(11L, item.getCode(), item.getName(), "件", 21L,
+                        "WH-01", "成品仓", 31L, "A-01", "一号位", 20000L, 1)));
+
+        WarehouseStockTaskResult result = service(items, iam, locations, balances)
+                .queryCurrentStock(item.getName(), null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("ANSWERED", result.outcome());
+        assertEquals(item.getCode(), result.rows().get(0).itemCode());
+        verify(items, never()).selectPageOptions(any(), anyInt(), anyInt());
+        verify(balances).selectTaskStock(eq("%"), eq("%%"), eq("%%"), eq(3L), eq(21), eq(11L));
+    }
+
+    @Test
+    void exactBusinessCodeIsResolvedBeforeFuzzyOptions() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        ItemDO item = new ItemDO();
+        item.setId(11L); item.setCode("E2E-WH-0816-2226"); item.setName("测试物品"); item.setBaseUnit("件");
+        when(items.selectEnabledExact(eq(item.getCode()), eq(2))).thenReturn(List.of(item));
+        when(balances.selectTaskStock(eq("%"), eq("%%"), eq("%%"), eq(3L), eq(21), eq(11L)))
+                .thenReturn(List.of(new StockPageRowDTO(11L, item.getCode(), item.getName(), "件", 21L,
+                        "WH-01", "成品仓", 31L, "A-01", "一号位", 20000L, 1)));
+
+        WarehouseStockTaskResult result = service(items, iam, locations, balances)
+                .queryCurrentStock(item.getCode(), null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("ANSWERED", result.outcome());
+        assertEquals(item.getCode(), result.rows().get(0).itemCode());
+        verify(items, never()).selectPageOptions(any(), anyInt(), anyInt());
+    }
+
+    @Test
+    void duplicateExactNamesStayAmbiguousAfterTwoRowExactProbe() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        ItemDO first = new ItemDO();
+        first.setId(11L); first.setCode("ITEM-0816-2226"); first.setName("深沟球轴承"); first.setBaseUnit("件");
+        ItemDO second = new ItemDO();
+        second.setId(12L); second.setCode("ITEM-0816-2226-02"); second.setName("深沟球轴承"); second.setBaseUnit("件");
+        when(items.selectEnabledExact(eq(first.getName()), eq(2))).thenReturn(List.of(first, second));
+
+        WarehouseStockTaskResult result = service(items, iam, locations, balances)
+                .queryCurrentStock(first.getName(), null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("CLARIFICATION", result.outcome());
+        assertEquals(2, result.candidates().size());
+        verify(items).selectEnabledExact(eq(first.getName()), eq(2));
+        verifyNoMoreInteractions(items);
+        verifyNoInteractions(balances);
+    }
+
+    @Test
+    void exactCodeAndNameCollisionRemainsTwoCandidates() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        ItemDO byCode = item(11L, "AX-01", "密封圈A");
+        ItemDO byName = item(12L, "AX-02", "AX-01");
+        when(items.selectEnabledExact(eq("AX-01"), eq(2))).thenReturn(List.of(byCode, byName));
+
+        WarehouseStockTaskResult result = service(items, iam, locations, balances)
+                .queryCurrentStock("AX-01", null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("CLARIFICATION", result.outcome());
+        assertEquals(List.of("AX-01", "AX-02"), result.candidates().stream().map(WarehouseStockCandidate::code).toList());
+        verifyNoInteractions(balances);
+    }
+
+    @Test
+    void literalUniqueCandidateResolvesBeforeFactQuery() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        ItemDO item = item(11L, "ITEM-6204", "深沟球轴承");
+        when(items.selectEnabledExact(eq("轴承"), eq(2))).thenReturn(List.of());
+        when(items.selectLiteralCandidates(eq("轴承%"), eq("%轴承%"), eq(0), eq(21))).thenReturn(List.of(item));
+        when(balances.selectTaskStock(eq("%"), eq("%%"), eq("%%"), eq(3L), eq(21), eq(11L)))
+                .thenReturn(List.of(new StockPageRowDTO(11L, item.getCode(), item.getName(), "件", 21L,
+                        "WH-01", "成品仓", 31L, "A-01", "一号位", 20000L, 1)));
+
+        WarehouseStockTaskResult result = service(items, iam, locations, balances)
+                .queryCurrentStock("轴承", null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("ANSWERED", result.outcome());
+        assertEquals("ITEM-6204", result.rows().get(0).itemCode());
+        verify(items).selectLiteralCandidates(eq("轴承%"), eq("%轴承%"), eq(0), eq(21));
+    }
+
+    @Test
+    void literalCandidatesKeepFourLevelMapperOrderWithoutChoosingFirst() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        ItemDO codePrefix = item(11L, "AX-01", "其他");
+        ItemDO namePrefix = item(12L, "ZZ-02", "AX-02");
+        when(items.selectEnabledExact(eq("AX"), eq(2))).thenReturn(List.of());
+        when(items.selectLiteralCandidates(eq("AX%"), eq("%AX%"), eq(0), eq(21)))
+                .thenReturn(List.of(codePrefix, namePrefix));
+
+        WarehouseStockTaskResult result = service(items, iam, locations, balances)
+                .queryCurrentStock("AX", null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("CLARIFICATION", result.outcome());
+        assertEquals(List.of("AX-01", "ZZ-02"), result.candidates().stream().map(WarehouseStockCandidate::code).toList());
+        verifyNoInteractions(balances);
+    }
+
+    @Test
+    void normalizedKeywordIsPassedToCaseInsensitiveEscapedQueries() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        when(items.selectEnabledExact(eq("E2E 轴承"), eq(2))).thenReturn(List.of());
+        when(items.selectLiteralCandidates(eq("E2E 轴承%"), eq("%E2E 轴承%"), eq(0), eq(21)))
+                .thenReturn(List.of());
+
+        WarehouseStockTaskResult result = service(items, iam, locations, balances)
+                .queryCurrentStock("  Ｅ２Ｅ　轴承  ", null, null, 20,
+                        new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("NO_MATCH", result.status());
+        assertTrue(result.rows().isEmpty());
+        verify(items).selectEnabledExact(eq("E2E 轴承"), eq(2));
+        verify(items).selectLiteralCandidates(eq("E2E 轴承%"), eq("%E2E 轴承%"), eq(0), eq(21));
+    }
+
+    @Test
+    void literalWildcardsAreEscapedBeforeTheBoundedQuery() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        when(items.selectEnabledExact(eq("A%_!"), eq(2))).thenReturn(List.of());
+        when(items.selectLiteralCandidates(eq("A!%!_!!%"), eq("%A!%!_!!%"), eq(0), eq(21)))
+                .thenReturn(List.of());
+
+        WarehouseStockTaskResult result = service(items, iam, locations, balances)
+                .queryCurrentStock("A%_!", null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("NO_MATCH", result.status());
+        verify(items).selectLiteralCandidates(eq("A!%!_!!%"), eq("%A!%!_!!%"), eq(0), eq(21));
+        verifyNoInteractions(balances);
+    }
+
+    @Test
+    void noMatchNoStockAndMapperFailureRemainDistinct() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        when(items.selectEnabledExact(eq("不存在"), eq(2))).thenReturn(List.of());
+        when(items.selectLiteralCandidates(eq("不存在%"), eq("%不存在%"), eq(0), eq(21))).thenReturn(List.of());
+        assertEquals("NO_MATCH", service(items, iam, locations, balances)
+                .queryCurrentStock("不存在", null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false)).status());
+
+        ItemDO item = item(11L, "ITEM-01", "无库存");
+        when(items.selectEnabledExact(eq(item.getName()), eq(2))).thenReturn(List.of(item));
+        when(balances.selectTaskStock(eq("%"), eq("%%"), eq("%%"), eq(3L), eq(21), eq(11L))).thenReturn(List.of());
+        assertEquals("NO_STOCK", service(items, iam, locations, balances)
+                .queryCurrentStock(item.getName(), null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false)).status());
+
+        when(items.selectEnabledExact(eq("数据库故障"), eq(2))).thenThrow(new RuntimeException("database"));
+        assertThrows(RuntimeException.class, () -> service(items, iam, locations, balances)
+                .queryCurrentStock("数据库故障", null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false)));
+    }
+
+    @Test
+    void emptyKeywordBehaviorsRemainCurrentStockOverviewAndLocationRejectsBlank() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        when(balances.selectTaskStock(eq("%%"), eq("%%"), eq("%%"), eq(3L), eq(21), isNull()))
+                .thenReturn(List.of());
+
+        assertEquals("NO_DATA", service(items, iam, locations, balances)
+                .queryCurrentStock(null, null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false)).outcome());
+        assertThrows(com.internaladmin.platform.kernel.error.BusinessException.class,
+                () -> service(items, iam, locations, balances).queryItemLocationsTask("  ", 20,
+                        new WarehouseAccessScopeDTO(7L, 3L, false)));
+    }
+
+    private ItemDO item(Long id, String code, String name) {
+        ItemDO item = new ItemDO();
+        item.setId(id); item.setCode(code); item.setName(name); item.setBaseUnit("件");
+        return item;
+    }
+
     private WarehouseService service(IamActorApi iam, LocationMapper locations, StockBalanceMapper balances) {
-        return new WarehouseService(mock(ItemMapper.class), mock(WarehouseMapper.class), locations, balances,
+        return service(mock(ItemMapper.class), iam, locations, balances);
+    }
+
+    private WarehouseService service(ItemMapper items, IamActorApi iam, LocationMapper locations,
+                                     StockBalanceMapper balances) {
+        return new WarehouseService(items, mock(WarehouseMapper.class), locations, balances,
                 mock(InventoryOperationMapper.class), mock(InventoryMovementMapper.class), iam,
                 mock(DepartmentQueryApi.class), mock(AuditRecordApi.class), mock(PlatformTransactionManager.class));
     }

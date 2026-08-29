@@ -6,6 +6,10 @@ import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.platform.web.response.ApiResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.TestingAuthenticationToken;
+import tools.jackson.databind.json.JsonMapper;
+
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -19,7 +23,7 @@ class AiCapabilitiesControllerTest {
         ApiResponse<AiCapabilitiesController.AiCapabilitiesDTO> response =
                 new AiCapabilitiesController(properties).capabilities(null);
 
-        assertThat(response.getCode()).isEqualTo("OK");
+        assertThat(response.getCode()).isEqualTo("SUCCESS");
         assertThat(response.getData().enabled()).isFalse();
         assertThat(response.getData().availableAdapters()).isEmpty();
         assertThat(response.getData().uiModes()).isEmpty();
@@ -45,5 +49,18 @@ class AiCapabilitiesControllerTest {
         assertThat(denied.getData().availableAdapters()).isEmpty();
         assertThat(denied.getData().uiModes()).isEmpty();
         assertThat(denied.getData().features()).isEmpty();
+    }
+
+    @Test
+    void apiResponseSerializesTheExactFourFieldContract() throws Exception {
+        var json = JsonMapper.builder().build().readTree(
+                JsonMapper.builder().build().writeValueAsString(ApiResponse.ok(null)));
+        Set<String> fields = new HashSet<>();
+        json.propertyNames().forEach(fields::add);
+
+        assertThat(fields).containsExactlyInAnyOrder("success", "code", "message", "data");
+        assertThat(json.get("success").asBoolean()).isTrue();
+        assertThat(json.get("code").asText()).isEqualTo("SUCCESS");
+        assertThat(json.get("data").isNull()).isTrue();
     }
 }

@@ -784,91 +784,109 @@ export interface components {
             code?: string;
             data?: components["schemas"]["AiCapabilitiesDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseConversationDTO: {
             code?: string;
             data?: components["schemas"]["ConversationDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseConversationPageDTO: {
             code?: string;
             data?: components["schemas"]["ConversationPageDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseCurrentUserDTO: {
             code?: string;
             data?: components["schemas"]["CurrentUserDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseDepartmentTreeDTO: {
             code?: string;
             data?: components["schemas"]["DepartmentTreeDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseHomepageDraftDTO: {
             code?: string;
             data?: components["schemas"]["HomepageDraftDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseHomepagePublicDTO: {
             code?: string;
             data?: components["schemas"]["HomepagePublicDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseIdResultDTO: {
             code?: string;
             data?: components["schemas"]["IdResultDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseListPermissionOptionDTO: {
             code?: string;
             data?: components["schemas"]["PermissionOptionDTO"][] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseListRoleListDTO: {
             code?: string;
             data?: components["schemas"]["RoleListDTO"][] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseListSystemConfigDTO: {
             code?: string;
             data?: components["schemas"]["SystemConfigDTO"][] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseLoginResultDTO: {
             code?: string;
             data?: components["schemas"]["LoginResultDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseMessagePageDTO: {
             code?: string;
             data?: components["schemas"]["MessagePageDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseObject: {
             code?: string;
             data?: null;
             message?: string;
+            success?: boolean;
         };
         ApiResponsePageUserListDTO: {
             code?: string;
             data?: components["schemas"]["PageUserListDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseStockPageDTO: {
             code?: string;
             data?: components["schemas"]["StockPageDTO"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseUploadResult: {
             code?: string;
             data?: components["schemas"]["UploadResult"] | null;
             message?: string;
+            success?: boolean;
         };
         ApiResponseVoid: {
             code?: string;
             data?: null;
             message?: string;
+            success?: boolean;
         };
         ChangePasswordDTO: {
             newPassword: string;
@@ -1067,6 +1085,7 @@ export interface components {
             /** Format: date-time */
             createdAt?: string;
             messageId?: string;
+            retryAvailable?: boolean;
             role?: string;
             runId?: string;
             state?: string;
@@ -1119,6 +1138,7 @@ export interface components {
         RunRequest: {
             clarificationSelection?: components["schemas"]["ClarificationSelection"];
             clientRequestId: string;
+            retryOfRunId?: string;
             text?: string;
         };
         StockPageDTO: {

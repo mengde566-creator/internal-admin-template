@@ -1,16 +1,22 @@
 package com.internaladmin.module.agent.service;
 
 import com.internaladmin.module.agent.api.AgentRunContext;
+import com.internaladmin.module.agent.api.AgentToolProvider;
 import com.internaladmin.module.agent.store.AgentStore;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.deepseek.DeepSeekAssistantMessage;
+import org.springframework.ai.deepseek.DeepSeekChatOptions;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.DefaultToolDefinition;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
@@ -18,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -70,17 +77,17 @@ class AgentConversationServiceTest {
         assertEquals("READY", page.activeClarification().status());
         assertEquals("ITEM", page.activeClarification().candidateKind());
         assertEquals("CURRENT_STOCK", page.activeClarification().candidateIntent());
-        assertEquals("ITEM-A", page.activeClarification().options().getFirst().code());
-        assertEquals("opaque", page.activeClarification().options().getFirst().optionToken());
+        assertEquals("ITEM-A", page.activeClarification().options().get(0).code());
+        assertEquals("opaque", page.activeClarification().options().get(0).optionToken());
     }
 
     @Test
     void acceptsLocationAndItemLocationCardsWithBusinessOnlyCandidateFields() {
         AgentConversationService service = new AgentConversationService(mock(AgentStore.class), mock(ChatClient.class),
                 mock(AiObservationRecorder.class), new AiProperties());
-        var itemLocation = service.inspectCard("{\"cardId\":\"task-1\",\"revision\":1,\"cardType\":\"item-location\",\"schemaVersion\":1,\"resultCount\":1,\"truncated\":false,\"outcome\":\"RESOLVED\",\"reasonCode\":null,\"queriedAt\":\"2026-08-26T10:00:00Z\",\"rows\":[]}");
+        var itemLocation = service.inspectCard("{\"cardId\":\"task-1\",\"revision\":1,\"cardType\":\"item-location\",\"resultCount\":1,\"truncated\":false,\"outcome\":\"ANSWERED\",\"queriedAt\":\"2026-08-26T10:00:00Z\",\"rows\":[]}");
         assertEquals("item-location", itemLocation.cardType());
-        var clarification = service.inspectCard("{\"cardId\":\"task-2\",\"revision\":1,\"cardType\":\"clarification-choice\",\"schemaVersion\":1,\"resultCount\":1,\"truncated\":false,\"outcome\":\"AMBIGUOUS\",\"reasonCode\":null,\"queriedAt\":\"2026-08-26T10:00:00Z\",\"rows\":[],\"clarificationId\":\"task-2\",\"question\":\"请从下面选择一个仓库和库位\",\"selectionMode\":\"SINGLE\",\"candidateKind\":\"LOCATION\",\"candidateIntent\":\"LOCATION_CONTENTS\",\"options\":[{\"optionToken\":\"opaque\",\"code\":\"LOC-01\",\"name\":\"一号库位\",\"baseUnit\":\"\",\"warehouseCode\":\"WH-01\",\"warehouseName\":\"一号仓库\"}],\"allowFreeText\":false}");
+        var clarification = service.inspectCard("{\"cardId\":\"task-2\",\"revision\":1,\"cardType\":\"clarification-choice\",\"resultCount\":1,\"truncated\":false,\"outcome\":\"CLARIFICATION\",\"queriedAt\":\"2026-08-26T10:00:00Z\",\"rows\":[],\"clarificationId\":\"task-2\",\"question\":\"请从下面选择一个仓库和库位\",\"selectionMode\":\"SINGLE\",\"candidateKind\":\"LOCATION\",\"candidateIntent\":\"LOCATION_CONTENTS\",\"options\":[{\"optionToken\":\"opaque\",\"code\":\"LOC-01\",\"name\":\"一号库位\",\"baseUnit\":\"\",\"warehouseCode\":\"WH-01\",\"warehouseName\":\"一号仓库\"}],\"allowFreeText\":false}");
         assertEquals("clarification-choice", clarification.cardType());
     }
 
@@ -89,7 +96,7 @@ class AgentConversationServiceTest {
         AgentStore store = mock(AgentStore.class);
         AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
                 mock(AiObservationRecorder.class), new AiProperties());
-        String card = "{\"cardId\":\"task-3\",\"revision\":1,\"cardType\":\"clarification-choice\",\"schemaVersion\":1,\"resultCount\":2,\"truncated\":false,\"outcome\":\"AMBIGUOUS\",\"reasonCode\":null,\"queriedAt\":\"2026-08-26T10:00:00Z\",\"rows\":[],\"clarificationId\":\"task-3\",\"question\":\"请从下面选择一个物品\",\"selectionMode\":\"SINGLE\",\"candidateKind\":\"ITEM\",\"candidateIntent\":\"ITEM_LOCATIONS\",\"options\":[{\"optionToken\":\"opaque\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"}],\"allowFreeText\":false}";
+        String card = "{\"cardId\":\"task-3\",\"revision\":1,\"cardType\":\"clarification-choice\",\"resultCount\":2,\"truncated\":false,\"outcome\":\"CLARIFICATION\",\"queriedAt\":\"2026-08-26T10:00:00Z\",\"rows\":[],\"clarificationId\":\"task-3\",\"question\":\"请从下面选择一个物品\",\"selectionMode\":\"SINGLE\",\"candidateKind\":\"ITEM\",\"candidateIntent\":\"ITEM_LOCATIONS\",\"options\":[{\"optionToken\":\"opaque\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"}],\"allowFreeText\":false}";
         AgentStore.TaskRow persisted = new AgentStore.TaskRow("task-3", "conversation-1", 1L, "warehouse",
                 "ITEM_LOCATIONS", AgentStore.TASK_READY, 2L, "scope-1", java.time.Instant.now().plusSeconds(300),
                 "{\"intent\":\"ITEM_LOCATIONS\"}", "ITEM", "[]");
@@ -205,7 +212,7 @@ class AgentConversationServiceTest {
         when(request.user(any(String.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
-        when(stream.content()).thenReturn(Flux.just("库存", " 1.2500"));
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"库存", " 1.2500\",\"data\":null}"));
         AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
         AgentStore.StartRun run = new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING);
@@ -221,10 +228,283 @@ class AgentConversationServiceTest {
         assertEnvelope(events);
         verify(store).completeSuccess(eq("c-1"), eq("run-1"), anyString(), eq("库存 1.2500"),
                 eq(actor.scopeFingerprint()), anyLong(), eq(observations));
+        verify(request).options(any(DeepSeekChatOptions.Builder.class));
         InOrder observationOrder = inOrder(observations);
         observationOrder.verify(observations).recordAttempt("run-1", "MODEL", "STARTED", 1, 0, null, null, null);
         observationOrder.verify(observations).recordAttempt(eq("run-1"), eq("MODEL"), eq("SUCCEEDED"), eq(1), anyLong(), isNull(), isNull(), isNull());
         observationOrder.verify(observations).record(eq("run-1"), eq("STREAM"), eq("SUCCEEDED"), anyLong(), isNull(), isNull(), isNull());
+    }
+
+    @Test
+    void oneSuccessfulAndOneFailedToolProducesPartialInsteadOfFailed() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":false,\"code\":\"AI_TOOL_DATABASE_UNAVAILABLE\",\"message\":\"部分完成\",\"data\":null}"));
+        when(store.completePartial(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                anyString(), eq(observations))).thenReturn(true);
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-mixed", "查询库存和变化", ignored -> { });
+        execution.recordToolSuccess("warehouse_current_stock", "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"库存\",\"data\":null}");
+        execution.recordToolFailure("warehouse_recent_movements", "AI_TOOL_DATABASE_UNAVAILABLE",
+                "{\"success\":false,\"code\":\"AI_TOOL_DATABASE_UNAVAILABLE\",\"message\":\"变化暂不可用\",\"data\":null}");
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-mixed", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        assertEquals(1, events.stream().filter(event -> event.name().equals("run.completed")).count());
+        assertEquals(0, events.stream().filter(event -> event.name().equals("run.failed")).count());
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("run.completed")
+                && event.data().contains("PARTIAL")
+                && event.data().contains("AI_TOOL_DATABASE_UNAVAILABLE")));
+        verify(store).completePartial(eq("c-1"), eq("run-mixed"), anyString(), eq("部分完成"),
+                anyString(), anyLong(), eq("AI_TOOL_DATABASE_UNAVAILABLE"), eq(observations));
+    }
+
+    @Test
+    void ordinaryResultCardsDoNotCompleteTaskIndividually() {
+        AgentStore store = mock(AgentStore.class);
+        AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
+                mock(AiObservationRecorder.class), new AiProperties());
+        AgentStore.StartRun run = new AgentStore.StartRun("c-1", "run-cards", true, AgentStore.RUNNING,
+                "message-1", 1L, "task-1", 7L);
+        AgentConversationService.CardIdentity first = service.inspectCard(
+                "{\"cardId\":\"task-1\",\"revision\":7,\"cardType\":\"stock-summary\",\"resultCount\":1,\"truncated\":false,\"outcome\":\"ANSWERED\",\"queriedAt\":\"2026-08-29T00:00:00Z\",\"rows\":[]}");
+        AgentConversationService.CardIdentity second = service.inspectCard(
+                "{\"cardId\":\"task-1:movement\",\"revision\":7,\"cardType\":\"movement-list\",\"resultCount\":1,\"truncated\":false,\"outcome\":\"ANSWERED\",\"queriedAt\":\"2026-08-29T00:00:00Z\",\"rows\":[]}");
+
+        service.recordCard(run, first, "scope-1");
+        service.recordCard(run, second, "scope-1");
+
+        verify(store, never()).completeTask(anyString(), anyLong(), anyString(), anyString());
+    }
+
+    @Test
+    void twoSuccessfulToolsCloseTaskOnlyAtTheSingleRunBoundary() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已完成\",\"data\":null}"));
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                anyString(), anyLong(), anyString(), eq(false), eq(observations))).thenReturn(true);
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-two-success", "查询库存和变化", ignored -> { });
+        execution.recordToolSuccess("warehouse_current_stock", "库存结果");
+        execution.recordToolSuccess("warehouse_recent_movements", "变化结果");
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-two-success", true, AgentStore.RUNNING,
+                        "assistant-1", 1L, "task-1", 4L), execution, events::add, new AtomicBoolean());
+
+        verify(store).completeSuccess(eq("c-1"), eq("run-two-success"), anyString(), eq("已完成"),
+                anyString(), anyLong(), eq("task-1"), eq(4L), eq("MULTI_TOOL"), eq(false), eq(observations));
+        verify(store, never()).completeTask(anyString(), anyLong(), anyString(), anyString());
+        assertEquals(1, events.stream().filter(event -> event.name().equals("run.completed")).count());
+    }
+
+    @Test
+    void allFailedToolsUseForbiddenBeforeTheFirstOtherFailure() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":false,\"code\":\"AI_TOOL_FORBIDDEN\",\"message\":\"无权查看\",\"data\":null}"));
+        when(store.completeFailure(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_TOOL_FORBIDDEN"), eq(observations))).thenReturn(true);
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-two-failed", "查询", ignored -> { });
+        execution.recordToolFailure("warehouse_current_stock", "AI_TOOL_DATABASE_UNAVAILABLE", "数据库暂不可用");
+        execution.recordToolFailure("warehouse_recent_movements", "AI_TOOL_FORBIDDEN", "无权查看");
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-two-failed", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        verify(store).completeFailure(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_TOOL_FORBIDDEN"), eq(observations));
+        assertEquals(1, events.stream().filter(event -> event.name().equals("run.failed")).count());
+        assertEquals(0, events.stream().filter(event -> event.name().equals("run.completed")).count());
+    }
+
+    @Test
+    void mixedToolTransportFailureClosesAsPartialWithAVisibleFailureResult() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.error(new IllegalStateException("provider failed")));
+        when(store.completePartial(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_TOOL_DATABASE_UNAVAILABLE"), eq(observations))).thenReturn(true);
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-mixed-transport", "查询库存和变化", ignored -> { });
+        execution.recordToolSuccess("warehouse_current_stock", "库存结果");
+        execution.recordToolFailure("warehouse_recent_movements", "AI_TOOL_DATABASE_UNAVAILABLE", "变化不可用");
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-mixed-transport", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        verify(store).completePartial(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_TOOL_DATABASE_UNAVAILABLE"), eq(observations));
+        assertEquals(List.of("run.started", "message.completed", "run.completed"), events.stream()
+                .map(AgentConversationService.StreamEvent::name).toList());
+        assertTrue(events.get(1).data().contains("AI_TOOL_DATABASE_UNAVAILABLE"));
+    }
+
+    @Test
+    void invalidCorrectionAfterAValidatedToolCardBecomesPartialNotSuccessful() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        ChatClient.CallResponseSpec correction = mock(ChatClient.CallResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.advisors(any(List.class))).thenReturn(request);
+        when(request.toolCallbacks(any(List.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("not-json"));
+        when(request.call()).thenReturn(correction);
+        when(correction.content()).thenReturn("still-not-json");
+        when(store.completePartial(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_MODEL_OUTPUT_INVALID"), eq(observations))).thenReturn(true);
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-invalid-partial", "查询库存", ignored -> { });
+        execution.recordToolSuccess("warehouse_current_stock", "库存结果");
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-invalid-partial", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        verify(store).completePartial(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_MODEL_OUTPUT_INVALID"), eq(observations));
+        assertEquals(1, events.stream().filter(event -> event.name().equals("message.completed")).count());
+        assertEquals(1, events.stream().filter(event -> event.name().equals("run.completed")).count());
+        assertTrue(events.stream().anyMatch(event -> event.data().contains("AI_MODEL_OUTPUT_INVALID")));
+    }
+
+    @Test
+    void invalidModelOutputIsCorrectedOnceWithoutToolsOrDeltaEvents() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        ChatClient.CallResponseSpec correction = mock(ChatClient.CallResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.advisors(any(List.class))).thenReturn(request);
+        when(request.toolCallbacks(any(List.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("not-json"));
+        when(request.call()).thenReturn(correction);
+        when(correction.content()).thenReturn("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已完成\",\"data\":null}");
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq(observations))).thenReturn(true);
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext execution = new AgentExecutionContext(actor, "run-1", "查询库存", ignored -> { });
+        execution.recordToolSuccess("warehouse_current_stock",
+                "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"库存已查询\",\"data\":null}");
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING),
+                execution,
+                events::add, new AtomicBoolean());
+
+        verify(request).toolCallbacks(eq(List.of()));
+        verify(request).advisors(eq(List.of()));
+        verify(store).completeSuccess(eq("c-1"), eq("run-1"), anyString(), eq("已完成"),
+                eq(actor.scopeFingerprint()), anyLong(), eq(observations));
+        assertEquals(0, events.stream().filter(event -> event.name().equals("message.delta")).count());
+        assertEquals(1, events.stream().filter(event -> event.name().equals("message.completed")).count());
+        var correctionPrompt = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(request, atLeast(2)).user(correctionPrompt.capture());
+        assertTrue(correctionPrompt.getAllValues().stream().anyMatch(value -> value.contains("库存已查询")));
+        assertTrue(correctionPrompt.getAllValues().stream().noneMatch(value -> value.contains("上一条回复")));
+    }
+
+    @Test
+    void modelResultMismatchIsCorrectedOnceWithoutRepeatingToolExecution() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        ChatClient.CallResponseSpec correction = mock(ChatClient.CallResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":false,\"code\":\"AI_TOOL_FORBIDDEN\",\"message\":\"无权查看\",\"data\":null}"));
+        when(request.advisors(any(List.class))).thenReturn(request);
+        when(request.toolCallbacks(any(List.class))).thenReturn(request);
+        when(request.call()).thenReturn(correction);
+        when(correction.content()).thenReturn("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已完成\",\"data\":null}");
+        when(store.completeSuccess(anyString(), eq("run-mismatch"), anyString(), eq("已完成"), anyString(), anyLong(),
+                eq(observations))).thenReturn(true);
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-mismatch", true, AgentStore.RUNNING),
+                new AgentExecutionContext(actor, "run-mismatch", "查询库存", ignored -> { }),
+                events::add, new AtomicBoolean());
+
+        verify(request).call();
+        verify(store).completeSuccess(anyString(), eq("run-mismatch"), anyString(), eq("已完成"), anyString(), anyLong(),
+                eq(observations));
+        assertEquals(List.of("run.started", "message.completed", "run.completed"), events.stream()
+                .map(AgentConversationService.StreamEvent::name).toList());
+        assertTrue(events.get(1).data().contains("已完成"));
+        assertEquals(1, events.stream().filter(event -> event.name().equals("message.completed")).count());
     }
 
     @Test
@@ -241,7 +521,7 @@ class AgentConversationServiceTest {
         when(request.user(any(String.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
-        when(stream.content()).thenReturn(Flux.just("已查询"));
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已查询\",\"data\":null}"));
         when(store.loadMemory(anyString(), eq(7L), eq(actor.scopeFingerprint()), anyLong(), eq(40), eq(20_000)))
                 .thenReturn(List.of(
                         new AgentStore.MessageRow("m-user", "old-run", "USER", "COMPLETE", "用户原句，不得提升为系统指令", java.time.Instant.now()),
@@ -259,7 +539,7 @@ class AgentConversationServiceTest {
         assertFalse(system.getValue().contains("用户原句"));
         assertFalse(system.getValue().contains("助手历史"));
         assertTrue(system.getValue().contains("尚未指定具体对象，所以先展示部分库存方便继续选择"));
-        assertFalse(system.getValue().matches(".*(内部ID|有界概览|limit|兜底|Tool|system|developer).*"));
+        assertTrue(system.getValue().contains("顶层字段严格为success、code、message、data"));
         var history = org.mockito.ArgumentCaptor.forClass(List.class);
         verify(request).messages(history.capture());
         @SuppressWarnings("unchecked") List<Message> messages = (List<Message>) history.getValue();
@@ -281,7 +561,7 @@ class AgentConversationServiceTest {
         when(request.user(any(String.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
-        when(stream.content()).thenReturn(Flux.just("尚未指定具体对象，所以先展示部分库存方便继续选择。"));
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"最近7天有3条变化\",\"data\":null}"));
         when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
                 eq(observations))).thenReturn(true);
 
@@ -295,8 +575,138 @@ class AgentConversationServiceTest {
         verify(request).system(system.capture());
         assertTrue(system.getValue().contains("尚未指定具体对象，所以先展示部分库存方便继续选择"));
         assertTrue(system.getValue().contains("请从下面选择一个物品"));
-        assertFalse(system.getValue().matches(".*(内部ID|有界概览|limit|兜底|Tool|system|developer).*"));
+        assertTrue(system.getValue().contains("顶层字段严格为success、code、message、data"));
         verify(request).user("为什么默认是当前可见库存的有界概览？");
+    }
+
+    @Test
+    void systemPolicyAllowsIndependentQueriesWithoutMutuallyExclusiveClarification() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已完成\",\"data\":null}"));
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq(observations))).thenReturn(true);
+
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ));
+        service.execute(new AgentStore.StartRun("c-1", "run-policy-multi", true, AgentStore.RUNNING),
+                new AgentExecutionContext(actor, "run-policy-multi", "查库存并看最近变化", ignored -> { }),
+                ignored -> { }, new AtomicBoolean());
+
+        var system = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(request).system(system.capture());
+        assertTrue(system.getValue().contains("一句话中可以包含多个彼此独立的仓储查询"));
+        assertFalse(system.getValue().contains("同时涉及当前库存和最近变化时，先确认用户要查询哪一种"));
+    }
+
+    @Test
+    void streamDeliveryFailureIsObservedAndDoesNotPublishSuccessfulTerminal() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已完成\",\"data\":null}"));
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq(observations))).thenReturn(true);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+
+        service.execute(new AgentStore.StartRun("c-1", "run-stream", true, AgentStore.RUNNING),
+                new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ)), "run-stream", "查询库存", ignored -> { }),
+                event -> {
+                    if ("message.completed".equals(event.name())) {
+                        throw new IllegalStateException("emitter closed");
+                    }
+                    events.add(event);
+                }, new AtomicBoolean());
+
+        verify(store).completeSuccess(anyString(), eq("run-stream"), anyString(), eq("已完成"),
+                anyString(), anyLong(), eq(observations));
+        assertEquals(List.of("run.started"), events.stream().map(AgentConversationService.StreamEvent::name).toList());
+        verify(observations).record(eq("run-stream"), eq("STREAM"), eq("FAILED"), anyLong(),
+                eq("AI_STREAM_DELIVERY_FAILED"), isNull(), isNull());
+        verify(observations, never()).record(eq("run-stream"), eq("STREAM"), eq("SUCCEEDED"), anyLong(),
+                any(), any(), any());
+    }
+
+    @Test
+    void messageDeliveryFailureOnlyRecordsStreamDeliveryFailure() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已完成\",\"data\":null}"));
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(), eq(observations)))
+                .thenReturn(true);
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-delivery-message", true, AgentStore.RUNNING),
+                new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ)), "run-delivery-message", "查询库存", ignored -> { }),
+                event -> {
+                    if ("message.completed".equals(event.name())) throw new IllegalStateException("closed");
+                    events.add(event);
+                }, new AtomicBoolean());
+
+        assertEquals(List.of("run.started"), events.stream()
+                .map(AgentConversationService.StreamEvent::name).toList());
+        verify(store).completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(), eq(observations));
+    }
+
+    @Test
+    void terminalDeliveryFailureAfterMessageLeavesPersistedSuccessUntouched() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已完成\",\"data\":null}"));
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(), eq(observations)))
+                .thenReturn(true);
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        AtomicBoolean failFirstTerminal = new AtomicBoolean(true);
+
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-delivery-terminal", true, AgentStore.RUNNING),
+                new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ)), "run-delivery-terminal", "查询库存", ignored -> { }),
+                event -> {
+                    if ("run.completed".equals(event.name()) && failFirstTerminal.getAndSet(false)) {
+                        throw new IllegalStateException("closed");
+                    }
+                    events.add(event);
+                }, new AtomicBoolean());
+
+        assertEquals(List.of("run.started", "message.completed"), events.stream()
+                .map(AgentConversationService.StreamEvent::name).toList());
     }
 
     @Test
@@ -324,6 +734,158 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void unsafeControlCharactersAndCredentialsAreRejectedBeforePersistence() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        AgentConversationService service = new AgentConversationService(store, client,
+                mock(AiObservationRecorder.class), new AiProperties());
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ));
+
+        assertThrows(RuntimeException.class, () -> service.start("c-1", "client-control", "查询\u0001库存", actor));
+        assertThrows(RuntimeException.class, () -> service.start("c-1", "client-key", "api_key=secret-value", actor));
+        assertThrows(RuntimeException.class, () -> service.start("c-1", "client-cookie", "Cookie: session=abc", actor));
+        assertThrows(RuntimeException.class, () -> service.start("c-1", "client-jdbc", "jdbc:postgresql://db/app", actor));
+        verifyNoInteractions(store, client);
+    }
+
+    @Test
+    void sensitiveModelResultIsRejectedBeforeHistoryAndDisplay() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.advisors(any(List.class))).thenReturn(request);
+        when(request.toolCallbacks(any(List.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"请访问 https://internal.example/a\",\"data\":null}"));
+        when(request.call()).thenReturn(null);
+        when(store.completeFailure(anyString(), eq("run-sensitive"), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_MODEL_OUTPUT_INVALID"), eq(observations))).thenReturn(true);
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-sensitive", true, AgentStore.RUNNING),
+                new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ)), "run-sensitive", "查询库存", ignored -> { }),
+                events::add, new AtomicBoolean());
+
+        verify(store, never()).fail("run-sensitive", "AI_MODEL_OUTPUT_INVALID");
+        verify(store, never()).completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(), any());
+        assertEquals(1, events.stream().filter(event -> event.name().equals("message.completed")).count());
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("message.completed")
+                && event.data().contains("AI_MODEL_OUTPUT_INVALID")));
+        assertEquals(1, events.stream().filter(event -> event.name().equals("run.failed")).count());
+    }
+
+    @Test
+    void knownActorIdentifierIsRejectedOnlyWhenExplicitlyLabeled() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"用户编号: 7\",\"data\":null}"));
+        when(store.completeFailure(anyString(), eq("run-known-id"), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_MODEL_OUTPUT_INVALID"), eq(observations))).thenReturn(true);
+
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ));
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-known-id", true, AgentStore.RUNNING),
+                new AgentExecutionContext(actor, "run-known-id", "查询库存", ignored -> { }),
+                events::add, new AtomicBoolean());
+
+        verify(store, never()).fail("run-known-id", "AI_MODEL_OUTPUT_INVALID");
+        assertEquals(1, events.stream().filter(event -> event.name().equals("message.completed")).count());
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("message.completed")
+                && event.data().contains("AI_MODEL_OUTPUT_INVALID")));
+        verify(store, never()).completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(), any());
+    }
+
+    @Test
+    void correctionContextHasBoundedOutcomeCountAndCharacters() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        ChatClient.CallResponseSpec correction = mock(ChatClient.CallResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.advisors(any(List.class))).thenReturn(request);
+        when(request.toolCallbacks(any(List.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("not-json"));
+        when(request.call()).thenReturn(correction);
+        when(correction.content()).thenReturn("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已完成\",\"data\":null}");
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(), eq(observations)))
+                .thenReturn(true);
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-bounded", "查询库存", ignored -> { });
+        for (int i = 0; i < 25; i++) {
+            execution.recordToolSuccess("warehouse_current_stock", "x".repeat(2_000));
+        }
+
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-bounded", true, AgentStore.RUNNING), execution,
+                ignored -> { }, new AtomicBoolean());
+
+        var prompts = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(request, times(1)).user(prompts.capture());
+        verify(request, never()).call();
+        verify(store).completePartial(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_TOOL_EXECUTION_FAILED"), eq(observations));
+    }
+
+    @Test
+    void correctionContextCharacterOverflowStopsCorrectionCall() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("not-json"));
+        when(store.completePartial(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_TOOL_EXECUTION_FAILED"), eq(observations))).thenReturn(true);
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-character-overflow", "查询库存", ignored -> { });
+        for (int i = 0; i < 10; i++) {
+            execution.recordToolSuccess("warehouse_current_stock", "x".repeat(2_100));
+        }
+
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-character-overflow", true, AgentStore.RUNNING), execution,
+                ignored -> { }, new AtomicBoolean());
+
+        verify(request, never()).call();
+        verify(store).completePartial(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_TOOL_EXECUTION_FAILED"), eq(observations));
+    }
+
+    @Test
     void streamedToolContinuationRestoresTransientDeepSeekReasoningOnly() {
         AssistantMessage aggregated = AssistantMessage.builder()
                 .content("")
@@ -335,11 +897,11 @@ class AgentConversationServiceTest {
         List<Message> restored = com.internaladmin.module.agent.config.DeepSeekToolCallingAdvisor
                 .restoreReasoningContent(List.of(aggregated));
 
-        assertInstanceOf(DeepSeekAssistantMessage.class, restored.getFirst());
-        DeepSeekAssistantMessage message = (DeepSeekAssistantMessage) restored.getFirst();
+        assertInstanceOf(DeepSeekAssistantMessage.class, restored.get(0));
+        DeepSeekAssistantMessage message = (DeepSeekAssistantMessage) restored.get(0);
         assertEquals("transient reasoning", message.getReasoningContent());
         assertEquals("", message.getText());
-        assertEquals("warehouse_stock_by_item", message.getToolCalls().getFirst().name());
+        assertEquals("warehouse_stock_by_item", message.getToolCalls().get(0).name());
     }
 
     @Test
@@ -349,7 +911,7 @@ class AgentConversationServiceTest {
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
         doThrow(new IllegalStateException("recorder unavailable")).when(observations)
                 .recordAttempt("run-1", "MODEL", "STARTED", 1, 0, null, null, null);
-        when(store.fail("run-1", "OBSERVATION_FAILED")).thenReturn(true);
+        when(store.fail("run-1", "AI_OBSERVATION_FAILED")).thenReturn(true);
         AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
 
@@ -358,10 +920,10 @@ class AgentConversationServiceTest {
                         List.of(PermissionCodes.WAREHOUSE_READ)), "run-1", "查询库存", ignored -> { }),
                 events::add, new AtomicBoolean());
 
-        verify(store).fail("run-1", "OBSERVATION_FAILED");
+        verify(store).fail("run-1", "AI_OBSERVATION_FAILED");
         assertEquals(List.of("run.started", "run.failed"), events.stream()
                 .map(AgentConversationService.StreamEvent::name).toList());
-        assertTrue(events.getLast().data().contains("OBSERVATION_FAILED"));
+        assertTrue(events.get(events.size() - 1).data().contains("AI_OBSERVATION_FAILED"));
     }
 
     @Test
@@ -376,11 +938,11 @@ class AgentConversationServiceTest {
         when(request.user(any(String.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
-        when(stream.content()).thenReturn(Flux.just("可见结果"));
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"可见结果\",\"data\":null}"));
         when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
                 eq(observations))).thenThrow(new AgentStore.SuccessBoundaryException(
-                        AgentStore.SuccessBoundaryFailure.OBSERVATION_FAILED));
-        when(store.fail("run-1", "OBSERVATION_FAILED")).thenReturn(true);
+                        AgentStore.SuccessBoundaryFailure.OBSERVATION_CLOSE));
+        when(store.fail("run-1", "AI_OBSERVATION_FAILED")).thenReturn(true);
         AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
 
@@ -389,10 +951,10 @@ class AgentConversationServiceTest {
                         List.of(PermissionCodes.WAREHOUSE_READ)), "run-1", "查询库存", ignored -> { }),
                 events::add, new AtomicBoolean());
 
-        verify(store).fail("run-1", "OBSERVATION_FAILED");
-        verify(observations).record(eq("run-1"), eq("HISTORY"), eq("FAILED"), anyLong(), eq("OBSERVATION_FAILED"), isNull(), isNull());
-        verify(observations).record(eq("run-1"), eq("STREAM"), eq("FAILED"), anyLong(), eq("OBSERVATION_FAILED"), isNull(), isNull());
-        verify(observations).finishRun("run-1", "FAILED", "OBSERVATION_FAILED");
+        verify(store).fail("run-1", "AI_OBSERVATION_FAILED");
+        verify(observations).record(eq("run-1"), eq("HISTORY"), eq("FAILED"), anyLong(), eq("AI_OBSERVATION_FAILED"), isNull(), isNull());
+        verify(observations).record(eq("run-1"), eq("STREAM"), eq("FAILED"), anyLong(), eq("AI_OBSERVATION_FAILED"), isNull(), isNull());
+        verify(observations).finishRun("run-1", "FAILED", "AI_OBSERVATION_FAILED");
         assertEquals(0, events.stream().filter(e -> e.name().equals("run.completed")).count());
         assertEquals(1, events.stream().filter(e -> e.name().equals("run.failed")).count());
     }
@@ -409,11 +971,11 @@ class AgentConversationServiceTest {
         when(request.user(any(String.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
-        when(stream.content()).thenReturn(Flux.just("可见结果"));
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"可见结果\",\"data\":null}"));
         when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
                 eq(observations))).thenThrow(new AgentStore.SuccessBoundaryException(
-                        AgentStore.SuccessBoundaryFailure.HISTORY_FAILED));
-        when(store.fail("run-1", "HISTORY_FAILED")).thenReturn(true);
+                        AgentStore.SuccessBoundaryFailure.HISTORY_WRITE));
+        when(store.fail("run-1", "AI_HISTORY_WRITE_FAILED")).thenReturn(true);
         AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
 
@@ -422,10 +984,10 @@ class AgentConversationServiceTest {
                         List.of(PermissionCodes.WAREHOUSE_READ)), "run-1", "查询库存", ignored -> { }),
                 events::add, new AtomicBoolean());
 
-        verify(store).fail("run-1", "HISTORY_FAILED");
+        verify(store).fail("run-1", "AI_HISTORY_WRITE_FAILED");
         assertEquals(0, events.stream().filter(e -> e.name().equals("run.completed")).count());
         assertEquals(1, events.stream().filter(e -> e.name().equals("run.failed")).count());
-        assertTrue(events.getLast().data().contains("HISTORY_FAILED"));
+        assertTrue(events.get(events.size() - 1).data().contains("AI_HISTORY_WRITE_FAILED"));
     }
 
     @Test
@@ -440,11 +1002,11 @@ class AgentConversationServiceTest {
         when(request.user(any(String.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
-        when(stream.content()).thenReturn(Flux.just("可见结果"));
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"可见结果\",\"data\":null}"));
         when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
                 eq(observations))).thenThrow(new AgentStore.SuccessBoundaryException(
-                        AgentStore.SuccessBoundaryFailure.TERMINAL_CONFLICT));
-        when(store.fail("run-1", "TERMINAL_CONFLICT")).thenReturn(false);
+                        AgentStore.SuccessBoundaryFailure.TERMINAL_CAS));
+        when(store.fail("run-1", "AI_TERMINAL_CONFLICT")).thenReturn(false);
         when(store.status("run-1")).thenReturn(AgentStore.RUNNING);
         AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
@@ -454,10 +1016,10 @@ class AgentConversationServiceTest {
                         List.of(PermissionCodes.WAREHOUSE_READ)), "run-1", "查询库存", ignored -> { }),
                 events::add, new AtomicBoolean());
 
-        verify(store).fail("run-1", "TERMINAL_CONFLICT");
+        verify(store).fail("run-1", "AI_TERMINAL_CONFLICT");
         assertEquals(0, events.stream().filter(e -> e.name().equals("run.completed")).count());
         assertEquals(1, events.stream().filter(e -> e.name().equals("run.failed")).count());
-        assertTrue(events.getLast().data().contains("TERMINAL_CONFLICT"));
+        assertTrue(events.get(events.size() - 1).data().contains("AI_TERMINAL_CONFLICT"));
     }
 
     @Test
@@ -472,11 +1034,11 @@ class AgentConversationServiceTest {
         when(request.user(any(String.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
-        when(stream.content()).thenReturn(Flux.just("可见结果"));
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"可见结果\",\"data\":null}"));
         when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
                 eq(observations))).thenThrow(new AgentStore.SuccessBoundaryException(
-                        AgentStore.SuccessBoundaryFailure.HISTORY_FAILED));
-        when(store.fail("run-1", "HISTORY_FAILED")).thenThrow(new IllegalStateException("数据库不可用"));
+                        AgentStore.SuccessBoundaryFailure.HISTORY_WRITE));
+        when(store.fail("run-1", "AI_HISTORY_WRITE_FAILED")).thenThrow(new IllegalStateException("数据库不可用"));
         when(store.status("run-1")).thenReturn(AgentStore.RUNNING);
         AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
@@ -488,7 +1050,7 @@ class AgentConversationServiceTest {
 
         assertEquals(0, events.stream().filter(e -> e.name().equals("run.completed")).count());
         assertEquals(1, events.stream().filter(e -> e.name().equals("run.failed")).count());
-        assertTrue(events.getLast().data().contains("HISTORY_FAILED"));
+        assertTrue(events.get(events.size() - 1).data().contains("AI_HISTORY_WRITE_FAILED"));
     }
 
     @Test
@@ -510,22 +1072,137 @@ class AgentConversationServiceTest {
                 "run-1", "查询库存", ignored -> { });
         execution.markToolOutputProduced();
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
-        when(store.partial("run-1")).thenReturn(true);
+        when(store.partial(eq("run-1"), anyString())).thenReturn(true);
 
         service.execute(new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING),
                 execution, events::add, new AtomicBoolean());
 
         assertEquals(0, events.stream().filter(e -> e.name().equals("run.failed")).count());
         assertEquals(1, events.stream().filter(e -> e.name().equals("run.completed")).count());
-        assertTrue(events.getLast().data().contains("\"status\":\"PARTIAL\""));
+        assertTrue(events.get(events.size() - 1).data().contains("\"status\":\"PARTIAL\""));
         verify(store, never()).complete(anyString());
         verify(store, never()).appendAssistant(anyString(), anyString(), anyString(),
                 anyString(), eq("COMPLETE"));
-        verify(observations).record(eq("run-1"), eq("STREAM"), eq("PARTIAL"), anyLong(), eq("PARTIAL"), isNull(), isNull());
+        verify(observations).record(eq("run-1"), eq("STREAM"), eq("PARTIAL"), anyLong(), eq("AI_MODEL_UNAVAILABLE"), isNull(), isNull());
     }
 
     @Test
-    void transientModelFailureRetriesAtMostThreeAttemptsAndThenSucceeds() {
+    void structuredToolFailureIsPersistedAsVisibleFailedResult() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":false,\"code\":\"AI_TOOL_FORBIDDEN\",\"message\":\"当前用户无权查看该数据\",\"data\":null}"));
+        when(store.completeFailure(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                anyString(), eq(observations))).thenReturn(true);
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-1", "查询库存", ignored -> { });
+        execution.markToolFailure("AI_TOOL_FORBIDDEN");
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+
+        service.execute(new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING),
+                execution, events::add, new AtomicBoolean());
+
+        verify(store).completeFailure(eq("c-1"), eq("run-1"), anyString(), eq("当前用户无权查看该数据"),
+                anyString(), anyLong(), eq("AI_TOOL_FORBIDDEN"), eq(observations));
+        assertEquals(List.of("run.started", "message.completed", "run.failed"),
+                events.stream().map(AgentConversationService.StreamEvent::name).toList());
+        assertTrue(events.get(1).data().contains("AI_TOOL_FORBIDDEN"));
+        assertTrue(events.get(1).data().contains("当前用户无权查看该数据"));
+    }
+
+    @Test
+    void overBudgetRetryPlanIsNotAdvertisedInImmediateFailureEvent() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":false,\"code\":\"AI_TOOL_EXECUTION_FAILED\",\"message\":\"查询失败\",\"data\":null}"));
+        when(store.completeFailure(anyString(), eq("run-over-budget"), anyString(), eq("查询失败"), anyString(),
+                anyLong(), eq("AI_TOOL_EXECUTION_FAILED"), eq(observations), any(AgentStore.RetryPlan.class)))
+                .thenReturn(true);
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext execution = new AgentExecutionContext(actor, "run-over-budget", "查询库存", ignored -> { });
+        execution.recordToolFailure("warehouse_current_stock", largeRetryArguments(),
+                "AI_TOOL_EXECUTION_FAILED", "库存查询失败");
+        execution.recordToolFailure("warehouse_item_locations", largeRetryArguments(),
+                "AI_TOOL_EXECUTION_FAILED", "位置查询失败");
+        execution.recordToolFailure("warehouse_recent_movements", largeRetryArguments(),
+                "AI_TOOL_EXECUTION_FAILED", "变化查询失败");
+        when(store.retryAvailable(eq("c-1"), eq("run-over-budget"), eq(7L), eq(actor.scopeFingerprint())))
+                .thenReturn(false);
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-over-budget", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        ArgumentCaptor<AgentStore.RetryPlan> planCaptor = ArgumentCaptor.forClass(AgentStore.RetryPlan.class);
+        verify(store).completeFailure(eq("c-1"), eq("run-over-budget"), anyString(), eq("查询失败"), anyString(),
+                anyLong(), eq("AI_TOOL_EXECUTION_FAILED"), eq(observations), planCaptor.capture());
+        assertEquals(3, planCaptor.getValue().subtasks().size());
+        assertTrue(planCaptor.getValue().subtasks().stream()
+                .mapToInt(subtask -> subtask.arguments().length()).sum() > 20_000);
+        verify(store).retryAvailable(eq("c-1"), eq("run-over-budget"), eq(7L), eq(actor.scopeFingerprint()));
+        assertEquals(1, events.stream().filter(event -> event.name().equals("run.failed")).count());
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("run.failed")
+                && event.data().contains("\"retryAvailable\":false")));
+    }
+
+    @Test
+    void persistedRetryPlanIsAdvertisedWhenWithinBudget() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":false,\"code\":\"AI_TOOL_TIMEOUT\",\"message\":\"查询超时\",\"data\":null}"));
+        when(store.completeFailure(anyString(), eq("run-budget-in"), anyString(), eq("查询超时"), anyString(),
+                anyLong(), eq("AI_TOOL_TIMEOUT"), eq(observations), any(AgentStore.RetryPlan.class)))
+                .thenReturn(true);
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext execution = new AgentExecutionContext(actor, "run-budget-in", "查询库存", ignored -> { });
+        execution.recordToolFailure("warehouse_current_stock", "{\"itemKeyword\":\"轴承\"}",
+                "AI_TOOL_TIMEOUT", "库存查询超时");
+        when(store.retryAvailable(eq("c-1"), eq("run-budget-in"), eq(7L), eq(actor.scopeFingerprint())))
+                .thenReturn(true);
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-budget-in", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        verify(store).retryAvailable(eq("c-1"), eq("run-budget-in"), eq(7L), eq(actor.scopeFingerprint()));
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("run.failed")
+                && event.data().contains("\"retryAvailable\":true")));
+    }
+
+    @Test
+    void transientModelFailureRetriesAtMostOnceAndThenSucceeds() {
         AgentStore store = mock(AgentStore.class);
         ChatClient client = mock(ChatClient.class);
         ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
@@ -536,7 +1213,7 @@ class AgentConversationServiceTest {
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
         when(stream.content()).thenReturn(Flux.error(new IllegalStateException("transient provider transport")),
-                Flux.error(new IllegalStateException("transient provider transport")), Flux.just("完成"));
+                Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"完成\",\"data\":null}"));
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
         when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
                 eq(observations))).thenReturn(true);
@@ -550,16 +1227,50 @@ class AgentConversationServiceTest {
 
         verify(observations).recordAttempt("run-1", "MODEL", "STARTED", 1, 0, null, null, null);
         verify(observations).recordAttempt("run-1", "MODEL", "STARTED", 2, 0, null, null, null);
-        verify(observations).recordAttempt("run-1", "MODEL", "STARTED", 3, 0, null, null, null);
+        verify(observations, never()).recordAttempt("run-1", "MODEL", "STARTED", 3, 0, null, null, null);
         verify(store).completeSuccess(anyString(), eq("run-1"), anyString(), eq("完成"), anyString(), anyLong(),
                 eq(observations));
         assertEquals(1, events.stream().filter(e -> e.name().equals("run.completed")).count());
     }
 
     @Test
-    void exhaustedTransientModelFailureStopsAtThreeAttemptsAndFails() {
+    void transientFailureAfterPartialJsonUsesOnlyTheNextAttemptBuffer() {
         AgentStore store = mock(AgentStore.class);
-        when(store.fail("run-1", "MODEL_TRANSPORT")).thenReturn(true);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(
+                Flux.concat(Flux.just("{\"success\":true,"),
+                        Flux.error(new IllegalStateException("transient provider transport"))),
+                Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"完成\",\"data\":null}"));
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq(observations))).thenReturn(true);
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-half", true, AgentStore.RUNNING),
+                new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ)), "run-half", "查询库存", ignored -> { }),
+                events::add, new AtomicBoolean());
+
+        verify(request, never()).call();
+        verify(store).completeSuccess(anyString(), eq("run-half"), anyString(), eq("完成"), anyString(), anyLong(),
+                eq(observations));
+        assertEquals(1, events.stream().filter(event -> event.name().equals("run.completed")).count());
+    }
+
+    @Test
+    void exhaustedTransientModelFailureStopsAtTwoAttemptsAndFails() {
+        AgentStore store = mock(AgentStore.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(store.completeFailure(anyString(), eq("run-1"), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_MODEL_UNAVAILABLE"), eq(observations))).thenReturn(true);
         ChatClient client = mock(ChatClient.class);
         ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
         ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
@@ -570,9 +1281,7 @@ class AgentConversationServiceTest {
         when(request.stream()).thenReturn(stream);
         when(stream.content()).thenReturn(
                 Flux.error(new IllegalStateException("transient provider transport")),
-                Flux.error(new IllegalStateException("transient provider transport")),
                 Flux.error(new IllegalStateException("transient provider transport")));
-        AiObservationRecorder observations = mock(AiObservationRecorder.class);
         AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
 
@@ -581,9 +1290,10 @@ class AgentConversationServiceTest {
                         List.of(PermissionCodes.WAREHOUSE_READ)), "run-1", "查询库存", ignored -> { }),
                 events::add, new AtomicBoolean());
 
-        verify(observations, times(3)).recordAttempt(eq("run-1"), eq("MODEL"), eq("STARTED"),
+        verify(observations, times(2)).recordAttempt(eq("run-1"), eq("MODEL"), eq("STARTED"),
                 anyInt(), anyLong(), isNull(), isNull(), isNull());
-        verify(store).fail("run-1", "MODEL_TRANSPORT");
+        verify(store).completeFailure(anyString(), eq("run-1"), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_MODEL_UNAVAILABLE"), eq(observations));
         assertEquals(1, events.stream().filter(e -> e.name().equals("run.failed")).count());
     }
 
@@ -612,9 +1322,66 @@ class AgentConversationServiceTest {
         verify(store).cancel("run-1");
         verify(store, never()).appendAssistant(anyString(), anyString(), anyString(),
                 anyString(), eq("COMPLETE"));
-        assertTrue(events.getLast().data().contains("\"status\":\"CANCELLED\""));
+        assertTrue(events.get(events.size() - 1).data().contains("\"status\":\"CANCELLED\""));
         assertEquals(0, events.stream().filter(e -> e.name().equals("run.failed")).count());
         assertEnvelope(events);
+    }
+
+    @Test
+    void retryRunExecutesOnlyPersistedFailedToolWithoutCallingChatProvider() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        AtomicInteger callbackCalls = new AtomicInteger();
+        ToolCallback callback = new ToolCallback() {
+            private final org.springframework.ai.tool.definition.ToolDefinition definition =
+                    new DefaultToolDefinition("warehouse_recent_movements", "test", "{\"type\":\"object\"}");
+
+            @Override
+            public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() {
+                return definition;
+            }
+
+            @Override
+            public String call(String input) {
+                return call(input, new ToolContext(Map.of()));
+            }
+
+            @Override
+            public String call(String input, ToolContext context) {
+                callbackCalls.incrementAndGet();
+                AgentExecutionContext execution = (AgentExecutionContext) context.getContext().get("agent.execution");
+                execution.recordToolSuccess("warehouse_recent_movements", input,
+                        "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"变化已查询\",\"data\":null}");
+                return "{\"success\":true}";
+            }
+        };
+        AgentToolProvider provider = () -> new ToolCallback[]{callback};
+        AgentConversationService service = new AgentConversationService(store, client, observations,
+                new AiProperties(), List.of(provider));
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentStore.RetryPlan plan = new AgentStore.RetryPlan("source-run", "RECENT_MOVEMENTS", 1,
+                List.of(new AgentStore.RetrySubtask(2, "warehouse_recent_movements",
+                        "{\"recentDays\":7}", "AI_TOOL_TIMEOUT")));
+        AgentStore.StartRun run = new AgentStore.StartRun("c-1", "retry-run", true, AgentStore.RUNNING,
+                "assistant-retry", 1L, "task-1", 4L, "重试未完成查询", plan);
+        when(store.completeSuccess(eq("c-1"), eq("retry-run"), anyString(), eq("未完成的查询已完成"),
+                eq(actor.scopeFingerprint()), anyLong(), eq("task-1"), eq(4L), eq("RECENT_MOVEMENTS"),
+                eq(false), eq(observations))).thenReturn(true);
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+
+        service.execute(run, new AgentExecutionContext(actor, run.runId(), run.effectiveUserMessage(), ignored -> { }),
+                events::add, new AtomicBoolean());
+
+        assertEquals(1, callbackCalls.get(), "重试计划中的失败工具只执行一次");
+        verifyNoInteractions(client);
+        verify(store).completeSuccess(eq("c-1"), eq("retry-run"), anyString(), eq("未完成的查询已完成"),
+                eq(actor.scopeFingerprint()), anyLong(), eq("task-1"), eq(4L), eq("RECENT_MOVEMENTS"),
+                eq(false), eq(observations));
+        assertEquals(List.of("run.started", "message.completed", "run.completed"), events.stream()
+                .map(AgentConversationService.StreamEvent::name).toList());
+        assertTrue(events.get(1).data().contains("\"code\":\"SUCCESS\""));
     }
 
     private static void assertEnvelope(List<AgentConversationService.StreamEvent> events) {
@@ -632,5 +1399,9 @@ class AgentConversationServiceTest {
             assertTrue(sequence > previous);
             previous = sequence;
         }
+    }
+
+    private static String largeRetryArguments() {
+        return "{\"value\":\"" + "x".repeat(7_900) + "\"}";
     }
 }

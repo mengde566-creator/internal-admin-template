@@ -43,6 +43,10 @@ export type ClarificationSelection = {
   optionToken: string
 }
 
+export type RetryRequest = {
+  retryOfRunId: string
+}
+
 export class AgentHttpError extends Error {
   constructor(public readonly status: number, message: string) {
     super(message)
@@ -127,7 +131,8 @@ export async function fetchConversationMessages(conversationId: string, page = 1
       role: message.role ?? '',
       state: message.state ?? '',
       content: message.content ?? '',
-      createdAt: message.createdAt ?? ''
+      createdAt: message.createdAt ?? '',
+      retryAvailable: message.retryAvailable === true
     }))
   }
 }
@@ -158,7 +163,8 @@ export async function runAgent(
   text: string,
   signal: AbortSignal,
   onEvent: (event: AgentSseEvent) => void,
-  clarificationSelection?: ClarificationSelection
+  clarificationSelection?: ClarificationSelection,
+  retryOfRunId?: string
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/ai/conversations/${encodeURIComponent(conversationId)}/runs`, {
     method: 'POST',
@@ -169,7 +175,7 @@ export async function runAgent(
       'Content-Type': 'application/json',
       ...(xsrfToken() ? { 'X-XSRF-TOKEN': xsrfToken() as string } : {})
     },
-    body: JSON.stringify({ clientRequestId, ...(text.trim() ? { text: text.trim() } : {}), ...(clarificationSelection ? { clarificationSelection } : {}) })
+    body: JSON.stringify({ clientRequestId, ...(text.trim() ? { text: text.trim() } : {}), ...(clarificationSelection ? { clarificationSelection } : {}), ...(retryOfRunId ? { retryOfRunId } : {}) })
   })
   if (!response.ok) await readError(response)
   if (!response.body) throw new AgentHttpError(response.status, '暂时无法接收助手回复。')

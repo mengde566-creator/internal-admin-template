@@ -93,6 +93,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -114,6 +117,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -135,6 +141,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -156,6 +165,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -177,6 +189,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -198,6 +213,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -219,6 +237,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -240,6 +261,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -264,6 +288,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -288,6 +315,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -312,6 +342,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -333,6 +366,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -354,6 +390,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -368,6 +407,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -389,6 +431,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -410,6 +455,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -431,6 +479,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -445,6 +496,9 @@
           },
           "message": {
             "type": "string"
+          },
+          "success": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -1140,6 +1194,9 @@
           "messageId": {
             "type": "string"
           },
+          "retryAvailable": {
+            "type": "boolean"
+          },
           "role": {
             "type": "string"
           },
@@ -1283,6 +1340,11 @@
           },
           "clientRequestId": {
             "maxLength": 128,
+            "minLength": 0,
+            "type": "string"
+          },
+          "retryOfRunId": {
+            "maxLength": 36,
             "minLength": 0,
             "type": "string"
           },
