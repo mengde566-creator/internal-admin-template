@@ -32,12 +32,15 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.sqlite.SQLiteDataSource;
 import reactor.core.publisher.Flux;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.JsonNode;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -68,13 +71,21 @@ class WarehouseInventoryToolProviderTest {
             assertFalse(schema.contains("userId"));
             assertFalse(schema.contains("departmentId"));
         }
-        assertTrue(callbacks[0].getToolDefinition().inputSchema().contains("itemKeyword"));
+        assertTrue(callbacks[0].getToolDefinition().inputSchema().contains("itemMentions"));
         assertTrue(callbacks[1].getToolDefinition().inputSchema().contains("recentDays"));
-        assertTrue(callbacks[2].getToolDefinition().inputSchema().contains("itemKeyword"));
+        assertTrue(callbacks[2].getToolDefinition().inputSchema().contains("itemMentions"));
         assertTrue(callbacks[3].getToolDefinition().inputSchema().contains("locationKeyword"));
         assertTrue(callbacks[0].getToolDefinition().description().contains("查看当前库存"));
-        assertFalse(callbacks[0].getToolDefinition().description().matches(".*(内部ID|有界|limit|兜底|Tool|system|developer).*"));
-        assertFalse(callbacks[1].getToolDefinition().description().matches(".*(内部ID|有界|limit|兜底|Tool|system|developer).*"));
+        assertTrue(callbacks[0].getToolDefinition().description().contains("itemMentions"));
+        assertTrue(callbacks[0].getToolDefinition().description().contains("excludedItemMentions"));
+        assertTrue(callbacks[0].getToolDefinition().description().contains("SHOW_CANDIDATES"));
+        assertTrue(callbacks[1].getToolDefinition().description().contains("itemMentions"));
+        assertTrue(callbacks[2].getToolDefinition().description().contains("excludedItemMentions"));
+        assertTrue(callbacks[2].getToolDefinition().description().contains("AUTO_IF_UNIQUE"));
+        assertTrue(callbacks[3].getToolDefinition().description().contains("仓库和库位"));
+        assertFalse(callbacks[0].getToolDefinition().description().contains("itemKeyword"));
+        assertFalse(callbacks[1].getToolDefinition().description().contains("itemKeyword"));
+        assertFalse(callbacks[2].getToolDefinition().description().contains("itemKeyword"));
     }
 
     @Test
@@ -88,7 +99,7 @@ class WarehouseInventoryToolProviderTest {
         AtomicReference<String> card = new AtomicReference<>();
         AgentExecutionContext context = context(card);
         String output = provider(warehouse, iam).getToolCallbacks()[0].call(
-                "{\"itemKeyword\":\"测试物品\"}", new ToolContext(Map.of("agent.execution", context)));
+                itemInput("测试物品"), new ToolContext(Map.of("agent.execution", context)));
         assertTrue(output.contains("ITEM-01"));
         assertTrue(output.contains("2.0000"));
         assertTrue(output.contains("queriedAt"));
@@ -107,27 +118,27 @@ class WarehouseInventoryToolProviderTest {
                 .thenReturn(new WarehouseStockTaskResult("NO_DATA", List.of(), List.of(), java.time.Instant.now()));
         ToolCallback callback = provider(warehouse, iam).getToolCallbacks()[0];
         AtomicReference<String> card = new AtomicReference<>();
-        String empty = callback.call("{\"itemKeyword\":\"没有库存\"}",
+        String empty = callback.call(itemInput("没有库存"),
                 new ToolContext(Map.of("agent.execution", context(card))));
         assertTrue(empty.contains("\"success\":true"));
         assertTrue(empty.contains("\"code\":\"SUCCESS\""));
         assertTrue(empty.contains("\"outcome\":\"NO_DATA\""));
 
         when(iam.resolve(7L)).thenReturn(null);
-        String forbidden = callback.call("{\"itemKeyword\":\"测试物品\"}",
+        String forbidden = callback.call(itemInput("测试物品"),
                 new ToolContext(Map.of("agent.execution", context(new AtomicReference<>()))));
         assertTrue(forbidden.contains("AI_TOOL_FORBIDDEN"));
 
         when(iam.resolve(7L)).thenReturn(actor);
         when(warehouse.queryCurrentStock(eq("数据库故障"), isNull(), isNull(), eq(20), any()))
                 .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("database unavailable"));
-        String unavailable = callback.call("{\"itemKeyword\":\"数据库故障\"}",
+        String unavailable = callback.call(itemInput("数据库故障"),
                 new ToolContext(Map.of("agent.execution", context(new AtomicReference<>()))));
         assertTrue(unavailable.contains("AI_TOOL_DATABASE_UNAVAILABLE"));
 
         when(warehouse.queryCurrentStock(eq("越权对象"), isNull(), isNull(), eq(20), any()))
                 .thenThrow(new BusinessException(ErrorCode.FORBIDDEN, "对象不在当前范围"));
-        String forbiddenObject = callback.call("{\"itemKeyword\":\"越权对象\"}",
+        String forbiddenObject = callback.call(itemInput("越权对象"),
                 new ToolContext(Map.of("agent.execution", context(new AtomicReference<>()))));
         assertTrue(forbiddenObject.contains("AI_TOOL_FORBIDDEN"));
     }
@@ -142,7 +153,7 @@ class WarehouseInventoryToolProviderTest {
                         new WarehouseMovementTaskRow(11L, "ITEM-01", "测试物品", "件", 21L, "WH-01", "成品仓", 31L, "A-01", "一号位", "INBOUND", "2.0000", java.time.LocalDateTime.now())), java.time.Instant.now()));
         AgentExecutionContext context = context(new AtomicReference<>());
         ToolCallback callback = provider(warehouse, iam).getToolCallbacks()[1];
-        String output = callback.call("{\"recentDays\":7}", new ToolContext(Map.of("agent.execution", context)));
+        String output = callback.call(recentInput(7), new ToolContext(Map.of("agent.execution", context)));
         assertTrue(output.contains("ITEM-01"));
         assertTrue(output.contains("\"outcome\":\"ANSWERED\""));
         assertTrue(output.contains("queriedAt"));
@@ -162,7 +173,7 @@ class WarehouseInventoryToolProviderTest {
                         new WarehouseStockCandidate("ITEM-B", "轴承B", "件")), java.time.Instant.now(), false));
         AtomicReference<String> card = new AtomicReference<>();
         String output = provider(warehouse, iam).getToolCallbacks()[0].call(
-                "{\"itemKeyword\":\"轴承\"}", new ToolContext(Map.of("agent.execution", context(card))));
+                itemInput("轴承"), new ToolContext(Map.of("agent.execution", context(card))));
         assertTrue(card.get().contains("\"cardType\":\"clarification-choice\""));
         assertTrue(card.get().contains("\"options\""));
         assertTrue(card.get().contains("\"candidateIntent\":\"CURRENT_STOCK\""));
@@ -185,7 +196,7 @@ class WarehouseInventoryToolProviderTest {
                 "查询深沟球轴承的库存", card::set);
 
         String output = provider(warehouse, iam).getToolCallbacks()[0].call(
-                "{\"itemKeyword\":\"轴承\"}",
+                itemInput("轴承"),
                 new ToolContext(Map.of("agent.execution", execution)));
 
         assertTrue(output.contains("\"outcome\":\"CLARIFICATION\""));
@@ -218,7 +229,7 @@ class WarehouseInventoryToolProviderTest {
                 List.of(PermissionCodes.WAREHOUSE_READ)), "run-explicit", originalQuestion, card::set);
 
         String output = provider(warehouse, iam).getToolCallbacks()[0].call(
-                "{\"itemKeyword\":\"" + shortKeyword + "\"}",
+                itemInput(shortKeyword),
                 new ToolContext(Map.of("agent.execution", execution)));
 
         assertTrue(output.contains("\"outcome\":\"ANSWERED\""));
@@ -252,7 +263,7 @@ class WarehouseInventoryToolProviderTest {
                 "请按完整编码 " + fullCode + " 查询库存", card::set);
 
         String output = provider(warehouse, iam).getToolCallbacks()[0].call(
-                "{\"itemKeyword\":\"E2E-WH-0816\"}",
+                itemInput("E2E-WH-0816"),
                 new ToolContext(Map.of("agent.execution", execution)));
 
         assertTrue(output.contains("\"outcome\":\"ANSWERED\""));
@@ -284,7 +295,7 @@ class WarehouseInventoryToolProviderTest {
                 "帮我查 " + fullName + " 放在哪", card::set);
 
         String output = provider(warehouse, iam).getToolCallbacks()[2].call(
-                "{\"itemKeyword\":\"" + shortKeyword + "\"}",
+                itemInput(shortKeyword),
                 new ToolContext(Map.of("agent.execution", execution)));
 
         assertTrue(output.contains("\"outcome\":\"ANSWERED\""));
@@ -311,7 +322,7 @@ class WarehouseInventoryToolProviderTest {
                 "请查询 LOC-A 深沟球轴承A 和 LOC-B 深沟球轴承B 放在哪", card::set);
 
         String output = provider(warehouse, iam).getToolCallbacks()[2].call(
-                "{\"itemKeyword\":\"轴承\"}",
+                itemInput("轴承"),
                 new ToolContext(Map.of("agent.execution", execution)));
 
         assertTrue(output.contains("\"outcome\":\"CLARIFICATION\""));
@@ -336,7 +347,7 @@ class WarehouseInventoryToolProviderTest {
                 "请查询 ITEM-A-01 E2E-WH-0816-2226 物品和 ITEM-B-01 E2E-WH-0816-2226 第二物品的库存", card::set);
 
         String output = provider(warehouse, iam).getToolCallbacks()[0].call(
-                "{\"itemKeyword\":\"E2E-WH-0816\"}",
+                itemInput("E2E-WH-0816"),
                 new ToolContext(Map.of("agent.execution", execution)));
 
         assertTrue(output.contains("\"outcome\":\"CLARIFICATION\""));
@@ -355,9 +366,225 @@ class WarehouseInventoryToolProviderTest {
                         new WarehouseStockCandidate("ITEM-A", "轴承A", "件")), java.time.Instant.now(), false));
         AtomicReference<String> card = new AtomicReference<>();
         provider(warehouse, iam).getToolCallbacks()[2].call(
-                "{\"itemKeyword\":\"轴承\"}", new ToolContext(Map.of("agent.execution", context(card))));
+                itemInput("轴承"), new ToolContext(Map.of("agent.execution", context(card))));
         assertNotNull(card.get());
         assertTrue(card.get().contains("\"candidateIntent\":\"ITEM_LOCATIONS\""));
+    }
+
+    @Test
+    void itemToolsRequireBoundedMentionPreferenceAndLimitFields() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        ToolCallback current = provider(warehouse, iam).getToolCallbacks()[0];
+        String escapedControl = "\\u" + "0001";
+        String controlInput = "{\"itemMentions\":[\"" + escapedControl
+                + "\"],\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}";
+        String oversizedInput = "{\"itemMentions\":[\"" + "a".repeat(257)
+                + "\"],\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}";
+        List<String> invalid = List.of(
+                "{\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",
+                "{\"itemMentions\":[\"轴承\"],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",
+                "{\"itemMentions\":[\"轴承\"],\"excludedItemMentions\":[],\"limit\":20}",
+                "{\"itemMentions\":[\"轴承\"],\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO\",\"limit\":20}",
+                "{\"itemMentions\":[\"轴承\",\"轴承\"],\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",
+                "{\"itemKeyword\":\"轴承\",\"limit\":20}",
+                "{\"itemMentions\":[\"轴承\"],\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20,\"itemId\":11}",
+                "{\"itemMentions\":[\"\"],\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",
+                controlInput,
+                oversizedInput,
+                "{\"itemMentions\":[\"一\",\"二\",\"三\",\"四\",\"五\",\"六\"],\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",
+                "{\"itemMentions\":[],\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO_IF_UNIQUE\"}",
+                "{\"itemMentions\":[\"轴承\"],\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20,\"unexpected\":true}"
+        );
+        for (String input : invalid) {
+            String output = current.call(input, new ToolContext(Map.of("agent.execution", context(new AtomicReference<>()))));
+            assertTrue(output.contains("AI_PARAMETER_INVALID"), input);
+        }
+        verifyNoInteractions(iam, warehouse);
+    }
+
+    @Test
+    void multipleMentionsCreateOrderedClarificationAndDoNotReadFacts() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        List<String> mentions = List.of("A密封圈", "B密封圈");
+        when(warehouse.queryCurrentStock(eq(List.of("A密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("SEAL-A", "A密封圈", "件")), java.time.Instant.now(), false));
+        when(warehouse.queryCurrentStock(eq(List.of("B密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("SEAL-B", "B密封圈", "件")), java.time.Instant.now(), false));
+        AtomicReference<String> card = new AtomicReference<>();
+        AgentExecutionContext execution = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-multiple", "A密封圈和B密封圈库存", card::set);
+
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(
+                itemInput(mentions, "AUTO_IF_UNIQUE"), new ToolContext(Map.of("agent.execution", execution)));
+
+        assertTrue(output.contains("\"outcome\":\"CLARIFICATION\""));
+        assertNotNull(card.get());
+        assertTrue(card.get().contains("\"question\":\"请先选择要查询的物品\""));
+        assertTrue(card.get().contains("\"pendingMentions\":[\"A密封圈\",\"B密封圈\"]"));
+        verify(warehouse).queryCurrentStock(eq(List.of("A密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any());
+        verify(warehouse).queryCurrentStock(eq(List.of("B密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any());
+        verifyNoMoreInteractions(warehouse);
+    }
+
+    @Test
+    void multipleMentionsKeepUnresolvedMentionTextInTheFirstClarificationCard() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq(List.of("A密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("SEAL-A", "A密封圈", "件")), java.time.Instant.now(), false));
+        when(warehouse.queryCurrentStock(eq(List.of("B密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("NO_MATCH", List.of(), List.of(), java.time.Instant.now(), false));
+        AtomicReference<String> card = new AtomicReference<>();
+        AgentExecutionContext execution = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-multiple-unresolved",
+                "A密封圈和B密封圈库存", card::set);
+
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(
+                itemInput(List.of("A密封圈", "B密封圈"), "AUTO_IF_UNIQUE"),
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        assertTrue(output.contains("\"outcome\":\"CLARIFICATION\""));
+        assertNotNull(card.get());
+        assertTrue(card.get().contains("\"mention\":\"B密封圈\""));
+        assertTrue(card.get().contains("\"code\":\"B密封圈\""));
+        assertTrue(card.get().contains("\"resolved\":false"));
+        verify(warehouse).queryCurrentStock(eq(List.of("A密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any());
+        verify(warehouse).queryCurrentStock(eq(List.of("B密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any());
+        verifyNoMoreInteractions(warehouse);
+    }
+
+    @Test
+    void trustedPreviousItemBindsUnresolvedExclusionWithoutExposingInternalReference() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq(List.of("刚才那个")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any())).thenReturn(null);
+        when(warehouse.queryCurrentStock(eq(List.of("蓝色标签密封圈")), eq(List.of("OLD-SEAL")), eq("AUTO_IF_UNIQUE"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("STOCK_RESULT", List.of(
+                        new WarehouseStockTaskRow(12L, "BLUE-SEAL", "蓝色标签密封圈", "件", 21L,
+                                "WH-01", "成品仓", 31L, "A-01", "一号位", "3.0000", 2)),
+                        List.of(), java.time.Instant.now(), false));
+        AtomicReference<String> card = new AtomicReference<>();
+        AgentExecutionContext execution = context(card);
+        execution.setTrustedItemReferences(List.of(new AgentExecutionContext.TrustedItemReference(
+                "task-previous", 4L, actorScopeFingerprint(), java.time.Instant.now().plusSeconds(3600),
+                "OLD-SEAL", "旧密封圈", "件")));
+        execution = new AgentExecutionContext(execution.actor(), execution.runId(),
+                "不是刚才那个，是蓝色标签密封圈", execution.toolCardEmitter(), execution.toolOutputProduced(),
+                execution.eventSequence(), execution.messageId(), "task-current", 5L,
+                execution.outcomes(), execution.clarificationProduced(), execution.trustedItemsRef());
+
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(
+                "{\"itemMentions\":[\"蓝色标签密封圈\"],\"excludedItemMentions\":[\"刚才那个\"],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        assertTrue(output.contains("\"outcome\":\"ANSWERED\""));
+        assertTrue(output.contains("BLUE-SEAL"));
+        verify(warehouse).queryCurrentStock(eq(List.of("蓝色标签密封圈")), eq(List.of("OLD-SEAL")),
+                eq("AUTO_IF_UNIQUE"), isNull(), isNull(), eq(20), any());
+        assertFalse(output.contains("itemId"));
+    }
+
+    @Test
+    void unresolvedExclusionWithoutTrustedItemIsRejectedBeforeFactQuery() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq(List.of("不存在的旧对象")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any())).thenReturn(null);
+        AgentExecutionContext execution = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-unresolved-exclusion",
+                "蓝色标签密封圈，不存在的旧对象", ignored -> { });
+
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(
+                "{\"itemMentions\":[\"蓝色标签密封圈\"],\"excludedItemMentions\":[\"不存在的旧对象\"],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        assertTrue(output.contains("AI_PARAMETER_INVALID"));
+        verify(warehouse).queryCurrentStock(eq(List.of("不存在的旧对象")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any());
+        verify(warehouse, never()).queryCurrentStock(eq(List.of("蓝色标签密封圈")), any(), any(),
+                isNull(), isNull(), eq(20), any());
+    }
+
+    @Test
+    void exclusionOnlyInputNeverFallsBackToUnfilteredOverview() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        AgentExecutionContext execution = context(new AtomicReference<>());
+
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(
+                "{\"itemMentions\":[],\"excludedItemMentions\":[\"刚才那个\"],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        assertTrue(output.contains("AI_PARAMETER_INVALID"));
+        verify(warehouse, never()).queryCurrentStock(anyString(), any(), any(), anyInt(), any());
+        verify(warehouse, never()).queryCurrentStock(anyList(), anyList(), anyString(), any(), any(), anyInt(), any());
+    }
+
+    @Test
+    void showCandidatesKeepsEvenAUniqueObjectForUserConfirmation() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq(List.of("过滤器")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("FILTER-01", "过滤器", "件")), java.time.Instant.now(), false));
+        AtomicReference<String> card = new AtomicReference<>();
+        AgentExecutionContext execution = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-confirm", "请列出过滤器让我选择", card::set);
+
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(
+                itemInput("过滤器", "SHOW_CANDIDATES"), new ToolContext(Map.of("agent.execution", execution)));
+
+        assertTrue(output.contains("\"outcome\":\"CLARIFICATION\""));
+        assertTrue(card.get().contains("\"cardType\":\"clarification-choice\""));
+        verify(warehouse).queryCurrentStock(eq(List.of("过滤器")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any());
+        verifyNoMoreInteractions(warehouse);
+    }
+
+    @Test
+    void recentMovementsCandidatesKeepRecentTaskIntent() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryRecentMovementTask(eq(7), eq(List.of("轴承")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseMovementTaskResult("CANDIDATES", List.of(), java.time.Instant.now(), false,
+                        List.of(new WarehouseStockCandidate("BEARING-01", "轴承", "件"))));
+        AtomicReference<String> card = new AtomicReference<>();
+        AgentExecutionContext execution = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-recent-candidates", "查轴承最近7天变化", card::set);
+
+        String output = provider(warehouse, iam).getToolCallbacks()[1].call(
+                recentInput("轴承", "SHOW_CANDIDATES"), new ToolContext(Map.of("agent.execution", execution)));
+
+        assertTrue(output.contains("\"outcome\":\"CLARIFICATION\""));
+        assertNotNull(card.get());
+        assertTrue(card.get().contains("\"candidateIntent\":\"RECENT_MOVEMENTS\""));
+        verify(warehouse).queryRecentMovementTask(eq(7), eq(List.of("轴承")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any());
+        verifyNoMoreInteractions(warehouse);
     }
 
     @Test
@@ -375,7 +602,7 @@ class WarehouseInventoryToolProviderTest {
         ToolCallback[] callbacks = provider.getToolCallbacks();
         AtomicReference<String> locationCard = new AtomicReference<>();
         AtomicReference<String> contentsCard = new AtomicReference<>();
-        String locations = callbacks[2].call("{\"itemKeyword\":\"深沟球轴承\"}", new ToolContext(Map.of("agent.execution", context(locationCard))));
+        String locations = callbacks[2].call(itemInput("深沟球轴承"), new ToolContext(Map.of("agent.execution", context(locationCard))));
         String contents = callbacks[3].call("{\"warehouseKeyword\":\"一号仓库\",\"locationKeyword\":\"一号库位\"}", new ToolContext(Map.of("agent.execution", context(contentsCard))));
         assertTrue(locationCard.get().contains("item-location"));
         assertTrue(contentsCard.get().contains("location-contents"));
@@ -383,6 +610,243 @@ class WarehouseInventoryToolProviderTest {
         assertFalse(contents.contains("locationId"));
         verify(warehouse).queryItemLocationsTask(eq("深沟球轴承"), eq(20), any());
         verify(warehouse).queryLocationContentsTask(eq("一号仓库"), eq("一号库位"), eq(20), any());
+    }
+
+    @Test
+    void multiMentionSelectionRunsOnlySelectedItemAndKeepsRemainingTaskReady() throws Exception {
+        JdbcTemplate jdbc = database("production-multi-mention-chain");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        String scopeFingerprint = actorScopeFingerprint();
+
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq(List.of("A密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("SEAL-A", "A密封圈", "件")), java.time.Instant.now(), false));
+        when(warehouse.queryCurrentStock(eq(List.of("B密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("SEAL-B", "B密封圈", "件")), java.time.Instant.now(), false));
+        when(warehouse.queryCurrentStock(eq("A密封圈"), isNull(), isNull(), eq(20), any()))
+                .thenReturn(stockResult("SEAL-A", "A密封圈", "2.0000"));
+        when(warehouse.queryCurrentStock(eq("B密封圈"), isNull(), isNull(), eq(20), any()))
+                .thenReturn(stockResult("SEAL-B", "B密封圈", "3.0000"));
+
+        AiObservationRecorder observations = new JdbcAiObservationRecorder(jdbc);
+        WarehouseInventoryToolProvider provider = provider(warehouse, iam, observations);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.messages(any(List.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        AgentConversationService service = new AgentConversationService(store, client, observations,
+                new AiProperties(), List.of(provider));
+
+        AtomicReference<AgentExecutionContext> currentExecution = new AtomicReference<>();
+        AtomicInteger invocation = new AtomicInteger();
+        when(stream.content()).thenAnswer(ignored -> {
+            AgentExecutionContext execution = currentExecution.get();
+            if (invocation.getAndIncrement() == 0) {
+                provider.getToolCallbacks()[0].call(itemInput(List.of("A密封圈", "B密封圈"), "AUTO_IF_UNIQUE"),
+                        new ToolContext(Map.of("agent.execution", execution)));
+            } else if (execution.message().contains("A密封圈")) {
+                provider.getToolCallbacks()[0].call(itemInput("A密封圈"),
+                        new ToolContext(Map.of("agent.execution", execution)));
+            } else {
+                provider.getToolCallbacks()[0].call(itemInput("B密封圈"),
+                        new ToolContext(Map.of("agent.execution", execution)));
+            }
+            return Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"查询完成\",\"data\":null}");
+        });
+
+        AgentStore.StartRun first = store.startRun(conversationId, "multi-mention-first",
+                "A密封圈和B密封圈都帮我看看", 7L, scopeFingerprint);
+        List<String> firstCards = new ArrayList<>();
+        List<AgentConversationService.StreamEvent> firstEvents = new ArrayList<>();
+        currentExecution.set(executionFor(service, first, scopeFingerprint, firstCards, firstEvents));
+        service.execute(first, currentExecution.get(), firstEvents::add, new AtomicBoolean());
+
+        assertEquals(1, firstCards.size());
+        JsonNode firstCard = JsonMapper.builder().build().readTree(firstCards.getFirst());
+        assertEquals("clarification-choice", firstCard.path("cardType").asText());
+        assertEquals(List.of("A密封圈", "B密封圈"),
+                java.util.stream.StreamSupport.stream(firstCard.path("options").spliterator(), false)
+                        .map(option -> option.path("mention").asText()).toList());
+        assertEquals(AgentStore.TASK_READY, store.task(first.taskId()).status());
+        String clarificationId = firstCard.path("clarificationId").asText();
+        String firstToken = firstCard.path("options").get(0).path("optionToken").asText();
+
+        AgentStore.StartRun selectedA = store.startRun(conversationId, "multi-mention-select-a", null, 7L,
+                scopeFingerprint, Duration.ofHours(1), clarificationId, firstToken);
+        List<String> secondCards = new ArrayList<>();
+        List<AgentConversationService.StreamEvent> secondEvents = new ArrayList<>();
+        currentExecution.set(executionFor(service, selectedA, scopeFingerprint, secondCards, secondEvents));
+        service.execute(selectedA, currentExecution.get(), secondEvents::add, new AtomicBoolean());
+        List<String> secondEventCards = secondEvents.stream()
+                .filter(event -> "card.replace".equals(event.name()))
+                .map(AgentConversationService.StreamEvent::data)
+                .toList();
+        assertEquals(2, secondEventCards.size(), "选中第一项后应先看到事实卡，再看到剩余候选卡");
+        assertEquals(1, secondCards.size());
+        assertTrue(secondCards.getFirst().contains("\"cardType\":\"stock-summary\""));
+        assertTrue(secondEventCards.get(1).contains("\"cardType\":\"clarification-choice\""));
+        JsonNode remaining = JsonMapper.builder().build().readTree(secondEventCards.get(1)).path("payload");
+        assertEquals(1, remaining.path("options").size());
+        assertEquals("B密封圈", remaining.path("options").get(0).path("mention").asText());
+        assertEquals(AgentStore.TASK_READY, store.task(selectedA.taskId()).status());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM ai_message WHERE run_id = ? AND role = 'ASSISTANT'",
+                Integer.class, selectedA.runId()));
+
+        String secondToken = remaining.path("options").get(0).path("optionToken").asText();
+        AgentStore.StartRun selectedB = store.startRun(conversationId, "multi-mention-select-b", null, 7L,
+                scopeFingerprint, Duration.ofHours(1), selectedA.taskId(), secondToken);
+        List<String> thirdCards = new ArrayList<>();
+        List<AgentConversationService.StreamEvent> thirdEvents = new ArrayList<>();
+        currentExecution.set(executionFor(service, selectedB, scopeFingerprint, thirdCards, thirdEvents));
+        service.execute(selectedB, currentExecution.get(), thirdEvents::add, new AtomicBoolean());
+
+        assertEquals(1, thirdCards.size());
+        assertTrue(thirdCards.getFirst().contains("SEAL-B"));
+        assertEquals(AgentStore.TASK_COMPLETED, store.task(selectedB.taskId()).status());
+        verify(warehouse, times(1)).queryCurrentStock(eq("A密封圈"), isNull(), isNull(), eq(20), any());
+        verify(warehouse, times(1)).queryCurrentStock(eq("B密封圈"), isNull(), isNull(), eq(20), any());
+        assertEquals(List.of("run.started", "card.replace", "card.replace", "message.completed", "run.completed"),
+                secondEvents.stream().map(AgentConversationService.StreamEvent::name).toList());
+        assertEquals(List.of("run.started", "card.replace", "message.completed", "run.completed"),
+                thirdEvents.stream().map(AgentConversationService.StreamEvent::name).toList());
+    }
+
+    @Test
+    void unresolvedMentionSelectionUsesSecondLevelCandidatesAndRetainsRemainingMention() throws Exception {
+        JdbcTemplate jdbc = database("production-multi-mention-unresolved-chain");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        String scopeFingerprint = actorScopeFingerprint();
+
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq(List.of("A密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("SEAL-A1", "A密封圈蓝色", "件"),
+                        new WarehouseStockCandidate("SEAL-A2", "A密封圈红色", "件")), java.time.Instant.now(), false));
+        when(warehouse.queryCurrentStock(eq(List.of("B密封圈")), eq(List.of()), eq("SHOW_CANDIDATES"),
+                isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("SEAL-B", "B密封圈", "件")), java.time.Instant.now(), false));
+        when(warehouse.queryCurrentStock(eq("A密封圈"), isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("CANDIDATES", List.of(), List.of(
+                        new WarehouseStockCandidate("SEAL-A1", "A密封圈蓝色", "件"),
+                        new WarehouseStockCandidate("SEAL-A2", "A密封圈红色", "件")), java.time.Instant.now(), false));
+        when(warehouse.queryCurrentStock(eq("SEAL-A1"), isNull(), isNull(), eq(20), any()))
+                .thenReturn(stockResult("SEAL-A1", "A密封圈蓝色", "2.0000"));
+
+        AiObservationRecorder observations = new JdbcAiObservationRecorder(jdbc);
+        WarehouseInventoryToolProvider provider = provider(warehouse, iam, observations);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.messages(any(List.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        AgentConversationService service = new AgentConversationService(store, client, observations,
+                new AiProperties(), List.of(provider));
+
+        AtomicReference<AgentExecutionContext> currentExecution = new AtomicReference<>();
+        AtomicInteger invocation = new AtomicInteger();
+        when(stream.content()).thenAnswer(ignored -> {
+            AgentExecutionContext execution = currentExecution.get();
+            if (invocation.getAndIncrement() == 0) {
+                provider.getToolCallbacks()[0].call(itemInput(List.of("A密封圈", "B密封圈"), "AUTO_IF_UNIQUE"),
+                        new ToolContext(Map.of("agent.execution", execution)));
+            } else if (execution.message().contains("SEAL-A1")) {
+                provider.getToolCallbacks()[0].call(itemInput("SEAL-A1"),
+                        new ToolContext(Map.of("agent.execution", execution)));
+            } else {
+                provider.getToolCallbacks()[0].call(itemInput("A密封圈"),
+                        new ToolContext(Map.of("agent.execution", execution)));
+            }
+            return Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"查询完成\",\"data\":null}");
+        });
+
+        AgentStore.StartRun first = store.startRun(conversationId, "unresolved-chain-first",
+                "A密封圈和B密封圈都帮我看看", 7L, scopeFingerprint);
+        List<String> firstCards = new ArrayList<>();
+        List<AgentConversationService.StreamEvent> firstEvents = new ArrayList<>();
+        currentExecution.set(executionFor(service, first, scopeFingerprint, firstCards, firstEvents));
+        service.execute(first, currentExecution.get(), firstEvents::add, new AtomicBoolean());
+        JsonNode firstCard = JsonMapper.builder().build().readTree(firstCards.getFirst());
+        assertFalse(firstCard.path("options").get(0).path("resolved").asBoolean());
+        String firstToken = firstCard.path("options").get(0).path("optionToken").asText();
+        String clarificationId = firstCard.path("clarificationId").asText();
+
+        AgentStore.StartRun selected = store.startRun(conversationId, "unresolved-chain-select",
+                null, 7L, scopeFingerprint, Duration.ofHours(1), clarificationId, firstToken);
+        List<String> secondCards = new ArrayList<>();
+        List<AgentConversationService.StreamEvent> secondEvents = new ArrayList<>();
+        currentExecution.set(executionFor(service, selected, scopeFingerprint, secondCards, secondEvents));
+        service.execute(selected, currentExecution.get(), secondEvents::add, new AtomicBoolean());
+
+        List<AgentConversationService.StreamEvent> secondCardEvents = secondEvents.stream()
+                .filter(event -> "card.replace".equals(event.name())).toList();
+        assertEquals(1, secondCardEvents.size());
+        JsonNode secondLevel = JsonMapper.builder().build().readTree(secondCardEvents.get(0).data()).path("payload");
+        assertEquals("A密封圈", secondLevel.path("options").get(0).path("mention").asText());
+        assertTrue(secondLevel.path("options").get(0).path("resolved").asBoolean());
+        assertEquals(AgentStore.TASK_READY, store.task(selected.taskId()).status());
+
+        String secondLevelToken = secondLevel.path("options").get(0).path("optionToken").asText();
+        AgentStore.StartRun selectedResolved = store.startRun(conversationId, "unresolved-chain-resolve",
+                null, 7L, scopeFingerprint, Duration.ofHours(1), selected.taskId(), secondLevelToken);
+        List<String> thirdCards = new ArrayList<>();
+        List<AgentConversationService.StreamEvent> thirdEvents = new ArrayList<>();
+        currentExecution.set(executionFor(service, selectedResolved, scopeFingerprint, thirdCards, thirdEvents));
+        service.execute(selectedResolved, currentExecution.get(), thirdEvents::add, new AtomicBoolean());
+
+        assertEquals(1, thirdCards.size());
+        assertTrue(thirdCards.getFirst().contains("SEAL-A1"));
+        List<AgentConversationService.StreamEvent> thirdCardEvents = thirdEvents.stream()
+                .filter(event -> "card.replace".equals(event.name())).toList();
+        assertEquals(2, thirdCardEvents.size(), "事实卡之后仍应保留B候选");
+        JsonNode remainingAfterResolve = JsonMapper.builder().build()
+                .readTree(thirdCardEvents.get(1).data()).path("payload");
+        assertEquals("B密封圈", remainingAfterResolve.path("options").get(0).path("mention").asText());
+        assertEquals(AgentStore.TASK_READY, store.task(selectedResolved.taskId()).status());
+        verify(warehouse, times(1)).queryCurrentStock(eq("SEAL-A1"), isNull(), isNull(), eq(20), any());
+    }
+
+    private static WarehouseStockTaskResult stockResult(String code, String name, String quantity) {
+        return new WarehouseStockTaskResult("STOCK_RESULT", List.of(
+                new WarehouseStockTaskRow(11L, code, name, "件", 21L, "WH-01", "成品仓", 31L,
+                        "A-01", "一号位", quantity, 1)), List.of(), java.time.Instant.now(), false);
+    }
+
+    private AgentExecutionContext executionFor(AgentConversationService service, AgentStore.StartRun run,
+                                               String scopeFingerprint, List<String> cards,
+                                               List<AgentConversationService.StreamEvent> events) {
+        AtomicBoolean clarification = new AtomicBoolean();
+        AtomicLong sequence = new AtomicLong();
+        AgentRunContext actorContext = new AgentRunContext(actor.getUserId(), actor.getDepartmentId(), false,
+                actor.getAuthorities());
+        return new AgentExecutionContext(actorContext, run.runId(), run.effectiveUserMessage(), card -> {
+            AgentConversationService.CardIdentity identity = service.inspectCard(card);
+            if ("clarification-choice".equals(identity.cardType())) clarification.set(true);
+            AgentConversationService.PreparedCard prepared = service.recordCard(run, identity, scopeFingerprint);
+            cards.add(prepared.json());
+            events.add(AgentConversationService.envelopedEvent("card.replace", run, sequence,
+                    run.assistantMessageId(), prepared.json()));
+        }, new AtomicBoolean(), sequence, run.assistantMessageId(), run.taskId(), run.taskRevision(), clarification);
     }
 
     @Test
@@ -432,10 +896,10 @@ class WarehouseInventoryToolProviderTest {
                     eventSequence, messageId, prepared.json()));
         }, new AtomicBoolean(), eventSequence, messageId, run.taskId(), run.taskRevision());
         when(stream.content()).thenAnswer(invocation -> {
-            String toolResult = provider.getToolCallbacks()[0].call("{\"itemKeyword\":\"测试物品\"}",
+            String toolResult = provider.getToolCallbacks()[0].call(itemInput("测试物品"),
                     new ToolContext(Map.of("agent.execution", execution)));
             assertTrue(toolResult.contains("\"success\":true"));
-            String movementResult = provider.getToolCallbacks()[1].call("{\"recentDays\":7}",
+            String movementResult = provider.getToolCallbacks()[1].call(recentInput(7),
                     new ToolContext(Map.of("agent.execution", execution)));
             assertTrue(movementResult.contains("\"success\":true"));
             return Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已查询到库存\",\"data\":null}");
@@ -485,12 +949,12 @@ class WarehouseInventoryToolProviderTest {
         AgentExecutionContext sourceExecution = new AgentExecutionContext(
                 new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
                 source.runId(), source.effectiveUserMessage(), ignored -> { });
-        provider.getToolCallbacks()[1].call("{\"recentDays\":7}",
+        provider.getToolCallbacks()[1].call(recentInput(7),
                 new ToolContext(Map.of("agent.execution", sourceExecution)));
 
         AgentStore.RetryPlan plan = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 1,
                 List.of(new AgentStore.RetrySubtask(1, WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL,
-                        "{\"itemKeyword\":\"轴承\"}", "AI_TOOL_DATABASE_UNAVAILABLE")));
+                        itemInput("轴承"), "AI_TOOL_DATABASE_UNAVAILABLE")));
         assertTrue(store.completePartial(conversationId, source.runId(), source.assistantMessageId(),
                 "部分查询未完成", actorScopeFingerprint(), 1L, "AI_TOOL_DATABASE_UNAVAILABLE", observations, plan));
         AgentStore.StartRun child = store.startRetryRun(conversationId, "production-retry-child", source.runId(),
@@ -555,6 +1019,34 @@ class WarehouseInventoryToolProviderTest {
                 actor.getScopeMode() == ScopeMode.ALL_DEPARTMENTS, actor.getAuthorities()).scopeFingerprint();
     }
 
+    private static String itemInput(String value) {
+        return itemInput(List.of(value), "AUTO_IF_UNIQUE");
+    }
+
+    private static String itemInput(String value, String preference) {
+        return itemInput(List.of(value), preference);
+    }
+
+    private static String itemInput(List<String> values, String preference) {
+        String mentions = values.stream().map(value -> "\"" + value + "\"").collect(java.util.stream.Collectors.joining(","));
+        return "{\"itemMentions\":[" + mentions + "],\"excludedItemMentions\":[],\"selectionPreference\":\""
+                + preference + "\",\"limit\":20}";
+    }
+
+    private static String recentInput(int days) {
+        return recentInput(null, "AUTO_IF_UNIQUE", days);
+    }
+
+    private static String recentInput(String value, String preference) {
+        return recentInput(value, preference, 7);
+    }
+
+    private static String recentInput(String value, String preference, int days) {
+        String mentions = value == null ? "" : "\"" + value + "\"";
+        return "{\"recentDays\":" + days + ",\"itemMentions\":[" + mentions
+                + "],\"excludedItemMentions\":[],\"selectionPreference\":\"" + preference + "\",\"limit\":20}";
+    }
+
     private JdbcTemplate database(String name) throws Exception {
         SQLiteDataSource dataSource = new SQLiteDataSource();
         dataSource.setUrl("jdbc:sqlite:file:" + tempDir.resolve(name + ".db")
@@ -574,7 +1066,8 @@ class WarehouseInventoryToolProviderTest {
 
     private AgentExecutionContext context(AtomicReference<String> card) {
         return new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
-                List.of(PermissionCodes.WAREHOUSE_READ)), "run-1", "查询", card::set);
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-1",
+                "查询测试物品没有库存数据库故障越权对象轴承深沟球轴承 E2E-WH-0816-2226", card::set);
     }
 
     private WarehouseAccessScopeDTO capturedScope(WarehouseQueryApi warehouse) {

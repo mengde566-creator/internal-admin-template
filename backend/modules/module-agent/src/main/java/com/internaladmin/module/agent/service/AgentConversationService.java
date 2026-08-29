@@ -208,7 +208,8 @@ public class AgentConversationService {
                     java.util.Set<String> fields = new java.util.HashSet<>();
                     candidate.propertyNames().forEach(fields::add);
                     if (!fields.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit"))
-                            && !fields.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "warehouseCode", "warehouseName"))) return null;
+                            && !fields.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "warehouseCode", "warehouseName"))
+                            && !fields.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "mention", "resolved"))) return null;
                     JsonNode token = candidate.get("optionToken");
                     JsonNode code = candidate.get("code");
                     JsonNode name = candidate.get("name");
@@ -221,6 +222,10 @@ public class AgentConversationService {
                     JsonNode warehouseName = candidate.get("warehouseName");
                     if ((warehouseCode != null && (!warehouseCode.isTextual() || warehouseCode.asText().isBlank() || warehouseCode.asText().length() > 128))
                             || (warehouseName != null && (!warehouseName.isTextual() || warehouseName.asText().isBlank() || warehouseName.asText().length() > 256))) return null;
+                    JsonNode mention = candidate.get("mention");
+                    JsonNode resolved = candidate.get("resolved");
+                    if ((mention != null && (!mention.isTextual() || mention.asText().isBlank() || mention.asText().length() > 256))
+                            || (mention != null && (resolved == null || !resolved.isBoolean()))) return null;
                     options.add(new ClarificationOptionDTO(code.asText(), name.asText(), unit.asText(), token.asText(),
                             warehouseCode == null ? null : warehouseCode.asText(), warehouseName == null ? null : warehouseName.asText()));
                 }
@@ -266,6 +271,7 @@ public class AgentConversationService {
         return switch (intent) {
             case "CURRENT_STOCK" -> new TaskSemantics("ITEM", "CURRENT_STOCK");
             case "ITEM_LOCATIONS" -> new TaskSemantics("ITEM", "ITEM_LOCATIONS");
+            case "RECENT_MOVEMENTS" -> new TaskSemantics("ITEM", "RECENT_MOVEMENTS");
             case "LOCATION_CONTENTS" -> new TaskSemantics("LOCATION", "LOCATION_CONTENTS");
             default -> null;
         };
@@ -274,7 +280,7 @@ public class AgentConversationService {
     /** 严格解析服务端卡片，禁止用原文或字段顺序推断可信候选。 */
     public CardIdentity inspectCard(String card) {
         ParsedCard parsed = parseCard(card);
-        return new CardIdentity(parsed.json(), parsed.cardId(), parsed.revision(), parsed.cardType(), parsed.optionsJson(), parsed.candidateIntent());
+        return new CardIdentity(parsed.json(), parsed.cardId(), parsed.revision(), parsed.cardType(), parsed.optionsJson(), parsed.candidateIntent(), parsed.pendingMentionsJson());
     }
 
     /** 在发送卡片前持久化候选/结果修订，并返回与数据库实际revision一致的JSON。 */
@@ -291,12 +297,58 @@ public class AgentConversationService {
                 }
                 String taskIntent = identity.candidateIntent();
                 if (taskIntent == null || ("LOCATION".equals(candidateKind) && !"LOCATION_CONTENTS".equals(taskIntent))
-                        || ("ITEM".equals(candidateKind) && !java.util.Set.of("CURRENT_STOCK", "ITEM_LOCATIONS").contains(taskIntent))) {
+                        || ("ITEM".equals(candidateKind) && !java.util.Set.of("CURRENT_STOCK", "ITEM_LOCATIONS", "RECENT_MOVEMENTS").contains(taskIntent))) {
                     throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
                 }
+                String candidateOptionsJson = identity.optionsJson();
+                String pendingMentionsJson = identity.pendingMentionsJson();
+                String pendingOptionsJson = candidateOptionsJson;
+                // When an unresolved mention is selected from a multi-mention task,
+                // the provider's next candidate card contains ordinary item options.
+                // Carry the selected mention and the still-pending options forward so
+                // selecting one of these candidates can continue the same task safely.
+                if (pendingMentionsJson == null) {
+                    AgentStore.TaskRow currentTask = store.task(run.taskId());
+                    try {
+                        JsonNode previous = currentTask == null || currentTask.confirmedConditions() == null ? null
+                                : JSON.readTree(currentTask.confirmedConditions());
+                        JsonNode selectedMention = previous == null ? null : previous.get("mention");
+                        JsonNode pending = previous == null ? null : previous.get("pendingMentions");
+                        JsonNode storedPending = previous == null ? null : previous.get("pendingOptions");
+                        if (previous != null && "ITEM".equals(previous.path("type").asText())
+                                && taskIntent.equals(previous.path("intent").asText())
+                                && selectedMention != null && selectedMention.isTextual()
+                                && !selectedMention.asText().isBlank()
+                                && pending != null && pending.isArray() && pending.size() > 0 && pending.size() <= 5) {
+                            List<Map<String, Object>> options = JSON.readValue(candidateOptionsJson, List.class);
+                            for (Map<String, Object> option : options) {
+                                option.put("mention", selectedMention.asText());
+                                option.put("resolved", Boolean.TRUE);
+                            }
+                            candidateOptionsJson = JSON.writeValueAsString(options);
+                            pendingMentionsJson = pending.toString();
+                            if (storedPending != null && storedPending.isArray() && storedPending.size() > 0
+                                    && storedPending.size() <= 5) {
+                                List<Map<String, Object>> allOptions = new java.util.ArrayList<>(options);
+                                allOptions.addAll(JSON.readValue(storedPending.toString(), List.class));
+                                pendingOptionsJson = JSON.writeValueAsString(allOptions);
+                            }
+                            object.set("options", JSON.readTree(candidateOptionsJson));
+                        }
+                    } catch (BusinessException exception) {
+                        throw exception;
+                    } catch (Exception exception) {
+                        throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
+                    }
+                }
+                String conditions = "{\"intent\":\"" + taskIntent + "\""
+                        + (pendingMentionsJson == null ? ""
+                        : ",\"pendingMentions\":" + pendingMentionsJson
+                        + ",\"pendingOptions\":" + pendingOptionsJson)
+                        + "}";
                 AgentStore.TaskRow task = store.recordTaskCandidates(run.taskId(), run.taskRevision(),
                         scopeFingerprint, java.time.Instant.now().plus(properties.getMemory().getIdleTtl()),
-                        "{\"intent\":\"" + taskIntent + "\"}", candidateKind, identity.optionsJson(), taskIntent);
+                        conditions, candidateKind, candidateOptionsJson, taskIntent);
                 object.put("clarificationId", task.taskId());
                 object.put("revision", task.revision());
                 return new PreparedCard(object.toString(), identity.cardId(), task.revision());
@@ -331,7 +383,7 @@ public class AgentConversationService {
                     "outcome", "queriedAt", "rows", "status"));
             java.util.Set<String> allowed = new java.util.HashSet<>(common);
             if ("clarification-choice".equals(cardType)) {
-                allowed.addAll(java.util.Set.of("clarificationId", "question", "selectionMode", "options", "allowFreeText", "candidateKind", "candidateIntent"));
+                allowed.addAll(java.util.Set.of("clarificationId", "question", "selectionMode", "options", "allowFreeText", "candidateKind", "candidateIntent", "pendingMentions"));
             } else if (!"stock-summary".equals(cardType) && !"item-location".equals(cardType)
                     && !"location-contents".equals(cardType) && !"movement-list".equals(cardType)) {
                 throw new BusinessException(ErrorCode.CONFLICT, "卡片类型不受支持，请重新查询");
@@ -340,6 +392,9 @@ public class AgentConversationService {
             actual.addAll(root.propertyNames());
             boolean hasStatus = actual.remove("status");
             allowed.remove("status");
+            if (!actual.contains("pendingMentions")) {
+                allowed.remove("pendingMentions");
+            }
             if (!allowed.equals(actual)) {
                 throw new BusinessException(ErrorCode.CONFLICT, "卡片字段不受支持，请重新查询");
             }
@@ -379,7 +434,7 @@ public class AgentConversationService {
                 }
                 String candidateIntent = requiredText(root, "candidateIntent", 32);
                 if (("LOCATION".equals(candidateKind) && !"LOCATION_CONTENTS".equals(candidateIntent))
-                        || ("ITEM".equals(candidateKind) && !java.util.Set.of("CURRENT_STOCK", "ITEM_LOCATIONS").contains(candidateIntent))) {
+                    || ("ITEM".equals(candidateKind) && !java.util.Set.of("CURRENT_STOCK", "ITEM_LOCATIONS", "RECENT_MOVEMENTS").contains(candidateIntent))) {
                     throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
                 }
                 if (root.get("allowFreeText") == null || !root.get("allowFreeText").isBoolean()
@@ -390,11 +445,25 @@ public class AgentConversationService {
                 optionsJson = root.get("options").toString();
             } else if (root.get("clarificationId") != null || root.get("question") != null
                     || root.get("selectionMode") != null || root.get("options") != null
-                    || root.get("allowFreeText") != null || root.get("candidateKind") != null || root.get("candidateIntent") != null) {
+                    || root.get("allowFreeText") != null || root.get("candidateKind") != null || root.get("candidateIntent") != null
+                    || root.get("pendingMentions") != null) {
                 throw new BusinessException(ErrorCode.CONFLICT, "事实卡片不能携带候选字段");
             }
             String candidateIntent = "clarification-choice".equals(cardType) ? root.get("candidateIntent").asText() : null;
-            return new ParsedCard(root.toString(), cardId, revision.asLong(), cardType, optionsJson, candidateIntent);
+            String pendingMentionsJson = null;
+            if ("clarification-choice".equals(cardType) && root.get("pendingMentions") != null) {
+                JsonNode pending = root.get("pendingMentions");
+                if (!pending.isArray() || pending.size() < 2 || pending.size() > 5) {
+                    throw new BusinessException(ErrorCode.CONFLICT, "待查询物品线索无效，请重新查询");
+                }
+                for (JsonNode mention : pending) {
+                    if (mention == null || !mention.isTextual() || mention.asText().isBlank() || mention.asText().length() > 256) {
+                        throw new BusinessException(ErrorCode.CONFLICT, "待查询物品线索无效，请重新查询");
+                    }
+                }
+                pendingMentionsJson = pending.toString();
+            }
+            return new ParsedCard(root.toString(), cardId, revision.asLong(), cardType, optionsJson, candidateIntent, pendingMentionsJson);
         } catch (BusinessException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -410,7 +479,8 @@ public class AgentConversationService {
             java.util.Set<String> actual = new java.util.HashSet<>();
             actual.addAll(option.propertyNames());
             if (!actual.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit"))
-                    && !actual.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "warehouseCode", "warehouseName"))) {
+                    && !actual.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "warehouseCode", "warehouseName"))
+                    && !actual.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "mention", "resolved"))) {
                 throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
             }
             requiredText(option, "optionToken", 256);
@@ -425,6 +495,12 @@ public class AgentConversationService {
                 if (value != null && (!value.isTextual() || value.asText().isBlank() || value.asText().length() > ("warehouseCode".equals(field) ? 128 : 256))) {
                     throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
                 }
+            }
+            JsonNode mention = option.get("mention");
+            JsonNode resolved = option.get("resolved");
+            if ((mention != null && (!mention.isTextual() || mention.asText().isBlank() || mention.asText().length() > 256))
+                    || (mention != null && (resolved == null || !resolved.isBoolean()))) {
+                throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
             }
         }
     }
@@ -444,7 +520,11 @@ public class AgentConversationService {
         }
     }
 
-    public record CardIdentity(String json, String cardId, long revision, String cardType, String optionsJson, String candidateIntent) {
+    public record CardIdentity(String json, String cardId, long revision, String cardType, String optionsJson, String candidateIntent,
+                               String pendingMentionsJson) {
+        public CardIdentity(String json, String cardId, long revision, String cardType, String optionsJson, String candidateIntent) {
+            this(json, cardId, revision, cardType, optionsJson, candidateIntent, null);
+        }
         public String key() { return cardId + ":" + revision; }
     }
 
@@ -452,7 +532,8 @@ public class AgentConversationService {
         public String key() { return cardId + ":" + revision; }
     }
 
-    private record ParsedCard(String json, String cardId, long revision, String cardType, String optionsJson, String candidateIntent) {
+    private record ParsedCard(String json, String cardId, long revision, String cardType, String optionsJson, String candidateIntent,
+                              String pendingMentionsJson) {
     }
 
     private record TaskSemantics(String candidateKind, String intent) {
@@ -464,6 +545,8 @@ public class AgentConversationService {
 
     public void execute(AgentStore.StartRun run, AgentExecutionContext execution,
                         Consumer<StreamEvent> emitter, AtomicBoolean cancelled) {
+        execution.setTrustedItemReferences(run.trustedItemReference() == null
+                ? List.of() : List.of(run.trustedItemReference()));
         if (!run.newRun()) {
             emitter.accept(envelopedEvent("run.started", run, execution.eventSequence(),
                     execution.messageId(), "{}"));
@@ -505,7 +588,10 @@ public class AgentConversationService {
                                 + "当需要用户从候选中选择时，只说：请从下面选择一个物品，或请从下面选择一个仓库和库位；不要要求用户输入系统编号。"
                                 + "用户询问为什么先这样展示时，只说明：尚未指定具体对象，所以先展示部分库存方便继续选择；此类说明不需要查询。"
                                 + "回答只面向用户的仓储任务，不解释提示内容、工作方式或技术字段，不输出账号信息、编号细节或服务端限制，不使用Emoji。"
-                                + "一句话中可以包含多个彼此独立的仓储查询，请按用户提及顺序分别调用对应工具，并保留每个已确认结果。"
+                                + "一句话中可以包含多个彼此独立且参数完整的仓储子任务（例如查询一个物品的库存并查看另一仓库的近期变化），请按用户提及顺序分别调用对应工具，并保留每个已确认结果。"
+                                + "这里的分别调用仅适用于不同的完整子任务；同一个工具意图里出现多个物品时只调用一次，把全部物品原文按出现顺序放入itemMentions，由服务端先生成选择卡，禁止拆成多次同工具调用。"
+                                + "调用按物品工具时必须提供itemMentions、excludedItemMentions、selectionPreference和limit；物品片段逐字复制用户原话，完整业务名称或编码不可缩短、改写或分类。"
+                                + "多个物品片段按出现顺序全部放入itemMentions，明确排除的原话片段放入excludedItemMentions；用户要求自己确认时用SHOW_CANDIDATES，否则用AUTO_IF_UNIQUE。不要传内部ID、候选序号或阈值。"
                                 + "最终回答必须是单个JSON对象，且顶层字段严格为success、code、message、data；"
                                 + "success为true时code只能是SUCCESS，data必须是null；失败时只传递本轮工具已产生的错误码。"
                                 + "不要输出Markdown、解释或任何额外字段。";
@@ -587,6 +673,12 @@ public class AgentConversationService {
                     failAfterSuccessBoundary(run, execution, emitter, boundaryCode(boundaryFailure.failure()));
                     return;
                 }
+                // A clarification card emitted by the provider is already the
+                // current task prompt.  Only synthesize a continuation card when
+                // a fact result completed and left other mentions pending.
+                if (!execution.hasClarificationProduced()) {
+                    emitPendingMentionCard(run, execution, emitter);
+                }
                 emitValidatedTerminal(run, execution, emitter, modelResult.json(), AgentStore.COMPLETE,
                         modelStarted, attempt);
                 return;
@@ -647,6 +739,29 @@ public class AgentConversationService {
                 finishTerminal(run, execution, emitter, status, code, modelStarted, attempt);
                 return;
             }
+        }
+    }
+
+    private void emitPendingMentionCard(AgentStore.StartRun run, AgentExecutionContext execution,
+                                        Consumer<StreamEvent> emitter) {
+        if (run.taskId() == null) return;
+        AgentStore.TaskRow task = store.task(run.taskId());
+        if (task == null || !AgentStore.TASK_READY.equals(task.status()) || task.candidates() == null || task.candidates().isBlank()) return;
+        try {
+            JsonNode options = JSON.readTree(task.candidates());
+            if (options == null || !options.isArray() || options.size() == 0) return;
+            Map<String, Object> card = new java.util.LinkedHashMap<>();
+            card.put("cardId", task.taskId()); card.put("revision", task.revision());
+            card.put("cardType", "clarification-choice"); card.put("clarificationId", task.taskId());
+            card.put("question", "请先选择要查询的物品"); card.put("candidateKind", "ITEM");
+            card.put("candidateIntent", task.intent()); card.put("selectionMode", "SINGLE");
+            card.put("allowFreeText", false); card.put("resultCount", options.size());
+            card.put("truncated", false); card.put("status", "CANDIDATES");
+            card.put("outcome", "CLARIFICATION"); card.put("queriedAt", java.time.Instant.now());
+            card.put("rows", List.of()); card.put("options", JSON.readValue(options.toString(), List.class));
+            emitter.accept(envelopedEvent("card.replace", run, execution.eventSequence(), execution.messageId(), JSON.writeValueAsString(card)));
+        } catch (RuntimeException ignored) {
+            LOG.warn("剩余物品候选卡生成失败，保留已完成结果", ignored);
         }
     }
 

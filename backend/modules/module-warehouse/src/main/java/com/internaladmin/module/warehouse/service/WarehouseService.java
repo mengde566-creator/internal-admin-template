@@ -462,65 +462,163 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
     public WarehouseStockTaskResult queryCurrentStock(String itemKeyword, String warehouseKeyword,
                                                       String locationKeyword, int limit,
                                                       WarehouseAccessScopeDTO scope) {
+        return queryCurrentStock(itemKeyword == null || normalizeItemKeyword(itemKeyword).isEmpty()
+                        ? List.of() : List.of(itemKeyword), List.of(), "AUTO_IF_UNIQUE",
+                warehouseKeyword, locationKeyword, limit, scope);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public WarehouseStockTaskResult queryCurrentStock(List<String> itemMentions,
+                                                      List<String> excludedItemMentions,
+                                                      String selectionPreference,
+                                                      String warehouseKeyword,
+                                                      String locationKeyword, int limit,
+                                                      WarehouseAccessScopeDTO scope) {
         scope = validateTrustedScope(scope);
         int bounded = boundedTaskLimit(limit);
-        String normalizedItemKeyword = normalizeItemKeyword(itemKeyword);
-        boolean hasItemKeyword = !normalizedItemKeyword.isEmpty();
-        String itemPattern = likePattern(normalizedItemKeyword);
+        List<String> mentions = normalizeMentions(itemMentions, 0, 5);
+        List<String> excluded = normalizeMentions(excludedItemMentions, 0, 5);
+        validateSelectionPreference(selectionPreference, mentions);
         String warehousePattern = likePattern(warehouseKeyword);
         String locationPattern = likePattern(locationKeyword);
         Long departmentId = scope.allDepartments() ? null : scope.departmentId();
-        List<ItemDO> candidateItems = List.of();
-        if (hasItemKeyword) {
-            List<ItemDO> exactItems = itemMapper.selectEnabledExact(normalizedItemKeyword, 2);
-            candidateItems = exactItems.isEmpty()
-                    ? itemMapper.selectLiteralCandidates(prefixPattern(normalizedItemKeyword), itemPattern, 0, bounded + 1)
-                    : exactItems;
+        if (mentions.size() > 1) {
+            List<ItemDO> candidates = resolveMentionCandidates(mentions, bounded);
+            candidates = excludeItems(candidates, resolveExcludedIds(excluded, bounded));
+            return candidateResult(candidates, "MULTIPLE_MENTIONS", bounded);
         }
-        List<WarehouseStockCandidate> candidates = candidateItems.stream()
-                .map(item -> new WarehouseStockCandidate(item.getCode(), item.getName(), item.getBaseUnit())).toList();
-        if (candidates.size() > 1) {
-            boolean truncated = candidates.size() > bounded;
-            List<WarehouseStockCandidate> visible = candidates.stream().limit(bounded).toList();
-            return new WarehouseStockTaskResult("CANDIDATES", List.of(), visible, Instant.now(), truncated);
-        }
-        if (hasItemKeyword && candidateItems.isEmpty()) {
+        if (mentions.isEmpty() && !excluded.isEmpty()) {
             return new WarehouseStockTaskResult("NO_MATCH", List.of(), List.of(), Instant.now(), false);
         }
-        Long resolvedItemId = candidateItems.size() == 1 ? candidateItems.get(0).getId() : null;
-        List<StockPageRowDTO> rows = balanceMapper.selectTaskStock(resolvedItemId == null ? itemPattern : "%",
-                warehousePattern, locationPattern, departmentId, bounded + 1, resolvedItemId);
+        if (mentions.isEmpty()) {
+            List<StockPageRowDTO> rows = balanceMapper.selectTaskStock("%", warehousePattern, locationPattern,
+                    departmentId, bounded + 1, null);
+            return stockRowsResult(rows, bounded, "NO_DATA");
+        }
+        String normalizedItemKeyword = mentions.get(0);
+        List<ItemDO> candidateItems = excludeItems(resolveItems(normalizedItemKeyword, bounded),
+                resolveExcludedIds(excluded, bounded));
+        List<WarehouseStockCandidate> candidates = candidateItems.stream()
+                .map(item -> new WarehouseStockCandidate(item.getCode(), item.getName(), item.getBaseUnit())).toList();
+        if (candidates.size() != 1 || "SHOW_CANDIDATES".equals(selectionPreference)) {
+            if (candidates.isEmpty()) {
+                return new WarehouseStockTaskResult("NO_MATCH", List.of(), List.of(), Instant.now(), false);
+            }
+            return new WarehouseStockTaskResult("CANDIDATES", List.of(), candidates.stream().limit(bounded).toList(),
+                    Instant.now(), candidates.size() > bounded);
+        }
+        Long resolvedItemId = candidateItems.get(0).getId();
+        List<StockPageRowDTO> rows = balanceMapper.selectTaskStock("%", warehousePattern, locationPattern,
+                departmentId, bounded + 1, resolvedItemId);
+        return stockRowsResult(rows, bounded, "NO_STOCK");
+    }
+
+    private WarehouseStockTaskResult stockRowsResult(List<StockPageRowDTO> source, int bounded, String emptyStatus) {
+        List<StockPageRowDTO> rows = source == null ? List.of() : source;
         boolean truncated = rows.size() > bounded;
         rows = rows.stream().limit(bounded).toList();
         List<WarehouseStockTaskRow> resultRows = rows.stream().map(row -> new WarehouseStockTaskRow(
                 row.itemId(), row.itemCode(), row.itemName(), row.baseUnit(), row.warehouseId(),
                 row.warehouseCode(), row.warehouseName(), row.locationId(), row.locationCode(),
                 row.locationName(), QuantityCodec.format(row.quantityScaled()), row.version())).toList();
-        String status;
-        if (!resultRows.isEmpty()) {
-            status = "STOCK_RESULT";
-        }
-        else if (!hasItemKeyword) {
-            status = "NO_DATA";
-        }
-        else if (candidates.isEmpty()) {
-            status = "NO_MATCH";
-        }
-        else {
-            status = "NO_STOCK";
-        }
+        String status = resultRows.isEmpty() ? emptyStatus : "STOCK_RESULT";
         return new WarehouseStockTaskResult(status, resultRows, List.of(), Instant.now(), truncated);
+    }
+
+    private WarehouseStockTaskResult candidateResult(List<ItemDO> items, String status, int bounded) {
+        List<WarehouseStockCandidate> candidates = items.stream()
+                .map(item -> new WarehouseStockCandidate(item.getCode(), item.getName(), item.getBaseUnit())).toList();
+        boolean truncated = candidates.size() > bounded;
+        return new WarehouseStockTaskResult(status, List.of(), candidates.stream().limit(bounded).toList(), Instant.now(), truncated);
+    }
+
+    private List<ItemDO> resolveMentionCandidates(List<String> mentions, int bounded) {
+        List<ItemDO> result = new ArrayList<>();
+        for (String mention : mentions) {
+            result.addAll(resolveItems(mention, bounded));
+        }
+        return distinctItems(result);
+    }
+
+    private List<ItemDO> resolveItems(String keyword, int bounded) {
+        List<ItemDO> exact = itemMapper.selectEnabledExact(keyword, 2);
+        if (!exact.isEmpty()) return distinctItems(exact);
+        return distinctItems(itemMapper.selectLiteralCandidates(prefixPattern(keyword), likePattern(keyword), 0, bounded + 1));
+    }
+
+    private List<ItemDO> excludeItems(List<ItemDO> items, List<ItemDO> excluded) {
+        if (excluded.isEmpty()) return items;
+        java.util.Set<Long> excludedIds = excluded.stream().map(ItemDO::getId).collect(java.util.stream.Collectors.toSet());
+        return items.stream().filter(item -> !excludedIds.contains(item.getId())).toList();
+    }
+
+    private List<ItemDO> resolveExcludedIds(List<String> excluded, int bounded) {
+        List<ItemDO> resolved = new ArrayList<>();
+        for (String value : excluded) {
+            List<ItemDO> matches = resolveItems(value, bounded);
+            if (matches.size() != 1) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "排除对象无法唯一确认");
+            }
+            resolved.add(matches.get(0));
+        }
+        return resolved;
+    }
+
+    private List<ItemDO> distinctItems(List<ItemDO> items) {
+        java.util.LinkedHashMap<Long, ItemDO> byId = new java.util.LinkedHashMap<>();
+        if (items != null) {
+            for (ItemDO item : items) {
+                if (item != null && item.getId() != null) byId.putIfAbsent(item.getId(), item);
+            }
+        }
+        return byId.values().stream().limit(MAX_OPTION_ROWS + 1L).toList();
+    }
+
+    private List<String> normalizeMentions(List<String> values, int min, int max) {
+        if (values == null || values.size() < min || values.size() > max) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "物品线索数量无效");
+        }
+        List<String> normalized = new ArrayList<>();
+        for (String value : values) {
+            String item = normalizeItemKeyword(value);
+            if (item.isEmpty() || item.length() > 256 || item.codePoints().anyMatch(Character::isISOControl)
+                    || normalized.contains(item)) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "物品线索无效");
+            }
+            normalized.add(item);
+        }
+        return normalized;
+    }
+
+    private void validateSelectionPreference(String preference, List<String> mentions) {
+        if (!java.util.Set.of("AUTO_IF_UNIQUE", "SHOW_CANDIDATES").contains(preference)
+                || (mentions.isEmpty() && preference == null)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "候选选择偏好无效");
+        }
     }
 
     @Override
     @Transactional(readOnly = true)
     public WarehouseStockTaskResult queryItemLocationsTask(String itemKeyword, int limit,
                                                            WarehouseAccessScopeDTO scope) {
-        String normalizedItemKeyword = normalizeItemKeyword(itemKeyword);
-        if (normalizedItemKeyword.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "请提供物品名称或编码");
+        return queryItemLocationsTask(itemKeyword == null ? List.of() : List.of(itemKeyword),
+                List.of(), "AUTO_IF_UNIQUE", limit, scope);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public WarehouseStockTaskResult queryItemLocationsTask(List<String> itemMentions,
+                                                           List<String> excludedItemMentions,
+                                                           String selectionPreference, int limit,
+                                                           WarehouseAccessScopeDTO scope) {
+        List<String> mentions = normalizeMentions(itemMentions, 1, 5);
+        if (mentions.size() > 1) {
+            return queryCurrentStock(mentions, excludedItemMentions, selectionPreference,
+                    null, null, limit, scope);
         }
-        return queryCurrentStock(normalizedItemKeyword, null, null, limit, scope);
+        return queryCurrentStock(mentions, excludedItemMentions, selectionPreference,
+                null, null, limit, scope);
     }
 
     @Override
@@ -560,15 +658,51 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
     public WarehouseMovementTaskResult queryRecentMovementTask(int recentDays, String itemKeyword,
                                                                String warehouseKeyword, String locationKeyword,
                                                                int limit, WarehouseAccessScopeDTO scope) {
+        return queryRecentMovementTask(recentDays,
+                itemKeyword == null || normalizeItemKeyword(itemKeyword).isEmpty() ? List.of() : List.of(itemKeyword),
+                List.of(), "AUTO_IF_UNIQUE", warehouseKeyword, locationKeyword, limit, scope);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public WarehouseMovementTaskResult queryRecentMovementTask(int recentDays, List<String> itemMentions,
+                                                               List<String> excludedItemMentions,
+                                                               String selectionPreference,
+                                                               String warehouseKeyword, String locationKeyword,
+                                                               int limit, WarehouseAccessScopeDTO scope) {
         scope = validateTrustedScope(scope);
         if (recentDays < 1 || recentDays > 30) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "近期天数必须在1到30天之间");
         }
         int bounded = boundedTaskLimit(limit);
+        List<String> mentions = normalizeMentions(itemMentions, 0, 5);
+        List<String> excluded = normalizeMentions(excludedItemMentions, 0, 5);
+        validateSelectionPreference(selectionPreference, mentions);
         Long departmentId = scope.allDepartments() ? null : scope.departmentId();
-        List<WarehouseMovementTaskRowDTO> rows = movementMapper.selectTaskMovements(
-                LocalDateTime.now().minusDays(recentDays), likePattern(itemKeyword),
-                likePattern(warehouseKeyword), likePattern(locationKeyword), departmentId, bounded + 1);
+        String warehousePattern = likePattern(warehouseKeyword);
+        String locationPattern = likePattern(locationKeyword);
+        List<WarehouseMovementTaskRowDTO> rows;
+        List<WarehouseStockCandidate> candidates = List.of();
+        if (mentions.size() > 1) {
+            List<ItemDO> items = excludeItems(resolveMentionCandidates(mentions, bounded), resolveExcludedIds(excluded, bounded));
+            candidates = items.stream().map(item -> new WarehouseStockCandidate(item.getCode(), item.getName(), item.getBaseUnit())).toList();
+            return new WarehouseMovementTaskResult("MULTIPLE_MENTIONS", List.of(), Instant.now(), candidates.size() > bounded,
+                    candidates.stream().limit(bounded).toList());
+        }
+        if (mentions.size() == 1) {
+            List<ItemDO> items = excludeItems(resolveItems(mentions.get(0), bounded), resolveExcludedIds(excluded, bounded));
+            candidates = items.stream().map(item -> new WarehouseStockCandidate(item.getCode(), item.getName(), item.getBaseUnit())).toList();
+            if (candidates.size() != 1 || "SHOW_CANDIDATES".equals(selectionPreference)) {
+                return new WarehouseMovementTaskResult(candidates.isEmpty() ? "NO_MATCH" : "CANDIDATES", List.of(), Instant.now(),
+                        candidates.size() > bounded, candidates.stream().limit(bounded).toList());
+            }
+            rows = movementMapper.selectTaskMovementsByItemId(LocalDateTime.now().minusDays(recentDays),
+                    items.get(0).getId(), warehousePattern, locationPattern, departmentId, bounded + 1);
+        }
+        else {
+            rows = movementMapper.selectTaskMovements(LocalDateTime.now().minusDays(recentDays), "%%",
+                    warehousePattern, locationPattern, departmentId, bounded + 1);
+        }
         boolean truncated = rows.size() > bounded;
         rows = rows.stream().limit(bounded).toList();
         List<WarehouseMovementTaskRow> result = rows.stream().map(row -> new WarehouseMovementTaskRow(

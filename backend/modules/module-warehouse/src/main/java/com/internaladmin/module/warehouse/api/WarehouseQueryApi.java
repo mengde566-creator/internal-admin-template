@@ -17,8 +17,18 @@ public interface WarehouseQueryApi {
                                                String locationKeyword, int limit,
                                                WarehouseAccessScopeDTO scope);
 
+    /** 按模型提交的业务线索统一解析当前库存；不接受内部 ID。 */
+    WarehouseStockTaskResult queryCurrentStock(List<String> itemMentions, List<String> excludedItemMentions,
+                                               String selectionPreference, String warehouseKeyword,
+                                               String locationKeyword, int limit, WarehouseAccessScopeDTO scope);
+
     /** 按物品业务关键词查询其所在仓库与库位。 */
     WarehouseStockTaskResult queryItemLocationsTask(String itemKeyword, int limit,
+                                                    WarehouseAccessScopeDTO scope);
+
+    /** 按同一物品解析规则查询位置。 */
+    WarehouseStockTaskResult queryItemLocationsTask(List<String> itemMentions, List<String> excludedItemMentions,
+                                                    String selectionPreference, int limit,
                                                     WarehouseAccessScopeDTO scope);
 
     /** 按仓库/库位业务关键词查询位置内的库存内容。 */
@@ -30,4 +40,11 @@ public interface WarehouseQueryApi {
     WarehouseMovementTaskResult queryRecentMovementTask(int recentDays, String itemKeyword,
                                                         String warehouseKeyword, String locationKeyword,
                                                         int limit, WarehouseAccessScopeDTO scope);
+
+    /** 按同一物品解析规则查询近期变化。 */
+    WarehouseMovementTaskResult queryRecentMovementTask(int recentDays, List<String> itemMentions,
+                                                        List<String> excludedItemMentions,
+                                                        String selectionPreference, String warehouseKeyword,
+                                                        String locationKeyword, int limit,
+                                                        WarehouseAccessScopeDTO scope);
 }

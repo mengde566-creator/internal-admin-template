@@ -174,7 +174,7 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun candidateRun = store.startRun(conversationId, "task-candidates", "轴承", 7L, "scope-7");
         assertNotNull(store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
-                Instant.now().plus(Duration.ofHours(1)), "轴承", "物品",
+                Instant.now().plus(Duration.ofHours(1)), "{}", "物品",
                 "[{\"optionToken\":\"option-a\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"},"
                         + "{\"optionToken\":\"option-b\",\"code\":\"ITEM-B\",\"name\":\"轴承B\",\"baseUnit\":\"件\"}]", "CURRENT_STOCK"));
         assertTrue(store.complete(candidateRun.runId()));
@@ -236,6 +236,54 @@ class AgentStoreConversationContractTest {
         assertEquals(AgentStore.TASK_COLLECTING, first.task().status());
         assertThrows(BusinessException.class, () -> store.selectClarification(conversationId, nextReady.taskId(),
                 nextReady.revision(), "scope-7", "new-token"));
+    }
+
+    @Test
+    void strictOrdinalSelectionUsesOnlyTheCurrentReadyTaskOrder() throws Exception {
+        AgentStore store = store("conversation-ordinal-selection");
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun candidateRun = store.startRun(conversationId, "ordinal-candidate", "过滤器", 7L, "scope-7");
+        AgentStore.TaskRow ready = store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
+                Instant.now().plus(Duration.ofHours(1)), "{}", "ITEM",
+                "[{\"optionToken\":\"first\",\"code\":\"FILTER-A\",\"name\":\"过滤器A\",\"baseUnit\":\"件\"},"
+                        + "{\"optionToken\":\"second\",\"code\":\"FILTER-B\",\"name\":\"过滤器B\",\"baseUnit\":\"件\"}]",
+                "CURRENT_STOCK");
+        assertTrue(store.complete(candidateRun.runId()));
+
+        AgentStore.StartRun selected = store.startRun(conversationId, "ordinal-selection", "第二个", 7L,
+                "scope-7", Duration.ofHours(1));
+
+        assertEquals(ready.taskId(), selected.taskId());
+        assertTrue(selected.effectiveUserMessage().contains("过滤器B"));
+        assertEquals(AgentStore.TASK_COLLECTING, store.task(ready.taskId()).status());
+        assertThrows(BusinessException.class, () -> store.startRun(conversationId, "ordinal-without-task",
+                "第2个", 7L, "scope-other", Duration.ofHours(1)));
+    }
+
+    @Test
+    void controlledOrdinalAcceptsTwentyAndRejectsOutOfRangeBeforeCreatingRun() throws Exception {
+        AgentStore store = store("conversation-ordinal-boundary");
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun candidateRun = store.startRun(conversationId, "ordinal-boundary-candidate", "过滤器", 7L, "scope-7");
+        StringBuilder candidates = new StringBuilder("[");
+        for (int i = 1; i <= 20; i++) {
+            if (i > 1) candidates.append(',');
+            candidates.append("{\"optionToken\":\"token-").append(i)
+                    .append("\",\"code\":\"FILTER-").append(i)
+                    .append("\",\"name\":\"过滤器").append(i)
+                    .append("\",\"baseUnit\":\"件\"}");
+        }
+        candidates.append(']');
+        AgentStore.TaskRow ready = store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
+                Instant.now().plus(Duration.ofHours(1)), "{}", "ITEM", candidates.toString(), "CURRENT_STOCK");
+        assertTrue(store.complete(candidateRun.runId()));
+
+        AgentStore.StartRun selected = store.startRun(conversationId, "ordinal-twenty", "第二十项", 7L,
+                "scope-7", Duration.ofHours(1));
+        assertTrue(selected.effectiveUserMessage().contains("过滤器20"));
+        assertThrows(BusinessException.class, () -> store.startRun(conversationId, "ordinal-too-large", "第21个", 7L,
+                "scope-7", Duration.ofHours(1)));
+        assertEquals(AgentStore.TASK_COLLECTING, store.task(ready.taskId()).status());
     }
 
     @Test

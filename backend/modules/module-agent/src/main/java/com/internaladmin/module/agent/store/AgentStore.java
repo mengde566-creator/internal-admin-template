@@ -4,6 +4,7 @@ import com.internaladmin.platform.kernel.error.BusinessException;
 import com.internaladmin.platform.kernel.error.ErrorCode;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.knowledge.api.AiProperties;
+import com.internaladmin.module.agent.service.AgentExecutionContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.transaction.annotation.Transactional;
@@ -186,7 +187,7 @@ public class AgentStore {
                 effectiveScopeFingerprint, segment);
         jdbc.update("UPDATE ai_conversation SET updated_at = ? WHERE id = ?", now, conversationId);
         return new StartRun(conversationId, runId, true, RUNNING, assistantMessageId, segment,
-                task.taskId(), task.revision(), effectiveUserMessage, null);
+                task.taskId(), task.revision(), effectiveUserMessage, null, taskResolution.trustedItemReference());
     }
 
     /** Atomically consumes a server-created retry plan and creates its child Run. */
@@ -500,6 +501,27 @@ public class AgentStore {
     private void completeTaskInBoundary(String taskId, long taskRevision,
                                          String scopeFingerprint, String taskIntent) {
         String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
+        TaskRow current = task(taskId);
+        List<String> pending = pendingMentions(current.confirmedConditions());
+        if (!pending.isEmpty()) {
+            List<Map<String, Object>> pendingOptions = pendingOptions(current.confirmedConditions());
+            // pendingOptions also carries the current mention's second-level
+            // candidates so a later token selection can be validated against the
+            // same Task.  Only options for still-pending mentions belong in the
+            // newly emitted continuation card.
+            List<Map<String, Object>> visiblePendingOptions = pendingOptions.stream()
+                    .filter(option -> pending.contains(String.valueOf(option.get("mention"))))
+                    .toList();
+            int updated = jdbc.update("UPDATE ai_task SET status = ?, intent = ?, revision = revision + 1, "
+                            + "missing_fields = NULL, candidates = ?, updated_at = ? "
+                            + "WHERE task_id = ? AND revision = ? AND status = ? AND scope_fingerprint = ?",
+                    TASK_READY, taskIntent == null ? current.intent() : taskIntent,
+                    visiblePendingOptions.isEmpty() ? pendingCandidateJsonFromMentions(pending) : pendingCandidateJson(visiblePendingOptions),
+                    Timestamp.from(Instant.now()), taskId, taskRevision,
+                    TASK_COLLECTING, effectiveScope);
+            if (updated != 1) throw new IllegalStateException("任务候选恢复CAS失败");
+            return;
+        }
         int updated = jdbc.update("UPDATE ai_task SET status = ?, intent = ?, revision = revision + 1, "
                         + "missing_fields = NULL, candidates = NULL, updated_at = ? "
                         + "WHERE task_id = ? AND revision = ? AND status = ? AND scope_fingerprint = ?",
@@ -508,6 +530,54 @@ public class AgentStore {
         if (updated != 1) {
             throw new IllegalStateException("任务完成CAS失败");
         }
+    }
+
+    private List<String> pendingMentions(String conditions) {
+        if (conditions == null || conditions.isBlank()) return List.of();
+        try {
+            JsonNode root = JSON.readTree(conditions);
+            JsonNode pending = root == null ? null : root.get("pendingMentions");
+            if (pending == null || !pending.isArray() || pending.size() == 0 || pending.size() > 5) return List.of();
+            List<String> result = new ArrayList<>();
+            for (JsonNode value : pending) {
+                if (value == null || !value.isTextual() || value.asText().isBlank() || value.asText().length() > 256) return List.of();
+                result.add(value.asText());
+            }
+            return List.copyOf(result);
+        }
+        catch (RuntimeException ignored) { return List.of(); }
+    }
+
+    private String pendingCandidateJsonFromMentions(List<String> pending) {
+        List<Map<String, Object>> options = new ArrayList<>();
+        for (String mention : pending) {
+            Map<String, Object> option = new LinkedHashMap<>();
+            option.put("code", mention);
+            option.put("name", mention);
+            option.put("baseUnit", "");
+            option.put("mention", mention);
+            option.put("resolved", false);
+            options.add(option);
+        }
+        return pendingCandidateJson(options);
+    }
+
+    private String pendingCandidateJson(List<Map<String, Object>> pendingOptions) {
+        try {
+            List<Map<String, Object>> options = new ArrayList<>();
+            for (Map<String, Object> source : pendingOptions) {
+                Map<String, Object> option = new LinkedHashMap<>();
+                option.put("optionToken", UUID.randomUUID().toString());
+                option.put("code", source.getOrDefault("code", source.get("mention")));
+                option.put("name", source.getOrDefault("name", source.get("mention")));
+                option.put("baseUnit", source.getOrDefault("baseUnit", ""));
+                option.put("mention", source.get("mention"));
+                option.put("resolved", Boolean.TRUE.equals(source.get("resolved")));
+                options.add(option);
+            }
+            return JSON.writeValueAsString(options);
+        }
+        catch (Exception exception) { throw new IllegalStateException("候选生成失败", exception); }
     }
 
     /** Saves a validated all-tool failure as a visible failed assistant result without entering Memory. */
@@ -622,6 +692,31 @@ public class AgentStore {
         catch (RuntimeException ignored) {
             return null;
         }
+    }
+
+    private List<Map<String, Object>> pendingOptions(String conditions) {
+        if (conditions == null || conditions.isBlank()) return List.of();
+        try {
+            JsonNode root = JSON.readTree(conditions);
+            JsonNode pending = root == null ? null : root.get("pendingOptions");
+            if (pending == null || !pending.isArray() || pending.size() == 0 || pending.size() > 5) return List.of();
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (JsonNode option : pending) {
+                if (option == null || !option.isObject()
+                        || !option.path("mention").isTextual() || option.path("mention").asText().isBlank()
+                        || option.path("mention").asText().length() > 256
+                        || !option.path("resolved").isBoolean()) return List.of();
+                Map<String, Object> value = new LinkedHashMap<>();
+                value.put("mention", option.path("mention").asText());
+                value.put("resolved", option.path("resolved").asBoolean());
+                value.put("code", option.path("code").asText(option.path("mention").asText()));
+                value.put("name", option.path("name").asText(option.path("mention").asText()));
+                value.put("baseUnit", option.path("baseUnit").asText(""));
+                result.add(value);
+            }
+            return List.copyOf(result);
+        }
+        catch (RuntimeException ignored) { return List.of(); }
     }
 
     private String retryPlanJson(RetryPlan plan) {
@@ -794,8 +889,41 @@ public class AgentStore {
             }
             TaskSelection selection = selectClarification(conversationId, clarificationId, active.get(0).revision(),
                     scopeFingerprint, optionToken);
-            return new TaskResolution(selection.task(), selection.effectiveUserMessage());
+            return new TaskResolution(selection.task(), selection.effectiveUserMessage(), null);
         }
+        Integer requestedOrdinal = controlledOrdinal(userMessage);
+        if (requestedOrdinal != null) {
+            if (requestedOrdinal < 1 || requestedOrdinal > 20) {
+                throw new BusinessException(ErrorCode.CONFLICT, "候选序号无效，请重新选择");
+            }
+            if (active.size() != 1 || !TASK_READY.equals(active.get(0).status())
+                    || active.get(0).memorySegmentNo() != segment
+                    || !Objects.equals(scopeFingerprint, active.get(0).scopeFingerprint())
+                    || active.get(0).expiresAt() == null || !active.get(0).expiresAt().isAfter(now)) {
+                throw new BusinessException(ErrorCode.CONFLICT, "当前候选已失效，请重新选择");
+            }
+            int requested = requestedOrdinal;
+            try {
+                JsonNode candidates = JSON.readTree(active.get(0).candidates());
+                if (candidates == null || !candidates.isArray() || requested > candidates.size()) {
+                    throw new BusinessException(ErrorCode.CONFLICT, "候选序号无效，请重新选择");
+                }
+                String token = candidates.get(requested - 1).path("optionToken").asText(null);
+                if (token == null || token.isBlank()) {
+                    throw new BusinessException(ErrorCode.CONFLICT, "候选序号无效，请重新选择");
+                }
+                TaskSelection selection = selectClarification(conversationId, active.get(0).taskId(),
+                        active.get(0).revision(), scopeFingerprint, token);
+                return new TaskResolution(selection.task(), selection.effectiveUserMessage(), null);
+            }
+            catch (BusinessException exception) {
+                throw exception;
+            }
+            catch (RuntimeException exception) {
+                throw new BusinessException(ErrorCode.CONFLICT, "候选序号无效，请重新选择");
+            }
+        }
+        AgentExecutionContext.TrustedItemReference previousItem = null;
         if (!active.isEmpty()) {
             TaskRow current = active.get(0);
             if (current.memorySegmentNo() == segment && scopeFingerprint.equals(current.scopeFingerprint())
@@ -811,8 +939,10 @@ public class AgentStore {
                     }
                     current = task(current.taskId());
                 }
-                return new TaskResolution(current, userMessage == null ? "" : userMessage);
+                return new TaskResolution(current, userMessage == null ? "" : userMessage,
+                        trustedItemReference(current));
             }
+            previousItem = trustedItemReference(current);
             boolean candidateWasSuperseded = TASK_READY.equals(current.status());
             jdbc.update("UPDATE ai_task SET status = ?, revision = revision + 1, updated_at = ? WHERE task_id = ? AND status IN (?, ?)",
                     candidateWasSuperseded ? TASK_REPLACED
@@ -832,7 +962,46 @@ public class AgentStore {
                 Timestamp.from(now), Timestamp.from(now));
         jdbc.update("UPDATE ai_conversation SET active_task_id = ? WHERE id = ? AND active_task_id IS NULL",
                 taskId, conversationId);
-        return new TaskResolution(task(taskId), userMessage == null ? "" : userMessage);
+        return new TaskResolution(task(taskId), userMessage == null ? "" : userMessage,
+                previousItem);
+    }
+
+    private Integer controlledOrdinal(String value) {
+        if (value == null) return null;
+        String text = value.trim();
+        java.util.regex.Matcher arabic = java.util.regex.Pattern.compile("^第([0-9]{1,2})(?:个|项)$").matcher(text);
+        if (arabic.matches()) {
+            int number = Integer.parseInt(arabic.group(1));
+            return number >= 1 && number <= 20 ? number : 0;
+        }
+        java.util.regex.Matcher chinese = java.util.regex.Pattern.compile("^第([一二三四五六七八九十]{1,3})(?:个|项)$").matcher(text);
+        if (!chinese.matches()) return null;
+        String number = chinese.group(1);
+        int valueNumber;
+        if (number.equals("十")) valueNumber = 10;
+        else if (number.startsWith("十")) valueNumber = 10 + chineseDigit(number.charAt(1));
+        else if (number.endsWith("十")) valueNumber = chineseDigit(number.charAt(0)) * 10;
+        else if (number.length() == 1) valueNumber = chineseDigit(number.charAt(0));
+        else return 0;
+        return valueNumber >= 1 && valueNumber <= 20 ? valueNumber : 0;
+    }
+
+    private int chineseDigit(char value) {
+        return "一二三四五六七八九".indexOf(value) + 1;
+    }
+
+    private AgentExecutionContext.TrustedItemReference trustedItemReference(TaskRow task) {
+        if (task == null || task.confirmedConditions() == null || task.confirmedConditions().isBlank()
+                || task.scopeFingerprint() == null || task.expiresAt() == null || !task.expiresAt().isAfter(Instant.now())) return null;
+        try {
+            JsonNode root = JSON.readTree(task.confirmedConditions());
+            if (root == null || !"ITEM".equals(root.path("type").asText())
+                    || !root.path("code").isTextual() || !root.path("name").isTextual()) return null;
+            return new AgentExecutionContext.TrustedItemReference(task.taskId(), task.revision(),
+                    task.scopeFingerprint(), task.expiresAt(), root.path("code").asText(),
+                    root.path("name").asText(), root.path("baseUnit").asText(""));
+        }
+        catch (RuntimeException ignored) { return null; }
     }
 
     private boolean isRetryPlanEnvelope(String value) {
@@ -864,7 +1033,8 @@ public class AgentStore {
                 java.util.Set<String> names = new java.util.HashSet<>();
                 names.addAll(candidate.propertyNames());
                 if (!names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit"))
-                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "warehouseCode", "warehouseName"))) {
+                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "warehouseCode", "warehouseName"))
+                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "mention", "resolved"))) {
                     throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
                 }
                 String token = text(candidate, "optionToken", 256);
@@ -872,16 +1042,23 @@ public class AgentStore {
                 String name = text(candidate, "name", 256);
                 String baseUnit = text(candidate, "baseUnit", 64);
                 if (optionToken.equals(token)) {
-                    java.util.Map<String, String> confirmed = new java.util.LinkedHashMap<>();
+                    java.util.Map<String, Object> confirmed = new java.util.LinkedHashMap<>();
                     String warehouseCode = text(candidate, "warehouseCode", 128);
                     String warehouseName = text(candidate, "warehouseName", 256);
                     String intent = task.intent();
                     String type = switch (intent) {
-                        case "CURRENT_STOCK", "ITEM_LOCATIONS" -> "ITEM";
+                        case "CURRENT_STOCK", "ITEM_LOCATIONS", "RECENT_MOVEMENTS" -> "ITEM";
                         case "LOCATION_CONTENTS" -> "LOCATION";
                         default -> throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
                     };
                     boolean hasWarehouseFields = names.contains("warehouseCode") || names.contains("warehouseName");
+                    String mention = names.contains("mention") ? text(candidate, "mention", 256) : null;
+                    boolean resolved = !names.contains("resolved") || (candidate.get("resolved") != null && candidate.get("resolved").isBoolean()
+                            && candidate.get("resolved").asBoolean());
+                    if (names.contains("mention") && (!names.contains("resolved") || candidate.get("resolved") == null
+                            || !candidate.get("resolved").isBoolean())) {
+                        throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
+                    }
                     if ("LOCATION".equals(type) && (!hasWarehouseFields || warehouseCode == null || warehouseName == null)) {
                         throw new BusinessException(ErrorCode.CONFLICT, "候选与库位任务不匹配，请重新查询");
                     }
@@ -890,17 +1067,50 @@ public class AgentStore {
                     }
                     confirmed.put("type", type);
                     confirmed.put("intent", intent);
-                    confirmed.put("code", code);
-                    confirmed.put("name", name);
-                    confirmed.put("baseUnit", baseUnit == null ? "" : baseUnit);
+                    if (mention != null) confirmed.put("mention", mention);
+                    if (resolved) {
+                        confirmed.put("code", code);
+                        confirmed.put("name", name);
+                        confirmed.put("baseUnit", baseUnit == null ? "" : baseUnit);
+                    }
                     if (warehouseCode != null) {
                         confirmed.put("warehouseCode", warehouseCode);
                         confirmed.put("warehouseName", warehouseName == null ? "" : warehouseName);
                     }
+                    List<String> pendingMentions = new ArrayList<>();
+                    List<Map<String, Object>> remainingOptions = new ArrayList<>();
+                    if (task.confirmedConditions() != null && !task.confirmedConditions().isBlank()) {
+                        JsonNode existingConditions = JSON.readTree(task.confirmedConditions());
+                        List<Map<String, Object>> storedOptions = pendingOptions(task.confirmedConditions());
+                        if (!storedOptions.isEmpty()) {
+                            for (Map<String, Object> stored : storedOptions) {
+                                String storedMention = String.valueOf(stored.get("mention"));
+                                if (mention == null || !storedMention.equals(mention)) {
+                                    remainingOptions.add(stored);
+                                    pendingMentions.add(storedMention);
+                                }
+                            }
+                        } else {
+                            JsonNode pending = existingConditions == null ? null : existingConditions.get("pendingMentions");
+                            if (pending != null && pending.isArray()) {
+                                for (JsonNode pendingMention : pending) {
+                                    if (pendingMention != null && pendingMention.isTextual()
+                                            && (mention == null || !pendingMention.asText().equals(mention))) {
+                                        pendingMentions.add(pendingMention.asText());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (!pendingMentions.isEmpty()) {
+                        confirmed.put("pendingMentions", pendingMentions);
+                        if (!remainingOptions.isEmpty()) confirmed.put("pendingOptions", remainingOptions);
+                    }
                     String conditions = JSON.writeValueAsString(confirmed);
                     String effective = switch (intent) {
-                        case "CURRENT_STOCK" -> "查询物品「" + name + "」（" + code + "）的当前库存";
-                        case "ITEM_LOCATIONS" -> "查询物品「" + name + "」（" + code + "）所在的位置";
+                        case "CURRENT_STOCK" -> resolved ? "查询物品「" + name + "」（" + code + "）的当前库存" : "查询物品线索「" + mention + "」的当前库存";
+                        case "ITEM_LOCATIONS" -> resolved ? "查询物品「" + name + "」（" + code + "）所在的位置" : "查询物品线索「" + mention + "」所在的位置";
+                        case "RECENT_MOVEMENTS" -> resolved ? "查询物品「" + name + "」（" + code + "）的近期库存变化" : "查询物品线索「" + mention + "」的近期库存变化";
                         case "LOCATION_CONTENTS" -> "查询仓库「" + warehouseName + "」的库位「" + name + "」有哪些库存";
                         default -> throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
                     };
@@ -1098,7 +1308,15 @@ public class AgentStore {
     public record StartRun(String conversationId, String runId, boolean newRun, String status,
                            String assistantMessageId, long memorySegmentNo,
                            String taskId, long taskRevision, String effectiveUserMessage,
-                           RetryPlan retryPlan) {
+                           RetryPlan retryPlan,
+                           AgentExecutionContext.TrustedItemReference trustedItemReference) {
+
+        public StartRun(String conversationId, String runId, boolean newRun, String status,
+                        String assistantMessageId, long memorySegmentNo, String taskId, long taskRevision,
+                        String effectiveUserMessage, RetryPlan retryPlan) {
+            this(conversationId, runId, newRun, status, assistantMessageId, memorySegmentNo,
+                    taskId, taskRevision, effectiveUserMessage, retryPlan, null);
+        }
 
         public StartRun(String conversationId, String runId, boolean newRun, String status,
                         String assistantMessageId) {
@@ -1173,7 +1391,8 @@ public class AgentStore {
         }
     }
 
-    private record TaskResolution(TaskRow task, String effectiveUserMessage) {
+    private record TaskResolution(TaskRow task, String effectiveUserMessage,
+                                  AgentExecutionContext.TrustedItemReference trustedItemReference) {
     }
 
     public record TaskSelection(TaskRow task, String confirmedConditions, String effectiveUserMessage) {

@@ -8,6 +8,7 @@ import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.iam.api.ScopeMode;
 import com.internaladmin.module.warehouse.api.WarehouseAccessScopeDTO;
 import com.internaladmin.module.warehouse.api.WarehouseLocationTaskResult;
+import com.internaladmin.module.warehouse.api.WarehouseMovementTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseStockCandidate;
 import com.internaladmin.module.warehouse.api.WarehouseStockTaskResult;
 import com.internaladmin.module.warehouse.mapper.InventoryMovementMapper;
@@ -18,11 +19,13 @@ import com.internaladmin.module.warehouse.mapper.StockBalanceMapper;
 import com.internaladmin.module.warehouse.mapper.WarehouseMapper;
 import com.internaladmin.module.warehouse.model.dto.StockPageRowDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseLocationCandidateRowDTO;
+import com.internaladmin.module.warehouse.model.dto.WarehouseMovementTaskRowDTO;
 import com.internaladmin.module.warehouse.model.entity.ItemDO;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.util.List;
+import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -295,6 +298,76 @@ class WarehouseServiceTaskQueryTest {
                         new WarehouseAccessScopeDTO(7L, 3L, false)));
     }
 
+    @Test
+    void multipleMentionsReturnOrderedCandidatesWithoutReadingStockFacts() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        ItemDO first = item(11L, "SEAL-A", "A密封圈");
+        ItemDO second = item(12L, "SEAL-B", "B密封圈");
+        when(items.selectEnabledExact(eq("A密封圈"), eq(2))).thenReturn(List.of(first));
+        when(items.selectEnabledExact(eq("B密封圈"), eq(2))).thenReturn(List.of(second));
+
+        WarehouseStockTaskResult result = service(items, iam, locations, balances)
+                .queryCurrentStock(List.of("A密封圈", "B密封圈"), List.of(), "AUTO_IF_UNIQUE",
+                        null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("CLARIFICATION", result.outcome());
+        assertEquals(List.of("SEAL-A", "SEAL-B"), result.candidates().stream()
+                .map(WarehouseStockCandidate::code).toList());
+        verifyNoInteractions(balances);
+    }
+
+    @Test
+    void showCandidatesDoesNotAutomaticallyResolveUniqueMention() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        ItemDO item = item(11L, "FILTER-01", "过滤器");
+        when(items.selectEnabledExact(eq("过滤器"), eq(2))).thenReturn(List.of(item));
+
+        WarehouseStockTaskResult result = service(items, iam, locations, balances)
+                .queryCurrentStock(List.of("过滤器"), List.of(), "SHOW_CANDIDATES",
+                        null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("CLARIFICATION", result.outcome());
+        assertEquals(List.of("FILTER-01"), result.candidates().stream()
+                .map(WarehouseStockCandidate::code).toList());
+        verifyNoInteractions(balances);
+    }
+
+    @Test
+    void recentMovementsReuseResolvedItemIdAndCarryRecentFactsOnlyAfterUniqueResolution() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        InventoryMovementMapper movements = mock(InventoryMovementMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.WAREHOUSE_READ)));
+        ItemDO item = item(11L, "ITEM-6204", "深沟球轴承");
+        when(items.selectEnabledExact(eq("深沟球轴承"), eq(2))).thenReturn(List.of(item));
+        when(movements.selectTaskMovementsByItemId(any(LocalDateTime.class), eq(11L), eq("%%"), eq("%%"),
+                eq(3L), eq(21))).thenReturn(List.of(new WarehouseMovementTaskRowDTO(1L, 2L, 1, 11L,
+                "ITEM-6204", "深沟球轴承", "件", 21L, "WH-01", "成品仓", 31L, "LOC-01", "一号库位",
+                "OUTBOUND", -10000L, LocalDateTime.now())));
+
+        WarehouseMovementTaskResult result = service(items, iam, locations, balances, movements)
+                .queryRecentMovementTask(7, List.of("深沟球轴承"), List.of(), "AUTO_IF_UNIQUE",
+                        null, null, 20, new WarehouseAccessScopeDTO(7L, 3L, false));
+
+        assertEquals("ANSWERED", result.outcome());
+        assertEquals("ITEM-6204", result.rows().get(0).itemCode());
+        verify(movements).selectTaskMovementsByItemId(any(LocalDateTime.class), eq(11L), eq("%%"), eq("%%"),
+                eq(3L), eq(21));
+    }
+
     private ItemDO item(Long id, String code, String name) {
         ItemDO item = new ItemDO();
         item.setId(id); item.setCode(code); item.setName(name); item.setBaseUnit("件");
@@ -307,8 +380,13 @@ class WarehouseServiceTaskQueryTest {
 
     private WarehouseService service(ItemMapper items, IamActorApi iam, LocationMapper locations,
                                      StockBalanceMapper balances) {
+        return service(items, iam, locations, balances, mock(InventoryMovementMapper.class));
+    }
+
+    private WarehouseService service(ItemMapper items, IamActorApi iam, LocationMapper locations,
+                                     StockBalanceMapper balances, InventoryMovementMapper movements) {
         return new WarehouseService(items, mock(WarehouseMapper.class), locations, balances,
-                mock(InventoryOperationMapper.class), mock(InventoryMovementMapper.class), iam,
+                mock(InventoryOperationMapper.class), movements, iam,
                 mock(DepartmentQueryApi.class), mock(AuditRecordApi.class), mock(PlatformTransactionManager.class));
     }
 }

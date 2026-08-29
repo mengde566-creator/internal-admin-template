@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.function.Consumer;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.time.Instant;
 
 /** Async-only carrier; neither its actor fields nor callback is exposed to the model prompt. */
 public record AgentExecutionContext(AgentRunContext actor, String runId, String message,
@@ -15,25 +17,26 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                    AtomicLong eventSequence,
                                    String messageId, String taskId, long taskRevision,
                                    ToolOutcomeLedger outcomes,
-                                   AtomicBoolean clarificationProduced) {
+                                   AtomicBoolean clarificationProduced,
+                                   AtomicReference<List<TrustedItemReference>> trustedItemsRef) {
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter) {
         this(actor, runId, message, toolCardEmitter, new AtomicBoolean(), new AtomicLong(),
-                java.util.UUID.randomUUID().toString(), null, 0L, new ToolOutcomeLedger(), new AtomicBoolean());
+                java.util.UUID.randomUUID().toString(), null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()));
     }
 
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
                                  AtomicLong eventSequence, String messageId) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                null, 0L, new ToolOutcomeLedger(), new AtomicBoolean());
+                null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()));
     }
 
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
                                  AtomicLong eventSequence, String messageId, String taskId, long taskRevision) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, new ToolOutcomeLedger(), new AtomicBoolean());
+                taskId, taskRevision, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()));
     }
 
     /** Constructor used by the HTTP callback to share the trusted clarification marker. */
@@ -42,8 +45,19 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                  AtomicLong eventSequence, String messageId, String taskId, long taskRevision,
                                  AtomicBoolean clarificationProduced) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, new ToolOutcomeLedger(), clarificationProduced);
+                taskId, taskRevision, new ToolOutcomeLedger(), clarificationProduced, new AtomicReference<>(List.of()));
     }
+
+    public void setTrustedItemReferences(List<TrustedItemReference> references) {
+        trustedItemsRef.set(references == null ? List.of() : List.copyOf(references));
+    }
+
+    public List<TrustedItemReference> trustedItemReferences() {
+        return trustedItemsRef.get();
+    }
+
+    public record TrustedItemReference(String taskId, long revision, String scopeFingerprint,
+                                       Instant expiresAt, String code, String name, String baseUnit) { }
 
     public void markToolOutputProduced() {
         toolOutputProduced.set(true);

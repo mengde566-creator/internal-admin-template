@@ -13,7 +13,7 @@ public record WarehouseStockTaskResult(String status, List<WarehouseStockTaskRow
     }
 
     public WarehouseStockTaskResult {
-        if (!java.util.Set.of("STOCK_RESULT", "CANDIDATES", "NO_MATCH", "NO_STOCK", "NO_DATA").contains(status)) {
+        if (!java.util.Set.of("STOCK_RESULT", "CANDIDATES", "MULTIPLE_MENTIONS", "NO_MATCH", "NO_STOCK", "NO_DATA").contains(status)) {
             throw new IllegalArgumentException("未知的库存查询状态");
         }
         rows = List.copyOf(rows == null ? List.of() : rows);
@@ -23,7 +23,7 @@ public record WarehouseStockTaskResult(String status, List<WarehouseStockTaskRow
     public String outcome() {
         return switch (status) {
             case "STOCK_RESULT" -> "ANSWERED";
-            case "CANDIDATES" -> "CLARIFICATION";
+            case "CANDIDATES", "MULTIPLE_MENTIONS" -> "CLARIFICATION";
             default -> "NO_DATA";
         };
     }

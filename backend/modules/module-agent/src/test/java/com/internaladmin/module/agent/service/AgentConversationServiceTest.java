@@ -604,7 +604,11 @@ class AgentConversationServiceTest {
 
         var system = org.mockito.ArgumentCaptor.forClass(String.class);
         verify(request).system(system.capture());
-        assertTrue(system.getValue().contains("一句话中可以包含多个彼此独立的仓储查询"));
+        assertTrue(system.getValue().contains("多个彼此独立且参数完整的仓储子任务"));
+        assertTrue(system.getValue().contains("这里的分别调用仅适用于不同的完整子任务"));
+        assertTrue(system.getValue().contains("同一个工具意图里出现多个物品时只调用一次"));
+        assertTrue(system.getValue().contains("全部物品原文按出现顺序放入itemMentions"));
+        assertTrue(system.getValue().contains("禁止拆成多次同工具调用"));
         assertFalse(system.getValue().contains("同时涉及当前库存和最近变化时，先确认用户要查询哪一种"));
     }
 
