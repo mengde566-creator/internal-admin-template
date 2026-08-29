@@ -13,7 +13,7 @@
 
 ## 3. 公开与跨模块契约
 
-`KnowledgeQueryApi` 仅返回带文档/版本/片段引用的检索结果；不暴露 DO、Mapper、JdbcTemplate 或数据库分页对象。固定样本导入入口只接受服务端登记的样本，不接受路径和正文。
+`KnowledgeQueryApi` 仅返回带文档/版本/片段引用的检索结果；不暴露 DO、Mapper、JdbcTemplate 或数据库分页对象。固定样本导入入口只接受服务端登记的样本，不接受路径和正文。另以 `AiSearchInfrastructure` 提供受控 AI DataSource、JdbcTemplate 与 1024 维 EmbeddingModel，供已授权的 Adapter 派生索引使用；不暴露知识表或内部 Bean 名称。
 
 ## 4. 数据所有权
 

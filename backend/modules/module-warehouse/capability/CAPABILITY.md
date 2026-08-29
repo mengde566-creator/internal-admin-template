@@ -15,7 +15,7 @@
 
 ## 3. 公开与跨模块契约
 
-公开 `WarehouseQueryApi` 四个只读类型化方法和稳定 DTO；只依赖 IAM 的 `IamActorApi`/`DepartmentQueryApi` 与 AuditRecordApi，不暴露 DO、Mapper、Wrapper 或分页实现。
+公开 `WarehouseQueryApi` 四个只读类型化方法和稳定 DTO；同时提供仅供受信派生索引使用的 `WarehouseItemProjectionApi` 游标扫描/批量复核契约。只依赖 IAM 的 `IamActorApi`/`DepartmentQueryApi` 与 AuditRecordApi，不暴露 DO、Mapper、Wrapper 或分页实现。
 
 ## 4. 数据所有权
 

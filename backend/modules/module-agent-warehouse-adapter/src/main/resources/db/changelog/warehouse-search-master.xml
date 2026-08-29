@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-08-29-0001-warehouse-search-schema" author="研发工程师" dbms="postgresql">
+        <sql>CREATE SCHEMA IF NOT EXISTS ai_warehouse_search</sql>
+        <sql>CREATE EXTENSION IF NOT EXISTS vector</sql>
+        <sql>CREATE EXTENSION IF NOT EXISTS pg_trgm</sql>
+    </changeSet>
+    <changeSet id="2026-08-29-0002-warehouse-search-tables" author="研发工程师" dbms="postgresql">
+        <createTable schemaName="ai_warehouse_search" tableName="item_search_index">
+            <column name="index_version" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="item_ref" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <column name="code" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="name" type="VARCHAR(120)"><constraints nullable="false"/></column>
+            <column name="enabled" type="BOOLEAN"><constraints nullable="false"/></column>
+            <column name="source_version" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="source_updated_at" type="TIMESTAMP"/>
+            <column name="search_text" type="TEXT"><constraints nullable="false"/></column>
+            <column name="embedding_model" type="VARCHAR(160)"/>
+            <column name="embedding_dimensions" type="INTEGER"/>
+            <column name="embedding" type="vector(1024)"/>
+            <column name="indexed_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <addPrimaryKey schemaName="ai_warehouse_search" tableName="item_search_index"
+                       columnNames="index_version,item_ref" constraintName="pk_wh_search_item"/>
+        <addUniqueConstraint schemaName="ai_warehouse_search" tableName="item_search_index"
+                             columnNames="index_version,code" constraintName="uk_wh_search_code"/>
+        <sql>CREATE INDEX idx_wh_search_trgm ON ai_warehouse_search.item_search_index USING gin (search_text gin_trgm_ops)</sql>
+        <createTable schemaName="ai_warehouse_search" tableName="item_search_sync_state">
+            <column name="state_id" type="INTEGER"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="active_index_version" type="INTEGER"/>
+            <column name="building_index_version" type="INTEGER"/>
+            <column name="model" type="VARCHAR(160)"><constraints nullable="false"/></column>
+            <column name="dimensions" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="reconcile_cursor" type="VARCHAR(128)"/>
+            <column name="last_full_sync_at" type="TIMESTAMP"/>
+            <column name="status" type="VARCHAR(24)"><constraints nullable="false"/></column>
+            <column name="last_error_code" type="VARCHAR(64)"/>
+            <column name="updated_at" type="TIMESTAMP"><constraints nullable="false"/></column>
+        </createTable>
+        <sql>INSERT INTO ai_warehouse_search.item_search_sync_state
+             (state_id, model, dimensions, status, updated_at)
+             VALUES (1, 'qwen3.7-text-embedding', 1024, 'BUILDING', CURRENT_TIMESTAMP)</sql>
+    </changeSet>
+</databaseChangeLog>

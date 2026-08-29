@@ -11,6 +11,7 @@ public enum AgentErrorCode implements ErrorCodeContract {
     TOOL_TIMEOUT("AI_TOOL_TIMEOUT", "查询超时，请稍后重试"),
     TOOL_DATABASE_UNAVAILABLE("AI_TOOL_DATABASE_UNAVAILABLE", "库存数据暂时不可用"),
     TOOL_EXECUTION_FAILED("AI_TOOL_EXECUTION_FAILED", "库存查询暂时未完成"),
+    RETRIEVAL_DEGRADED("AI_RETRIEVAL_DEGRADED", "相似物品检索暂时不可用，请补充名称或编码后重试"),
     MODEL_OUTPUT_INVALID("AI_MODEL_OUTPUT_INVALID", "助手回复暂时不可用"),
     MODEL_RESULT_MISMATCH("AI_MODEL_RESULT_MISMATCH", "助手回复与查询结果不一致"),
     MODEL_UNAVAILABLE("AI_MODEL_UNAVAILABLE", "助手暂时不可用"),

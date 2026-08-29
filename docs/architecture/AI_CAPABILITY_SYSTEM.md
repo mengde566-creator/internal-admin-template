@@ -43,7 +43,7 @@ module-agent-warehouse-adapter
 | `module-knowledge` | 文档、版本、生效状态、摄取、切片、Embedding、pgvector检索和引用 | 实时库存、业务表、Agent对话历史 | 同模板派生系统的知识检索能力 |
 | `module-ai-observability` | AI run/step、异常、反馈、评测和管理查询 | 业务审计、聊天正文、知识正文、仓储语义 | 可独立装配到其他Spring系统 |
 | `module-warehouse` | 仓储实体、查询、人工写页面/API、权限和业务审计 | Spring AI依赖、Agent事件、模型Prompt | 仓储参考业务能力包 |
-| `module-agent-warehouse-adapter` | 仓储工具、工具结果到卡片、受控路由动作 | 自有业务表、通用编排、动态插件发现 | 可随仓储Agent能力整体装卸 |
+| `module-agent-warehouse-adapter` | 仓储工具、工具结果到卡片、受控路由动作，以及03F物品编码/名称派生搜索索引 | 仓储事实表、通用编排、动态插件发现 | 可随仓储Agent能力整体装卸 |
 
 “可复用”分两级验收：0.2必须证明同模板项目内装配和移除；跨语言、跨进程或任意技术栈接入不在当前承诺内。Observability未来可以增加远程接入，但0.2不提前建立采集服务或SDK。
 
@@ -54,7 +54,8 @@ module-agent-warehouse-adapter
 ```text
 module-agent-warehouse-adapter
     ├─→ module-agent.api
-    └─→ module-warehouse.api
+    ├─→ module-warehouse.api
+    └─→ module-knowledge.api（只取得受控AI DataSource与Embedding基础设施）
 
 module-agent
     ├─→ module-knowledge.api
@@ -69,7 +70,7 @@ module-warehouse
 需要在实现前固定的窄契约：
 
 - Agent业务接入：工具标识、输入DTO、结果DTO、只读风险级别和执行入口；
-- 仓储查询API：物品定位、库存汇总、位置内容、库存移动；
+- 仓储查询API：物品定位、库存汇总、位置内容、库存移动，以及派生索引使用的有界物品投影与当前范围复核；
 - IAM身份API：按已认证userId解析当前有效用户、部门和权限范围；
 - Knowledge检索API：查询、受信过滤范围、topK和带版本引用结果；
 - Observability API：开始/完成/失败运行与步骤、反馈、评测；
@@ -146,10 +147,11 @@ DeepSeek不仅接收用户问题，也可能接收经过工具整理的业务事
 - 各模块拥有自己的表和Liquibase变更集；
 - AI观测不复制History正文。
 
-### 5.2 知识库
+### 5.2 AI PostgreSQL与知识库
 
-- pgvector只用于知识文档与Embedding；
+- pgvector用于知识文档向量，以及`module-agent-warehouse-adapter`自有`ai_warehouse_search`中的物品编码/名称派生向量；后者不保存库存、库位、流水、用户范围或查询原话，也不读写`ai_knowledge`表；
 - 知识文档与查询统一使用`qwen3.7-text-embedding`生成1024维向量，距离度量首版使用Cosine；
+- 03F物品索引复用同一受控AI PostgreSQL与Embedding配置，但使用独立schema、Liquibase与同步状态；Warehouse业务库仍是物品状态、权限和事实的唯一来源；
 - 独立配置时使用独立知识DataSource、事务管理器和Liquibase入口；
 - 未独立配置且业务库为PostgreSQL时复用同一DataSource，但知识结构仍归`module-knowledge`；
 - Spring AI自动建schema必须关闭；

@@ -16,6 +16,8 @@ import com.internaladmin.module.warehouse.api.WarehouseLocationTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseMovementTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseMovementTaskRow;
 import com.internaladmin.module.warehouse.api.WarehouseQueryApi;
+import com.internaladmin.module.warehouse.api.WarehouseItemChangedEvent;
+import com.internaladmin.module.warehouse.api.WarehouseItemProjectionApi;
 import com.internaladmin.module.warehouse.api.WarehouseStockCandidate;
 import com.internaladmin.module.warehouse.api.WarehouseStockTaskResult;
 import com.internaladmin.module.warehouse.api.WarehouseStockTaskRow;
@@ -59,6 +61,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -77,7 +81,7 @@ import java.util.Set;
 
 /** 仓储人工业务闭环；所有库存写入均在单一事务内完成。 */
 @Service
-public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceChecker {
+public class WarehouseService implements WarehouseQueryApi, WarehouseItemProjectionApi, DepartmentReferenceChecker {
     private static final int MAX_OPTION_ROWS = 100;
     private static final int MAX_PAGE_SIZE = 100;
     private final ItemMapper itemMapper;
@@ -90,6 +94,7 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
     private final DepartmentQueryApi departmentQueryApi;
     private final AuditRecordApi auditRecordApi;
     private final TransactionTemplate transactionTemplate;
+    private ApplicationEventPublisher eventPublisher;
 
     public WarehouseService(ItemMapper itemMapper, WarehouseMapper warehouseMapper, LocationMapper locationMapper,
                             StockBalanceMapper balanceMapper, InventoryOperationMapper operationMapper,
@@ -108,6 +113,12 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
+    /** Optional in direct unit tests; present in the application for AFTER_COMMIT consumers. */
+    @Autowired(required = false)
+    public void setEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
+    }
+
     @Transactional
     public Long createItem(ItemCreateDTO dto) {
         ItemDO item = new ItemDO();
@@ -115,6 +126,7 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
         item.setCreatedAt(LocalDateTime.now()); item.setUpdatedAt(item.getCreatedAt());
         try { itemMapper.insert(item); } catch (DataIntegrityViolationException ex) { throw conflict("物品编码已存在"); }
         auditRecordApi.record(currentUserId(), "WAREHOUSE_ITEM_CREATE", item.getId(), "SUCCESS");
+        publishItemChanged(item.getId(), item.getVersion());
         return item.getId();
     }
 
@@ -128,6 +140,13 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
         item.setVersion(dto.getVersion());
         item.setUpdatedAt(LocalDateTime.now()); cas(itemMapper.updateCas(item), "物品版本已变化，请刷新后重试");
         auditRecordApi.record(currentUserId(), "WAREHOUSE_ITEM_UPDATE", id, "SUCCESS");
+        publishItemChanged(id, dto.getVersion() + 1L);
+    }
+
+    private void publishItemChanged(Long itemId, long sourceVersion) {
+        if (eventPublisher != null && itemId != null) {
+            eventPublisher.publishEvent(new WarehouseItemChangedEvent(itemId.toString(), sourceVersion));
+        }
     }
 
     @Transactional
@@ -718,6 +737,77 @@ public class WarehouseService implements WarehouseQueryApi, DepartmentReferenceC
             throw new BusinessException(ErrorCode.PARAM_ERROR, "查询条数必须在1到20之间");
         }
         return limit;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public WarehouseItemProjectionPage scanItems(String cursor, int limit) {
+        if (limit < 1 || limit > 100) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "索引扫描页大小必须在1到100之间");
+        }
+        long afterId = 0L;
+        if (cursor != null && !cursor.isBlank()) {
+            try {
+                afterId = Long.parseLong(cursor);
+                if (afterId < 0) throw new NumberFormatException();
+            } catch (NumberFormatException ex) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "索引扫描游标无效");
+            }
+        }
+        List<ItemDO> rows = itemMapper.selectProjectionPage(afterId, limit);
+        List<WarehouseItemSearchProjection> projections = rows.stream()
+                .map(this::toSearchProjection).toList();
+        String next = rows.size() == limit && !rows.isEmpty()
+                ? rows.get(rows.size() - 1).getId().toString() : null;
+        return new WarehouseItemProjectionPage(projections, next);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public WarehouseItemSearchProjection readItem(String itemRef) {
+        Long id = parseItemRef(itemRef);
+        ItemDO item = itemMapper.selectById(id);
+        return item == null ? null : toSearchProjection(item);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<WarehouseItemSearchProjection> revalidateItems(List<String> itemRefs,
+                                                               WarehouseAccessScopeDTO scope) {
+        if (itemRefs == null || itemRefs.isEmpty() || itemRefs.size() > 5) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "候选物品数量无效");
+        }
+        WarehouseAccessScopeDTO trustedScope = validateTrustedScope(scope);
+        List<WarehouseItemSearchProjection> result = new ArrayList<>();
+        for (String itemRef : itemRefs) {
+            Long id = parseItemRef(itemRef);
+            ItemDO item = itemMapper.selectById(id);
+            if (item == null || !enabled(item)) continue;
+            List<StockBalanceDO> balances = trustedScope.allDepartments()
+                    ? balanceMapper.selectByItemAllDepartments(id)
+                    : balanceMapper.selectByItemAndDepartment(id, trustedScope.departmentId());
+            if (balances != null && !balances.isEmpty()) result.add(toSearchProjection(item));
+        }
+        return List.copyOf(result);
+    }
+
+    private Long parseItemRef(String itemRef) {
+        if (itemRef == null || itemRef.isBlank()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "物品引用无效");
+        }
+        try {
+            long id = Long.parseLong(itemRef);
+            if (id <= 0) throw new NumberFormatException();
+            return id;
+        } catch (NumberFormatException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "物品引用无效");
+        }
+    }
+
+    private WarehouseItemSearchProjection toSearchProjection(ItemDO item) {
+        return new WarehouseItemSearchProjection(item.getId().toString(), item.getCode(), item.getName(),
+                enabled(item), item.getVersion() == null ? 0L : item.getVersion().longValue(),
+                item.getUpdatedAt() == null ? null : item.getUpdatedAt().toInstant(java.time.ZoneOffset.UTC));
     }
 
     static String likePattern(String value) {

@@ -26,6 +26,7 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.DefaultToolDefinition;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -53,6 +54,7 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
     private final IamActorApi iam;
     private final ObjectMapper json;
     private final AiObservationRecorder observations;
+    private final WarehouseSemanticSearchService semanticSearch;
     private final ToolCallback currentStock;
     private final ToolCallback recentMovements;
     private final ToolCallback itemLocations;
@@ -60,10 +62,18 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
 
     public WarehouseInventoryToolProvider(WarehouseQueryApi warehouse, IamActorApi iam,
                                           ObjectMapper json, AiObservationRecorder observations) {
+        this(warehouse, iam, json, observations, null);
+    }
+
+    @Autowired
+    public WarehouseInventoryToolProvider(WarehouseQueryApi warehouse, IamActorApi iam,
+                                          ObjectMapper json, AiObservationRecorder observations,
+                                          WarehouseSemanticSearchService semanticSearch) {
         this.warehouse = warehouse;
         this.iam = iam;
         this.json = json;
         this.observations = observations;
+        this.semanticSearch = semanticSearch;
         this.currentStock = new CurrentStockCallback();
         this.recentMovements = new RecentMovementsCallback();
         this.itemLocations = new ItemLocationsCallback();
@@ -472,6 +482,44 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
         return options;
     }
 
+    private WarehouseStockTaskResult semanticStock(AgentExecutionContext execution,
+                                                    WarehouseStockTaskResult result, String query,
+                                                    WarehouseAccessScopeDTO scope, List<String> excluded) {
+        if (semanticSearch == null || !"NO_MATCH".equals(result.status()) || query == null || query.isBlank()) return result;
+        var retrieval = semanticSearch.search(query, execution.runId(), scope);
+        if ("DEGRADED".equals(retrieval.status())) {
+            throw new AgentToolException(AgentErrorCode.RETRIEVAL_DEGRADED, "相似物品检索暂时不可用");
+        }
+        if (!"HITS".equals(retrieval.status())) return result;
+        List<WarehouseStockCandidate> candidates = filterSemanticHits(retrieval.hits(), excluded).stream()
+                .map(hit -> new WarehouseStockCandidate(hit.code(), hit.name(), "")).toList();
+        if (candidates.isEmpty()) return result;
+        return new WarehouseStockTaskResult("CANDIDATES", List.of(), candidates, Instant.now(), false);
+    }
+
+    private WarehouseMovementTaskResult semanticMovements(AgentExecutionContext execution,
+                                                           WarehouseMovementTaskResult result, String query,
+                                                           WarehouseAccessScopeDTO scope, List<String> excluded) {
+        if (semanticSearch == null || !"NO_MATCH".equals(result.status()) || query == null || query.isBlank()) return result;
+        var retrieval = semanticSearch.search(query, execution.runId(), scope);
+        if ("DEGRADED".equals(retrieval.status())) {
+            throw new AgentToolException(AgentErrorCode.RETRIEVAL_DEGRADED, "相似物品检索暂时不可用");
+        }
+        if (!"HITS".equals(retrieval.status())) return result;
+        List<WarehouseStockCandidate> candidates = filterSemanticHits(retrieval.hits(), excluded).stream()
+                .map(hit -> new WarehouseStockCandidate(hit.code(), hit.name(), "")).toList();
+        if (candidates.isEmpty()) return result;
+        return new WarehouseMovementTaskResult("CANDIDATES", List.of(), Instant.now(), false, candidates);
+    }
+
+    private List<WarehouseSearchIndexStore.SearchHit> filterSemanticHits(
+            List<WarehouseSearchIndexStore.SearchHit> hits, List<String> excluded) {
+        if (excluded == null || excluded.isEmpty()) return hits;
+        Set<String> blocked = excluded.stream().map(this::normalizeEvidence).collect(java.util.stream.Collectors.toSet());
+        return hits.stream().filter(hit -> !blocked.contains(normalizeEvidence(hit.code()))
+                && !blocked.contains(normalizeEvidence(hit.name()))).toList();
+    }
+
 
     private boolean isBusinessValueBoundary(String source, int start, int end) {
         return (start == 0 || !isBusinessValueChar(source.charAt(start - 1)))
@@ -564,7 +612,12 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                 }
                 WarehouseStockTaskResult result = queryCurrentStock(itemMentions, effectiveExcluded,
                         selectionPreference, warehouseKeyword, locationKeyword, limit, accessScope);
-                if (itemMentions.size() == 1 && "AUTO_IF_UNIQUE".equals(selectionPreference)) {
+                boolean deterministicNoMatch = "NO_MATCH".equals(result.status());
+                if (itemMentions.size() == 1) {
+                    result = semanticStock(execution, result, itemMentions.get(0), accessScope, effectiveExcluded);
+                }
+                boolean semanticCandidates = deterministicNoMatch && "CANDIDATES".equals(result.status());
+                if (!semanticCandidates && itemMentions.size() == 1 && "AUTO_IF_UNIQUE".equals(selectionPreference)) {
                     result = requeryUniqueCandidate(execution.message(), result,
                             candidateCode -> queryCurrentStock(List.of(candidateCode), List.of(), "AUTO_IF_UNIQUE",
                                     warehouseKeyword, locationKeyword, limit, scope(actor(execution))));
@@ -675,7 +728,12 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                 }
                 WarehouseStockTaskResult result = queryItemLocations(itemMentions, effectiveExcluded,
                         selectionPreference, limit, scope(actor(execution)));
-                if (itemMentions.size() == 1 && "AUTO_IF_UNIQUE".equals(selectionPreference)) {
+                boolean deterministicNoMatch = "NO_MATCH".equals(result.status());
+                if (itemMentions.size() == 1) {
+                    result = semanticStock(execution, result, itemMentions.get(0), accessScope, effectiveExcluded);
+                }
+                boolean semanticCandidates = deterministicNoMatch && "CANDIDATES".equals(result.status());
+                if (!semanticCandidates && itemMentions.size() == 1 && "AUTO_IF_UNIQUE".equals(selectionPreference)) {
                     result = requeryUniqueCandidate(execution.message(), result,
                             candidateCode -> queryItemLocations(List.of(candidateCode), List.of(), "AUTO_IF_UNIQUE",
                                     limit, scope(actor(execution))));
@@ -842,7 +900,12 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
                 WarehouseMovementTaskResult result = queryRecentMovements(recentDays, itemMentions,
                         effectiveExcluded, selectionPreference, warehouseKeyword, locationKeyword,
                         limit, accessScope);
-                if (itemMentions.size() == 1 && "AUTO_IF_UNIQUE".equals(selectionPreference)) {
+                boolean deterministicNoMatch = "NO_MATCH".equals(result.status());
+                if (itemMentions.size() == 1) {
+                    result = semanticMovements(execution, result, itemMentions.get(0), accessScope, effectiveExcluded);
+                }
+                boolean semanticCandidates = deterministicNoMatch && "CANDIDATES".equals(result.status());
+                if (!semanticCandidates && itemMentions.size() == 1 && "AUTO_IF_UNIQUE".equals(selectionPreference)) {
                     result = requeryUniqueCandidate(execution.message(), result,
                             candidateCode -> queryRecentMovements(recentDays, List.of(candidateCode), List.of(),
                                     "AUTO_IF_UNIQUE", warehouseKeyword, locationKeyword, limit, scope(actor(execution))));

@@ -11,6 +11,13 @@ import java.util.List;
 
 @Mapper
 public interface ItemMapper extends BaseMapper<ItemDO> {
+    /** Stable cursor scan used by a derived search index; disabled items are included. */
+    @Select("SELECT id, code, name, base_unit, enabled, version, created_at, updated_at FROM (" +
+            "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at, " +
+            "ROW_NUMBER() OVER (ORDER BY id) AS row_num FROM wh_item WHERE id > #{afterId}) bounded " +
+            "WHERE row_num <= #{limit} ORDER BY id")
+    List<ItemDO> selectProjectionPage(@Param("afterId") long afterId, @Param("limit") int limit);
+
     /** 查询启用物品的联合精确匹配，最多探测指定数量以区分唯一对象和候选。 */
     @Select("SELECT id, code, name, base_unit, enabled, version, created_at, updated_at FROM (" +
             "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at, " +

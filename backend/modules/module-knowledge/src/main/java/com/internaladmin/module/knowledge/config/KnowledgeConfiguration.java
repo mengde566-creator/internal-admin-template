@@ -1,6 +1,7 @@
 package com.internaladmin.module.knowledge.config;
 
 import com.internaladmin.module.knowledge.api.AiProperties;
+import com.internaladmin.module.knowledge.api.AiSearchInfrastructure;
 import com.internaladmin.module.knowledge.service.DimensionCheckingEmbeddingModel;
 import liquibase.integration.spring.SpringLiquibase;
 import org.springframework.ai.embedding.EmbeddingModel;
@@ -94,6 +95,19 @@ public class KnowledgeConfiguration {
                 .maxRetries(0)
                 .build();
         return new DimensionCheckingEmbeddingModel(new OpenAiEmbeddingModel(options), settings.getDimensions());
+    }
+
+    /** Public, bean-name-independent bridge for AI-owned derived indexes. */
+    @Bean
+    @DependsOn("enabledAiConfiguration")
+    public AiSearchInfrastructure aiSearchInfrastructure(
+            @Qualifier("knowledgeDataSource") DataSource dataSource,
+            @Qualifier("knowledgeJdbcTemplate") JdbcTemplate jdbcTemplate,
+            @Qualifier("knowledgeEmbeddingModel") EmbeddingModel embeddingModel,
+            AiProperties properties) {
+        AiProperties.Qwen settings = properties.getEmbedding().getQwen();
+        return new AiSearchInfrastructure(dataSource, jdbcTemplate, embeddingModel,
+                settings.getModel(), settings.getDimensions());
     }
 
     @Bean(name = "knowledgeVectorStore")
