@@ -31,7 +31,7 @@ public interface ItemMapper extends BaseMapper<ItemDO> {
             "FROM wh_item WHERE enabled = 1 AND (",
             "LOWER(code) LIKE LOWER(#{containsPattern}) ESCAPE '!'",
             "OR LOWER(name) LIKE LOWER(#{containsPattern}) ESCAPE '!')",
-            ") bounded WHERE row_num > #{offset} AND row_num <= (#{offset} + #{size})",
+            ") bounded WHERE row_num > #{offset} AND row_num &lt;= (#{offset} + #{size})",
             "</script>"})
     List<ItemDO> selectLiteralCandidates(@Param("prefixPattern") String prefixPattern,
                                           @Param("containsPattern") String containsPattern,

@@ -1,0 +1,54 @@
+{
+  "version": "warehouse-recall-baseline-v1",
+  "corpusVersion": "warehouse-recall-v1",
+  "corpusSha256": "f9ada0a004b47d0e480665833188e47779340bfea6eb66a53ba7d149637c18df",
+  "catalogCount": 48,
+  "queryCount": 96,
+  "splits": {"calibration": 64, "holdout": 32},
+  "outcome": "EMBEDDING_EVIDENCE_REQUIRED",
+  "deterministic": {
+    "calibrationRecallAt5": 0.375,
+    "holdoutRecallAt5": 0.375,
+    "zeroCandidateCount": 60,
+    "wrongAutomaticSelection": 0
+  },
+  "evaluationGrid": {
+    "methods": ["similarity", "word_similarity", "strict_word_similarity"],
+    "thresholdMin": 0.2,
+    "thresholdMax": 0.8,
+    "thresholdStep": 0.05,
+    "topK": [3, 5],
+    "candidateCap": 5
+  },
+  "pgTrgm": {
+    "selected": {
+      "method": "similarity",
+      "threshold": 0.45,
+      "topK": 3,
+      "calibration": {
+        "calibrationRecallAt5": 0.719,
+        "holdoutRecallAt5": 0.625,
+        "calibrationNegativeZeroRate": 1.0,
+        "holdoutNegativeZeroRate": 1.0,
+        "calibrationP95Candidates": 3
+      }
+    },
+    "cascade": {
+      "holdoutRecallAt5": 0.656,
+      "typo-replacementHoldoutRecallAt5": 1.0,
+      "colloquialHoldoutRecallAt5": 0.0,
+      "usage-descriptionHoldoutRecallAt5": 0.0,
+      "holdoutNegativeZeroRate": 1.0,
+      "wrongAutomaticSelection": 0,
+      "holdoutP95Candidates": 3,
+      "candidateCap": 5
+    },
+    "container": {
+      "image": "pgvector/pgvector:0.8.6-pg17-bookworm",
+      "portType": "random-loopback",
+      "tmpfs": true,
+      "persistentVolume": false
+    }
+  },
+  "pgvector": {"status": "NOT_EVALUATED"}
+}
