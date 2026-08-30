@@ -1,6 +1,7 @@
 package com.internaladmin.module.agent.service;
 
 import com.internaladmin.module.agent.api.AgentRunContext;
+import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -18,25 +19,26 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                    String messageId, String taskId, long taskRevision,
                                    ToolOutcomeLedger outcomes,
                                    AtomicBoolean clarificationProduced,
-                                   AtomicReference<List<TrustedItemReference>> trustedItemsRef) {
+                                   AtomicReference<List<TrustedItemReference>> trustedItemsRef,
+                                   KnowledgeState knowledgeState) {
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter) {
         this(actor, runId, message, toolCardEmitter, new AtomicBoolean(), new AtomicLong(),
-                java.util.UUID.randomUUID().toString(), null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()));
+                java.util.UUID.randomUUID().toString(), null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new KnowledgeState());
     }
 
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
                                  AtomicLong eventSequence, String messageId) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()));
+                null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new KnowledgeState());
     }
 
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
                                  AtomicLong eventSequence, String messageId, String taskId, long taskRevision) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()));
+                taskId, taskRevision, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new KnowledgeState());
     }
 
     /** Constructor used by the HTTP callback to share the trusted clarification marker. */
@@ -45,7 +47,17 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                  AtomicLong eventSequence, String messageId, String taskId, long taskRevision,
                                  AtomicBoolean clarificationProduced) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, new ToolOutcomeLedger(), clarificationProduced, new AtomicReference<>(List.of()));
+                taskId, taskRevision, new ToolOutcomeLedger(), clarificationProduced, new AtomicReference<>(List.of()), new KnowledgeState());
+    }
+
+    /** Compatibility constructor retained for adapter fixtures that carry mutable state explicitly. */
+    public AgentExecutionContext(AgentRunContext actor, String runId, String message,
+                                 Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
+                                 AtomicLong eventSequence, String messageId, String taskId, long taskRevision,
+                                 ToolOutcomeLedger outcomes, AtomicBoolean clarificationProduced,
+                                 AtomicReference<List<TrustedItemReference>> trustedItemsRef) {
+        this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
+                taskId, taskRevision, outcomes, clarificationProduced, trustedItemsRef, new KnowledgeState());
     }
 
     public void setTrustedItemReferences(List<TrustedItemReference> references) {
@@ -148,6 +160,64 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
 
     public boolean hasClarificationProduced() {
         return clarificationProduced.get();
+    }
+
+    /** Reserve the single knowledge lookup allowed for this run. */
+    public boolean beginKnowledgeCall() {
+        return knowledgeState.begin();
+    }
+
+    public boolean knowledgeCallAttempted() {
+        return knowledgeState.attempted();
+    }
+
+    public void recordKnowledgeResult(KnowledgeQueryApi.Result result) {
+        knowledgeState.record(result);
+    }
+
+    public void recordKnowledgeCard(String cardJson) {
+        knowledgeState.recordCard(cardJson);
+    }
+
+    public String knowledgeCardJson() {
+        return knowledgeState.cardJson();
+    }
+
+    public KnowledgeQueryApi.Result knowledgeResult() {
+        return knowledgeState.result();
+    }
+
+    public boolean hasKnowledgeResult() {
+        return knowledgeState.result() != null;
+    }
+
+    /** A server-accepted knowledge call locks the run before its provider result returns. */
+    public boolean knowledgeOnlyLocked() {
+        return knowledgeCallAttempted();
+    }
+
+    public static final class KnowledgeState {
+        private boolean attempted;
+        private KnowledgeQueryApi.Result result;
+        private String cardJson;
+
+        public synchronized boolean begin() {
+            if (attempted) return false;
+            attempted = true;
+            return true;
+        }
+
+        public synchronized boolean attempted() { return attempted; }
+
+        public synchronized void record(KnowledgeQueryApi.Result value) {
+            result = value;
+        }
+
+        public synchronized KnowledgeQueryApi.Result result() { return result; }
+
+        public synchronized void recordCard(String value) { cardJson = value; }
+
+        public synchronized String cardJson() { return cardJson; }
     }
 
     public static final class ToolOutcomeLedger {

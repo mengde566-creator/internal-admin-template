@@ -1054,6 +1054,34 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        KnowledgeAnswerDTO: {
+            cardId?: string;
+            cardType?: string;
+            citations?: components["schemas"]["KnowledgeCitationDTO"][];
+            outcome?: string;
+            /** Format: date-time */
+            queriedAt?: string;
+            /** Format: int32 */
+            resultCount?: number;
+            /** Format: int64 */
+            revision?: number;
+            truncated?: boolean;
+        };
+        KnowledgeCitationDTO: {
+            /** Format: int32 */
+            chunkNo?: number;
+            documentCode?: string;
+            excerpt?: string;
+            /** Format: date-time */
+            indexedAt?: string;
+            section?: string;
+            sourceRef?: string;
+            synthetic?: boolean;
+            title?: string;
+            versionCode?: string;
+            /** Format: date-time */
+            versionUpdatedAt?: string;
+        };
         LocationCreateDTO: {
             code: string;
             name: string;
@@ -1084,6 +1112,7 @@ export interface components {
             content?: string;
             /** Format: date-time */
             createdAt?: string;
+            knowledgeAnswer?: components["schemas"]["KnowledgeAnswerDTO"];
             messageId?: string;
             retryAvailable?: boolean;
             role?: string;

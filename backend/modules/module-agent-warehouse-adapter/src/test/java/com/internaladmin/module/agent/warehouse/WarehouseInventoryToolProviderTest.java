@@ -1,12 +1,16 @@
 package com.internaladmin.module.agent.warehouse;
 
 import com.internaladmin.module.agent.api.AgentRunContext;
+import com.internaladmin.module.agent.api.AgentErrorCode;
+import com.internaladmin.module.agent.api.AgentToolException;
+import com.internaladmin.module.agent.knowledge.KnowledgeToolProvider;
 import com.internaladmin.module.agent.service.AgentConversationService;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
 import com.internaladmin.module.agent.store.AgentStore;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.ai.observability.service.JdbcAiObservationRecorder;
 import com.internaladmin.module.knowledge.api.AiProperties;
+import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
 import com.internaladmin.module.iam.api.IamActorApi;
 import com.internaladmin.module.iam.api.IamActorDTO;
 import com.internaladmin.module.iam.api.PermissionCodes;
@@ -36,6 +40,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
@@ -43,6 +48,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -57,6 +64,113 @@ class WarehouseInventoryToolProviderTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void knowledgeLookupLocksRealWarehouseCallbackBeforeIamOrBusinessApi() {
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        Instant queriedAt = Instant.parse("2026-08-30T00:00:00Z");
+        KnowledgeQueryApi.Citation citation = new KnowledgeQueryApi.Citation(
+                "warehouse-rules", "仓储规则", "v2", "出库校验", 1,
+                "出库前检查可用余额。", 0.9, true,
+                "knowledge://warehouse-rules/v2#1", queriedAt, queriedAt);
+        when(knowledge.query("仓储制度", 1))
+                .thenReturn(KnowledgeQueryApi.Result.found(List.of(citation), queriedAt, false));
+
+        List<String> cards = new ArrayList<>();
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-knowledge-lock", "仓储制度", cards::add);
+        ToolContext toolContext = new ToolContext(Map.of("agent.execution", execution));
+        String knowledgeOutput = new KnowledgeToolProvider(knowledge, mock(AiObservationRecorder.class))
+                .getToolCallbacks()[0].call("{\"queryText\":\"仓储制度\"}", toolContext);
+
+        assertTrue(knowledgeOutput.contains("\"code\":\"SUCCESS\""));
+        assertNotNull(execution.knowledgeCardJson());
+        assertEquals(1, cards.size());
+        assertTrue(cards.getFirst().contains("knowledge-answer"));
+
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        ToolCallback stock = new WarehouseInventoryToolProvider(
+                warehouse, iam, JsonMapper.builder().build(), mock(AiObservationRecorder.class))
+                .getToolCallbacks()[0];
+        assertThrows(AgentToolException.class, () -> stock.call("{}", toolContext));
+        verifyNoInteractions(iam, warehouse);
+        assertNotNull(execution.knowledgeCardJson(), "知识卡片必须在闭锁后保留");
+    }
+
+    @Test
+    void acceptedKnowledgeCallLocksWarehouseBeforeKnowledgeQueryReturns() throws Exception {
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        CountDownLatch queryEntered = new CountDownLatch(1);
+        CountDownLatch releaseQuery = new CountDownLatch(1);
+        Instant queriedAt = Instant.parse("2026-08-30T00:00:00Z");
+        when(knowledge.query("仓储制度", 1)).thenAnswer(invocation -> {
+            queryEntered.countDown();
+            assertTrue(releaseQuery.await(5, TimeUnit.SECONDS));
+            return KnowledgeQueryApi.Result.noEvidence(queriedAt);
+        });
+
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-knowledge-in-flight", "仓储制度", ignored -> { });
+        ToolContext toolContext = new ToolContext(Map.of("agent.execution", execution));
+        ToolCallback knowledgeCallback = new KnowledgeToolProvider(knowledge).getToolCallbacks()[0];
+        Thread knowledgeThread = new Thread(() -> knowledgeCallback.call(
+                "{\"queryText\":\"仓储制度\"}", toolContext));
+        knowledgeThread.start();
+
+        assertTrue(queryEntered.await(5, TimeUnit.SECONDS), "KnowledgeQueryApi应已进入阻塞窗口");
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        ToolCallback stock = new WarehouseInventoryToolProvider(
+                warehouse, iam, JsonMapper.builder().build(), mock(AiObservationRecorder.class))
+                .getToolCallbacks()[0];
+
+        AgentToolException rejected = assertThrows(AgentToolException.class,
+                () -> stock.call("{}", toolContext));
+        assertEquals(AgentErrorCode.BUSINESS_REJECTED, rejected.getErrorCode());
+        verifyNoInteractions(iam, warehouse);
+
+        releaseQuery.countDown();
+        knowledgeThread.join(5_000);
+        assertFalse(knowledgeThread.isAlive(), "知识查询线程应在释放后结束");
+        verify(knowledge).query("仓储制度", 1);
+    }
+
+    @Test
+    void rejectedKnowledgeCallDoesNotLockOrdinaryWarehouseQuery() throws Exception {
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("NO_DATA", List.of(), List.of(), Instant.now()));
+        WarehouseInventoryToolProvider provider = provider(warehouse, iam);
+
+        AgentExecutionContext invalid = context(new AtomicReference<>());
+        String invalidKnowledge = new KnowledgeToolProvider(knowledge).getToolCallbacks()[0]
+                .call("{\"queryText\":\"改写问题\"}", new ToolContext(Map.of("agent.execution", invalid)));
+        assertTrue(invalidKnowledge.contains("AI_PARAMETER_INVALID"));
+        String stockResult = provider.getToolCallbacks()[0].call(itemInput("测试物品"),
+                new ToolContext(Map.of("agent.execution", invalid)));
+        assertTrue(stockResult.contains("\"outcome\":\"NO_DATA\""));
+
+        IamActorDTO deniedActor = new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT, List.of());
+        IamActorApi deniedIam = mock(IamActorApi.class);
+        when(deniedIam.resolve(7L)).thenReturn(deniedActor);
+        WarehouseInventoryToolProvider deniedProvider = provider(warehouse, deniedIam);
+        AgentExecutionContext denied = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of()), "run-knowledge-denied", "制度", ignored -> { });
+        String deniedKnowledge = new KnowledgeToolProvider(knowledge).getToolCallbacks()[0]
+                .call("{\"queryText\":\"制度\"}", new ToolContext(Map.of("agent.execution", denied)));
+        assertTrue(deniedKnowledge.contains("AI_TOOL_FORBIDDEN"));
+        String warehouseDenied = deniedProvider.getToolCallbacks()[0].call(itemInput("制度"),
+                new ToolContext(Map.of("agent.execution", denied)));
+        assertTrue(warehouseDenied.contains("AI_TOOL_FORBIDDEN"));
+        verify(knowledge, never()).query(any(), anyInt());
+        verify(warehouse, times(1)).queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any());
+    }
 
     @Test
     void registersOnlyBusinessKeywordToolsWithStrictSchemas() {

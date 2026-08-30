@@ -50,6 +50,7 @@ class AgentEnabledConfigurationTest {
                     DeepSeekChatOptions options = (DeepSeekChatOptions) context.getBean(ChatModel.class).getOptions();
                     assertThat(options.getResponseFormat()).isNotNull();
                     assertThat(options.getResponseFormat().getType()).isEqualTo(ResponseFormat.Type.JSON_OBJECT);
+                    assertThat(options.getTemperature()).isEqualTo(0.0);
                     assertThat(options.getModel()).isEqualTo("deepseek-v4-flash");
                 });
     }

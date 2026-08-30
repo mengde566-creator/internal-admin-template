@@ -2,7 +2,7 @@ import type { AgentSseEvent } from './agentApi'
 
 export type SseParserEvent = { name: string; data: string }
 
-const KNOWN_EVENTS = new Set(['run.started', 'card.replace', 'message.completed', 'run.failed', 'run.completed'])
+const KNOWN_EVENTS = new Set(['run.started', 'citation.added', 'card.replace', 'message.completed', 'run.failed', 'run.completed'])
 const TERMINAL_EVENTS = new Set(['run.failed', 'run.completed'])
 
 export function createSseParser(onEvent: (event: SseParserEvent) => void) {

@@ -3,6 +3,7 @@ package com.internaladmin.module.ai.observability.service;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.sql.Timestamp;
@@ -16,7 +17,7 @@ import java.util.UUID;
 public class JdbcAiObservationRecorder implements AiObservationRecorder {
     private final JdbcTemplate jdbc;
 
-    public JdbcAiObservationRecorder(JdbcTemplate jdbc) {
+    public JdbcAiObservationRecorder(@Qualifier("jdbcTemplate") JdbcTemplate jdbc) {
         this.jdbc = jdbc;
     }
 

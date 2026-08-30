@@ -42,8 +42,11 @@ public class AgentRuntimeConfiguration {
                 .toolCallbackResolver(new StaticToolCallbackResolver(Arrays.asList(callbacks)))
                 .toolExecutionExceptionProcessor(error -> {
                     String code = toolErrorCode(error);
+                    String message = AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode().equals(code)
+                            ? AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getMessage()
+                            : "库存查询暂时未完成";
                     return "{\"success\":false,\"code\":\"" + code
-                            + "\",\"message\":\"库存查询暂时未完成\",\"data\":null}";
+                            + "\",\"message\":\"" + message + "\",\"data\":null}";
                 })
                 .build();
     }

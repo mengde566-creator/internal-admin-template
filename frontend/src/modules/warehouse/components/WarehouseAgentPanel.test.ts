@@ -1447,6 +1447,182 @@ describe('仓储助手可见交互', () => {
     expect(wrapper.emitted('toggle-collapse')).toBeTruthy()
   })
 
+  it('知识问答按受信 citation.added 与 knowledge-answer 卡渲染一次，且不提供仓储路由', async () => {
+    const citation = {
+      documentCode: 'warehouse-rules', title: '仓储规则', versionCode: 'v2', section: '出库校验',
+      chunkNo: 2, excerpt: '出库前检查可用余额，禁止负库存。', synthetic: true,
+      sourceRef: 'knowledge://warehouse-rules/v2#2', versionUpdatedAt: '2026-08-29T00:00:00Z', indexedAt: '2026-08-29T00:00:01Z'
+    }
+    const card = {
+      cardId: 'knowledge-run-1', revision: 0, cardType: 'knowledge-answer', outcome: 'ANSWERED',
+      queriedAt: '2026-08-30T00:00:00Z', resultCount: 1, truncated: false, citations: [citation]
+    }
+    const streamEvent = (type: string, sequence: number, payload: Record<string, unknown>) => ({
+      version: '1', eventId: `knowledge-${sequence}`, sequence, runId: 'knowledge-run-1',
+      conversationId: 'conversation-1', messageId: 'knowledge-message-1', type, payload
+    })
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(streamEvent('run.started', 1, {}))
+      onEvent(streamEvent('citation.added', 2, citation))
+      onEvent(streamEvent('card.replace', 3, card))
+      onEvent(streamEvent('card.replace', 4, card))
+      onEvent(streamEvent('message.completed', 5, completedMessage('出库前需要先检查可用余额。')))
+      onEvent(streamEvent('run.completed', 6, { status: 'SUCCESS' }))
+    })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('错误的库存流水可以直接改掉吗？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    const cardNode = wrapper.get('[data-testid="stock-summary-card"]')
+    expect(wrapper.findAll('[data-testid="stock-summary-card"]')).toHaveLength(1)
+    expect(cardNode.text()).toContain('知识依据')
+    expect(cardNode.text()).toContain('仓储规则')
+    expect(cardNode.text()).toContain('v2')
+    expect(cardNode.text()).toContain('出库校验')
+    expect(cardNode.text()).toContain('合成资料')
+    expect(cardNode.text()).toContain('禁止负库存')
+    expect(cardNode.findAll('.text-button').some((button) => /查看物品|查看库存|打开/.test(button.text()))).toBe(false)
+  })
+
+  it('重新打开历史对话恢复同一条知识依据卡，不依赖实时SSE内存', async () => {
+    api.fetchConversationMessages.mockResolvedValueOnce({
+      records: [
+        { messageId: 'history-user', runId: 'history-run', role: 'USER', state: 'COMPLETE', content: '查询位置时需要提交数据库ID吗？', createdAt: '2026-08-30T00:00:00Z' },
+        {
+          messageId: 'history-assistant', runId: 'history-run', role: 'ASSISTANT', state: 'PARTIAL',
+          content: '已找到相关知识依据，但这次没有生成完整说明。你可以先查看依据，稍后重试。', createdAt: '2026-08-30T00:00:01Z',
+          knowledgeAnswer: {
+            cardId: 'history-knowledge-card', revision: 0, cardType: 'knowledge-answer', outcome: 'DEGRADED',
+            queriedAt: '2026-08-30T00:00:00Z', resultCount: 1, truncated: false, citations: [{
+              documentCode: 'warehouse-codes', title: '仓库与库位编码', versionCode: 'v2', section: '业务编码展示', chunkNo: 1,
+              excerpt: '查询和展示使用业务编码，不要求内部编号。', synthetic: true,
+              sourceRef: 'knowledge://warehouse-codes/v2#1', versionUpdatedAt: '2026-08-29T00:00:00Z', indexedAt: '2026-08-29T00:00:01Z'
+            }]
+          }
+        }
+      ], total: 2, page: 1, size: 50, activeClarification: null
+    })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('[aria-label="打开历史对话"]').trigger('click')
+    await wrapper.get('.conversation-item').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.agent-message--assistant').text()).toContain('已找到相关知识依据，但这次没有生成完整说明。你可以先查看依据，稍后重试。')
+    const cards = wrapper.findAll('[data-testid="stock-summary-card"]')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].text()).toContain('仓库与库位编码')
+    expect(cards[0].text()).toContain('业务编码展示')
+    expect(cards[0].text()).toContain('合成资料')
+    expect(cards[0].text()).toContain('已找到依据，但回答未完整生成。')
+    expect(cards[0].text()).not.toContain('知识库暂时不可用')
+    expect(cards[0].findAll('.text-button').some((button) => /查看物品|查看库存|打开/.test(button.text()))).toBe(false)
+  })
+
+  it('知识依据已找到但回答失败时显示PARTIAL并保留引用，而不是伪装知识库不可用', async () => {
+    const citation = {
+      documentCode: 'warehouse-rules', title: '仓储规则', versionCode: 'v2', section: '出库校验',
+      chunkNo: 1, excerpt: '出库前检查可用余额。', synthetic: true,
+      sourceRef: 'knowledge://warehouse-rules/v2#1', versionUpdatedAt: '2026-08-30T00:00:00Z', indexedAt: '2026-08-30T00:00:01Z'
+    }
+    const answered = {
+      cardId: 'knowledge-partial', revision: 0, cardType: 'knowledge-answer', outcome: 'ANSWERED',
+      queriedAt: '2026-08-30T00:00:00Z', resultCount: 1, truncated: false, citations: [citation]
+    }
+    const partial = { ...answered, outcome: 'DEGRADED' }
+    const streamEvent = (type: string, sequence: number, payload: Record<string, unknown>) => ({
+      version: '1', eventId: `partial-${sequence}`, sequence, runId: 'knowledge-partial',
+      conversationId: 'conversation-1', messageId: 'knowledge-partial-message', type, payload
+    })
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(streamEvent('run.started', 1, {}))
+      onEvent(streamEvent('citation.added', 2, citation))
+      onEvent(streamEvent('card.replace', 3, answered))
+      onEvent(streamEvent('card.replace', 4, partial))
+      onEvent(streamEvent('message.completed', 5, {
+        success: false,
+        code: 'AI_MODEL_UNAVAILABLE',
+        message: '已找到相关知识依据，但这次没有生成完整说明。你可以先查看依据，稍后重试。',
+        data: null
+      }))
+      onEvent(streamEvent('run.completed', 6, { status: 'PARTIAL' }))
+    })
+
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('错误的库存流水可以直接改掉吗？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已找到相关知识依据，但这次没有生成完整说明。你可以先查看依据，稍后重试。')
+    expect(wrapper.text()).toContain('已找到依据，但回答未完整生成。')
+    expect(wrapper.text()).not.toContain('知识库暂时不可用')
+    expect(wrapper.findAll('.knowledge-citation')).toHaveLength(1)
+  })
+
+  it('NO_EVIDENCE 与 DEGRADED 的知识卡文案可区分且不产生引用', async () => {
+    const noEvidence = {
+      cardId: 'knowledge-none', revision: 0, cardType: 'knowledge-answer', outcome: 'NO_EVIDENCE',
+      queriedAt: '2026-08-30T00:00:00Z', resultCount: 0, truncated: false, citations: []
+    }
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('run.started', 1))
+      onEvent(event('card.replace', 2, noEvidence))
+      onEvent(event('message.completed', 3, completedMessage('没有找到可引用依据，请换一种说法或补充要查询的制度范围。')))
+      onEvent(event('run.completed', 4, { status: 'SUCCESS' }))
+    })
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('今天午餐吃什么？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('没有找到可引用依据')
+    expect(wrapper.find('.knowledge-citation').exists()).toBe(false)
+    wrapper.unmount()
+
+    const degraded = {
+      cardId: 'knowledge-degraded', revision: 0, cardType: 'knowledge-answer', outcome: 'DEGRADED',
+      queriedAt: '2026-08-30T00:00:00Z', resultCount: 0, truncated: false, citations: []
+    }
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('run.started', 1))
+      onEvent(event('card.replace', 2, degraded))
+      onEvent(event('message.completed', 3, { success: false, code: 'AI_KNOWLEDGE_UNAVAILABLE', message: '知识库暂时不可用，请稍后重试。', data: null }))
+      onEvent(event('run.failed', 4, { code: 'AI_KNOWLEDGE_UNAVAILABLE' }))
+    })
+    const unavailable = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await unavailable.get('textarea').setValue('助手能不能直接帮忙补货？')
+    await unavailable.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(unavailable.text()).toContain('知识库暂时不可用')
+    expect(unavailable.find('.knowledge-citation').exists()).toBe(false)
+  })
+
+  it('拒绝已冻结契约之外的PARTIAL知识卡枚举', async () => {
+    const invalidCard = {
+      cardId: 'knowledge-invalid-partial', revision: 0, cardType: 'knowledge-answer', outcome: 'PARTIAL',
+      queriedAt: '2026-08-30T00:00:00Z', resultCount: 0, truncated: false, citations: []
+    }
+    api.runAgent.mockImplementationOnce(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
+      onEvent(event('run.started', 1))
+      onEvent(event('card.replace', 2, invalidCard))
+      onEvent(event('message.completed', 3, completedMessage('回答已完成。')))
+      onEvent(event('run.completed', 4, { status: 'SUCCESS' }))
+    })
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('查询制度')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="stock-summary-card"]').exists()).toBe(false)
+  })
+
   it('生命周期卸载时正确移除全部 pointer 监听器并中止运行中的请求', async () => {
     const removeEventListenerSpy = vi.spyOn(window, 'removeEventListener')
     const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED', workspaceWidth: 1400 }, global: { stubs } })

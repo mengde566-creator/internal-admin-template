@@ -15,7 +15,31 @@ export type AiCapabilities = {
 
 export type Conversation = Required<ConversationSchema>
 export type ConversationPage = Required<Omit<ConversationPageSchema, 'records'>> & { records: Conversation[] }
-export type Message = Required<NonNullable<NonNullable<MessagePageSchema['records']>[number]>>
+export type KnowledgeCitation = {
+  documentCode: string
+  title: string
+  versionCode: string
+  section: string
+  chunkNo: number
+  excerpt: string
+  synthetic: boolean
+  sourceRef: string
+  versionUpdatedAt: string
+  indexedAt: string
+}
+export type KnowledgeAnswer = {
+  cardId: string
+  revision: number
+  cardType: 'knowledge-answer'
+  outcome: 'ANSWERED' | 'NO_EVIDENCE' | 'DEGRADED'
+  queriedAt: string
+  resultCount: number
+  truncated: boolean
+  citations: KnowledgeCitation[]
+}
+export type Message = Omit<Required<NonNullable<NonNullable<MessagePageSchema['records']>[number]>>, 'knowledgeAnswer'> & {
+  knowledgeAnswer?: KnowledgeAnswer | null
+}
 type ClarificationTaskSchema = NonNullable<MessagePageSchema['activeClarification']>
 export type ClarificationOption = Required<NonNullable<ClarificationTaskSchema['options']>[number]>
 export type ClarificationTask = {
@@ -80,6 +104,35 @@ function normalisePage<T>(data: { records?: T[]; total?: number; page?: number; 
   }
 }
 
+function normaliseKnowledgeAnswer(value: unknown): KnowledgeAnswer | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  if (raw.cardType !== 'knowledge-answer' || typeof raw.cardId !== 'string'
+    || typeof raw.revision !== 'number' || !['ANSWERED', 'NO_EVIDENCE', 'DEGRADED'].includes(String(raw.outcome))) return null
+  const citations = Array.isArray(raw.citations) ? raw.citations.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object')).map((item) => ({
+    documentCode: typeof item.documentCode === 'string' ? item.documentCode : '',
+    title: typeof item.title === 'string' ? item.title : '',
+    versionCode: typeof item.versionCode === 'string' ? item.versionCode : '',
+    section: typeof item.section === 'string' ? item.section : '',
+    chunkNo: typeof item.chunkNo === 'number' ? item.chunkNo : 0,
+    excerpt: typeof item.excerpt === 'string' ? item.excerpt : '',
+    synthetic: item.synthetic === true,
+    sourceRef: typeof item.sourceRef === 'string' ? item.sourceRef : '',
+    versionUpdatedAt: typeof item.versionUpdatedAt === 'string' ? item.versionUpdatedAt : '',
+    indexedAt: typeof item.indexedAt === 'string' ? item.indexedAt : ''
+  })) : []
+  return {
+    cardId: raw.cardId,
+    revision: raw.revision,
+    cardType: 'knowledge-answer',
+    outcome: raw.outcome as KnowledgeAnswer['outcome'],
+    queriedAt: typeof raw.queriedAt === 'string' ? raw.queriedAt : '',
+    resultCount: typeof raw.resultCount === 'number' ? raw.resultCount : citations.length,
+    truncated: raw.truncated === true,
+    citations
+  }
+}
+
 export async function fetchAgentCapabilities(): Promise<AiCapabilities> {
   const response = await http.get<ApiResponse<AiCapabilitiesSchema>>('/api/ai/capabilities')
   return normaliseCapabilities(response.data.data)
@@ -132,7 +185,8 @@ export async function fetchConversationMessages(conversationId: string, page = 1
       state: message.state ?? '',
       content: message.content ?? '',
       createdAt: message.createdAt ?? '',
-      retryAvailable: message.retryAvailable === true
+      retryAvailable: message.retryAvailable === true,
+      knowledgeAnswer: normaliseKnowledgeAnswer((message as typeof message & { knowledgeAnswer?: unknown }).knowledgeAnswer)
     }))
   }
 }

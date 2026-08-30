@@ -4,25 +4,28 @@
 
 SLICE-00 已通过 Gate A、Gate B，提供 Agent 默认关闭、DeepSeek 纵向链、Session+CSRF SSE、History、运行终态/有界重试和最小观测技术基线。
 
-SLICE-01 已完成服务端 Conversation/History、scope隔离短期Memory和仓储 A+B 可见主链：Conversation ID 由服务端生成，提供本人有界分页与稳定顺序 History，Run 请求使用 `text`，运行必须引用已存在且归属当前用户的 Conversation；仓储助手可在 DOCKED/COMPACT/DRAWER 中创建/选择对话、流式显示文字与受控仓储卡片。当前模型入口已覆盖当前库存、物品所在位置、库位内容与近期变化四类只读任务，使用持久化Task、受控澄清选择/恢复/失败重试、统一结果元数据、明确SSE事件信封、完整成功边界和迁移归属；完整Memory之外的后续分片能力仍未实现。
+SLICE-01～03 已完成 Conversation/History、scope隔离短期Memory和四类仓储只读任务，使用持久化Task、受控澄清、部分成功和失败重试。SLICE-04B 已完成纯知识问答：制度与编码问题经 `KnowledgeQueryApi` 检索当前生效资料，引用由服务端生成并通过 `citation.added`、`knowledge-answer` 卡片和 History 恢复；零证据与知识不可用使用不同结果，知识查询被受理后同一 Run 禁止进入 Warehouse 事实回调。知识与实时仓储混合查询仍属于 SLICE-04C。
 
 ## 2. 特有约束
 
 - Agent 默认关闭；关闭时不创建 ChatModel、EmbeddingModel、知识数据源或对话入口。
-- 开启时模型固定 `deepseek-v4-flash`，Spring AI 内建 RetryTemplate 最大尝试为 1；普通流式探针不把隐藏推理写入任何项目数据。
+- 开启时模型固定 `deepseek-v4-flash`，Spring AI 内建 RetryTemplate 最大尝试为 1，请求温度固定为 `0.0`；普通流式探针不把隐藏推理写入任何项目数据。
 - `app.ai.*` 由唯一强类型 `AiProperties` 绑定并由启动校验器一次性校验。
+- `knowledge_search` 只接受规范化后的当前用户原问题，服务端固定检索数量；模型不能提交阈值、版本、内部编号或自行生成引用。
 
 ## 3. 公开与跨模块契约
 
 `GET /api/ai/capabilities` 只返回 `enabled`、`availableAdapters`、`uiModes`、`features`；关闭时 `enabled=false` 且其余字段为空数组，开启后仅对具有 `warehouse:read` 的当前 Session 返回 `warehouse`、三种 UI 模式和本阶段已实现特性，其余已认证用户的能力数组为空。不返回 Provider、模型、地址、密钥或权限集合。
 
+History 的 `MessageDTO.knowledgeAnswer` 只承载服务端复核过的 `ANSWERED`、`NO_EVIDENCE` 或 `DEGRADED` 卡片及最多一条合成资料引用；实时引用先发送 `citation.added`，再发送同一消息所属的 `card.replace`。检索分数、内部 ID 和知识数据库字段不进入公共契约。
+
 ## 4. 数据所有权
 
-module-agent 持有 Conversation、Run、Message 和 SSE 编排；运行观测由 module-ai-observability 持有。模型调用仅由显式启用的 Provider Bean 使用。
+module-agent 持有 Conversation、Run、Message、知识卡片 History 字段和 SSE 编排；知识正文与版本事实仍由 module-knowledge 持有，运行观测由 module-ai-observability 持有。模型调用仅由显式启用的 Provider Bean 使用。
 
 ## 5. 依赖与组合
 
-依赖 `module-knowledge` 的公开配置类型和基础 Web 能力；不依赖仓储内部实现，不引入第二 AI 框架或前端运行时。
+依赖 `module-knowledge` 的公开配置类型与 `KnowledgeQueryApi`；不依赖知识内部 Mapper 或仓储内部实现，不引入第二 AI 框架或前端运行时。
 
 ## 6. 装配与裁剪
 
@@ -30,7 +33,7 @@ module-agent 持有 Conversation、Run、Message 和 SSE 编排；运行观测�
 
 ## 7. 风险与验证入口
 
-`AiConfigurationValidatorTest`、`AiCapabilitiesControllerTest`、Agent 运行/协议/并发测试和适配器测试覆盖默认关闭、配置校验、SSE、History、终态、重试、观测与仓储只读 Tool；Gate A、Gate B均已取得模块及本地真实Provider验证。
+`AiConfigurationValidatorTest`、`AiCapabilitiesControllerTest`、Agent 运行/协议/并发测试和适配器测试覆盖默认关闭、配置校验、SSE、History、终态、重试、观测、仓储只读 Tool 和知识后闭锁；`AgentKnowledgeExternalIT` 显式 Gate 已验证真实 DeepSeek、Qwen、本地 Knowledge PG、三条受信引用与零证据链。
 
 ## 8. 素材与许可证
 

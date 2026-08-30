@@ -4,6 +4,10 @@ import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import javax.sql.DataSource;
 import java.io.IOException;
@@ -41,6 +45,26 @@ public class AppDataSourceConfig {
             ensureDataDirectory(url);
         }
         return properties.initializeDataSourceBuilder().build();
+    }
+
+    /**
+     * Expose the business JDBC template explicitly when the knowledge module
+     * contributes a second data source.  Spring Boot's conditional template
+     * auto-configuration backs off in that topology, so relying on an
+     * unqualified JdbcTemplate would otherwise bind agent/observation writes
+     * to the knowledge database.
+     */
+    @Bean(name = "jdbcTemplate")
+    @Primary
+    public JdbcTemplate jdbcTemplate(@Qualifier("dataSource") DataSource dataSource) {
+        return new JdbcTemplate(dataSource);
+    }
+
+    /** Keep the default @Transactional boundary on the business data source. */
+    @Bean(name = "transactionManager")
+    @Primary
+    public PlatformTransactionManager transactionManager(@Qualifier("dataSource") DataSource dataSource) {
+        return new DataSourceTransactionManager(dataSource);
     }
 
     /**

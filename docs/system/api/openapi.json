@@ -1088,6 +1088,79 @@
         ],
         "type": "object"
       },
+      "KnowledgeAnswerDTO": {
+        "properties": {
+          "cardId": {
+            "type": "string"
+          },
+          "cardType": {
+            "type": "string"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeCitationDTO"
+            },
+            "type": "array"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "queriedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "resultCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "KnowledgeCitationDTO": {
+        "properties": {
+          "chunkNo": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "documentCode": {
+            "type": "string"
+          },
+          "excerpt": {
+            "type": "string"
+          },
+          "indexedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "section": {
+            "type": "string"
+          },
+          "sourceRef": {
+            "type": "string"
+          },
+          "synthetic": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "versionCode": {
+            "type": "string"
+          },
+          "versionUpdatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "LocationCreateDTO": {
         "properties": {
           "code": {
@@ -1190,6 +1263,9 @@
           "createdAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "knowledgeAnswer": {
+            "$ref": "#/components/schemas/KnowledgeAnswerDTO"
           },
           "messageId": {
             "type": "string"

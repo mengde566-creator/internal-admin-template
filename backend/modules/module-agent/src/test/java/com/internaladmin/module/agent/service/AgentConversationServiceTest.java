@@ -6,6 +6,7 @@ import com.internaladmin.module.agent.store.AgentStore;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.knowledge.api.AiProperties;
+import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -228,7 +229,12 @@ class AgentConversationServiceTest {
         assertEnvelope(events);
         verify(store).completeSuccess(eq("c-1"), eq("run-1"), anyString(), eq("库存 1.2500"),
                 eq(actor.scopeFingerprint()), anyLong(), eq(observations));
-        verify(request).options(any(DeepSeekChatOptions.Builder.class));
+        var optionsCaptor = ArgumentCaptor.forClass(DeepSeekChatOptions.Builder.class);
+        verify(request).options(optionsCaptor.capture());
+        DeepSeekChatOptions requestOptions = optionsCaptor.getValue().build();
+        assertEquals(0.0, requestOptions.getTemperature());
+        assertEquals(org.springframework.ai.deepseek.api.ResponseFormat.Type.JSON_OBJECT,
+                requestOptions.getResponseFormat().getType());
         InOrder observationOrder = inOrder(observations);
         observationOrder.verify(observations).recordAttempt("run-1", "MODEL", "STARTED", 1, 0, null, null, null);
         observationOrder.verify(observations).recordAttempt(eq("run-1"), eq("MODEL"), eq("SUCCEEDED"), eq(1), anyLong(), isNull(), isNull(), isNull());
@@ -467,6 +473,15 @@ class AgentConversationServiceTest {
         verify(request, atLeast(2)).user(correctionPrompt.capture());
         assertTrue(correctionPrompt.getAllValues().stream().anyMatch(value -> value.contains("库存已查询")));
         assertTrue(correctionPrompt.getAllValues().stream().noneMatch(value -> value.contains("上一条回复")));
+        var optionsCaptor = ArgumentCaptor.forClass(DeepSeekChatOptions.Builder.class);
+        verify(request, times(2)).options(optionsCaptor.capture());
+        assertEquals(2, optionsCaptor.getAllValues().size());
+        optionsCaptor.getAllValues().forEach(builder -> {
+            DeepSeekChatOptions options = builder.build();
+            assertEquals(0.0, options.getTemperature());
+            assertEquals(org.springframework.ai.deepseek.api.ResponseFormat.Type.JSON_OBJECT,
+                    options.getResponseFormat().getType());
+        });
     }
 
     @Test
@@ -580,6 +595,123 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void noEvidenceKnowledgeOutcomeUsesServerMessageAndCompletesWithoutCorrection() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"模型常识\",\"data\":null}"));
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                nullable(String.class), eq(0L), nullable(String.class), eq(false), eq(observations), anyString())).thenReturn(true);
+
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext execution = new AgentExecutionContext(actor, "run-knowledge-none", "今天午餐吃什么？", ignored -> { });
+        execution.recordKnowledgeResult(KnowledgeQueryApi.Result.noEvidence(java.time.Instant.parse("2026-08-30T00:00:00Z")));
+        execution.recordKnowledgeCard("{\"cardId\":\"knowledge-run-knowledge-none\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"NO_EVIDENCE\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":0,\"truncated\":false,\"citations\":[]}");
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-knowledge-none", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("message.completed")
+                && event.data().contains("没有找到可引用依据")));
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("run.completed")
+                && event.data().contains("SUCCESS")));
+        verify(request, never()).call();
+        verify(store).completeSuccess(anyString(), eq("run-knowledge-none"), anyString(),
+                contains("没有找到可引用依据"), anyString(), anyLong(), nullable(String.class), eq(0L),
+                nullable(String.class), eq(false), eq(observations), contains("knowledge-answer"));
+    }
+
+    @Test
+    void unavailableKnowledgeOutcomePersistsDegradedCardAndFailsWithoutWarehouseFallback() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"不应采用\",\"data\":null}"));
+        when(store.completeFailure(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                anyString(), eq(observations), nullable(AgentStore.RetryPlan.class), anyString())).thenReturn(true);
+
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext execution = new AgentExecutionContext(actor, "run-knowledge-down", "查询制度", ignored -> { });
+        execution.recordKnowledgeResult(KnowledgeQueryApi.Result.unavailable(java.time.Instant.parse("2026-08-30T00:00:00Z")));
+        execution.recordKnowledgeCard("{\"cardId\":\"knowledge-run-knowledge-down\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"DEGRADED\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":0,\"truncated\":false,\"citations\":[]}");
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-knowledge-down", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("message.completed")
+                && event.data().contains("AI_KNOWLEDGE_UNAVAILABLE")));
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("run.failed")
+                && event.data().contains("AI_KNOWLEDGE_UNAVAILABLE")));
+        verify(request, never()).call();
+        verify(store).completeFailure(anyString(), eq("run-knowledge-down"), anyString(),
+                contains("知识库暂时不可用"), anyString(), anyLong(), eq("AI_KNOWLEDGE_UNAVAILABLE"),
+                eq(observations), nullable(AgentStore.RetryPlan.class), contains("knowledge-answer"));
+    }
+
+    @Test
+    void foundKnowledgeCardIsDowngradedButCitationSurvivesModelFailure() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.error(new IllegalStateException("provider failed")));
+        when(store.completePartial(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_MODEL_UNAVAILABLE"), eq(observations), nullable(AgentStore.RetryPlan.class), anyString()))
+                .thenReturn(true);
+
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext execution = new AgentExecutionContext(actor, "run-knowledge-partial", "查询制度", ignored -> { });
+        java.time.Instant timestamp = java.time.Instant.parse("2026-08-30T00:00:00Z");
+        execution.recordKnowledgeResult(KnowledgeQueryApi.Result.found(List.of(new KnowledgeQueryApi.Citation(
+                "warehouse-rules", "仓储制度", "v2", "出库校验", 1, "出库前检查可用余额", 0.9,
+                true, "knowledge://warehouse-rules/v2/1", timestamp, timestamp)), timestamp, false));
+        execution.recordKnowledgeCard("{\"cardId\":\"knowledge-run-knowledge-partial\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"ANSWERED\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":1,\"truncated\":false,\"citations\":[{\"documentCode\":\"warehouse-rules\",\"title\":\"仓储制度\",\"versionCode\":\"v2\",\"section\":\"出库校验\",\"chunkNo\":1,\"excerpt\":\"出库前检查可用余额\",\"synthetic\":true,\"sourceRef\":\"knowledge://warehouse-rules/v2/1\",\"versionUpdatedAt\":\"2026-08-30T00:00:00Z\",\"indexedAt\":\"2026-08-30T00:00:00Z\"}]}" );
+        execution.recordToolSuccess("knowledge_search", "{\"queryText\":\"查询制度\"}", "知识结果");
+        execution.markToolOutputProduced();
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-knowledge-partial", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        var card = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(store).completePartial(anyString(), eq("run-knowledge-partial"), anyString(), anyString(), anyString(),
+                anyLong(), eq("AI_MODEL_UNAVAILABLE"), eq(observations), nullable(AgentStore.RetryPlan.class), card.capture());
+        assertTrue(card.getValue().contains("\"outcome\":\"DEGRADED\""));
+        assertTrue(card.getValue().contains("warehouse-rules"));
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("card.replace")
+                && event.data().contains("DEGRADED") && event.data().contains("warehouse-rules")));
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("message.completed")
+                && event.data().contains("已找到相关知识依据，但这次没有生成完整说明。你可以先查看依据，稍后重试。")));
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("run.completed")
+                && event.data().contains("PARTIAL")));
+    }
+
+    @Test
     void systemPolicyAllowsIndependentQueriesWithoutMutuallyExclusiveClarification() {
         AgentStore store = mock(AgentStore.class);
         ChatClient client = mock(ChatClient.class);
@@ -609,6 +741,10 @@ class AgentConversationServiceTest {
         assertTrue(system.getValue().contains("同一个工具意图里出现多个物品时只调用一次"));
         assertTrue(system.getValue().contains("全部物品原文按出现顺序放入itemMentions"));
         assertTrue(system.getValue().contains("禁止拆成多次同工具调用"));
+        assertTrue(system.getValue().contains("仓储操作是否允许、能否执行、是否需要、必须做什么、应该怎样处理"));
+        assertTrue(system.getValue().contains("即使没有说制度或规定，也属于仓储操作规则问题"));
+        assertTrue(system.getValue().contains("必须先调用knowledge_search"));
+        assertTrue(system.getValue().contains("实时数量、位置和移动事实仍只调用Warehouse工具"));
         assertFalse(system.getValue().contains("同时涉及当前库存和最近变化时，先确认用户要查询哪一种"));
     }
 

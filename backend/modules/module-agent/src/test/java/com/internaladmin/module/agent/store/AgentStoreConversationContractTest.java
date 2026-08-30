@@ -369,6 +369,26 @@ class AgentStoreConversationContractTest {
     }
 
     @Test
+    void knowledgeCardIsCommittedWithAssistantHistoryAndReadBackOnlyForThatMessage() throws Exception {
+        JdbcTemplate jdbc = database("conversation-knowledge-card");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, "knowledge-card-run", "制度问题", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+        String card = "{\"cardId\":\"knowledge-card-run\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"NO_EVIDENCE\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":0,\"truncated\":false,\"citations\":[]}";
+
+        assertTrue(store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(),
+                "没有找到可引用依据。", "scope-7", 1L, null, 0L, null, false, observations, card));
+
+        AgentStore.MessagePage page = store.pageMessages(conversationId, 7L, 1, 20);
+        AgentStore.MessageRow assistant = page.records().stream()
+                .filter(row -> "ASSISTANT".equals(row.role())).findFirst().orElseThrow();
+        assertEquals(card, assistant.knowledgeCardText());
+        assertNull(page.records().stream().filter(row -> "USER".equals(row.role())).findFirst().orElseThrow().knowledgeCardText());
+    }
+
+    @Test
     void retryPlanIsConsumedOnceAndChildLinksDirectParent() throws Exception {
         JdbcTemplate jdbc = database("conversation-retry-plan");
         AgentStore store = new AgentStore(jdbc);

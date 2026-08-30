@@ -32,4 +32,15 @@ describe('仓储助手 SSE 解析', () => {
     ])
     expect(events.map((event) => event.type)).toEqual(['run.started', 'run.completed'])
   })
+
+  it('接受受信 citation.added 事件并保留其消息归属', () => {
+    const citation = { documentCode: 'warehouse-rules', title: '仓储规则', versionCode: 'v2' }
+    const events = parseSseChunks([
+      new TextEncoder().encode(`event: citation.added\ndata: ${envelope('citation.added', 1, citation)}\n\n`)
+    ])
+    expect(events).toHaveLength(1)
+    expect(events[0].type).toBe('citation.added')
+    expect(events[0].messageId).toBe('message-1')
+    expect(events[0].payload).toMatchObject(citation)
+  })
 })

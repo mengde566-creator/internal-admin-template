@@ -6,6 +6,7 @@ import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Component;
@@ -43,6 +44,7 @@ public class AgentStore {
     public static final String RETRY_PLAN_KIND = "WAREHOUSE_RETRY_PLAN";
     public static final int RETRY_PLAN_VERSION = 1;
     private static final int MAX_RETRY_PLAN_CHARS = 20_000;
+    public static final int MAX_KNOWLEDGE_CARD_CHARS = 20_000;
     private static final java.util.Set<String> RETRYABLE_CODES = java.util.Set.of(
             "AI_TOOL_TIMEOUT", "AI_TOOL_DATABASE_UNAVAILABLE", "AI_TOOL_EXECUTION_FAILED");
     private static final java.util.Set<String> RETRYABLE_TOOLS = java.util.Set.of(
@@ -76,7 +78,7 @@ public class AgentStore {
     private final JdbcTemplate jdbc;
     private static final tools.jackson.databind.ObjectMapper JSON = JsonMapper.builder().build();
 
-    public AgentStore(JdbcTemplate jdbc) {
+    public AgentStore(@Qualifier("jdbcTemplate") JdbcTemplate jdbc) {
         this.jdbc = jdbc;
     }
 
@@ -308,12 +310,13 @@ public class AgentStore {
         PageBounds bounds = pageBounds(page, size);
         long total = jdbc.queryForObject("SELECT COUNT(*) FROM ai_message WHERE conversation_id = ?",
                 Long.class, conversationId);
-        String sql = "SELECT message_id, run_id, role, state, content, created_at "
+        String sql = "SELECT message_id, run_id, role, state, content, created_at, knowledge_card_text "
                 + "FROM ai_message WHERE conversation_id = ? "
                 + "ORDER BY sequence_no DESC, created_at DESC, message_id DESC " + pageClause();
         List<MessageRow> records = jdbc.query(sql, (rs, row) -> new MessageRow(
                 rs.getString("message_id"), rs.getString("run_id"), rs.getString("role"),
-                rs.getString("state"), rs.getString("content"), readInstant(rs, "created_at")),
+                rs.getString("state"), rs.getString("content"), readInstant(rs, "created_at"),
+                rs.getString("knowledge_card_text")),
                 pageParameters(conversationId, bounds));
         java.util.Collections.reverse(records);
         return new MessagePage(records, total, page, size);
@@ -380,13 +383,23 @@ public class AgentStore {
 
     public void appendAssistant(String conversationId, String runId, String messageId,
                                 String content, String state, String scopeFingerprint) {
+        appendAssistant(conversationId, runId, messageId, content, state, scopeFingerprint, null);
+    }
+
+    /** Append a validated knowledge card atomically with the assistant message. */
+    public void appendAssistant(String conversationId, String runId, String messageId,
+                                String content, String state, String scopeFingerprint,
+                                String knowledgeCardText) {
+        if (knowledgeCardText != null && knowledgeCardText.length() > MAX_KNOWLEDGE_CARD_CHARS) {
+            throw new IllegalArgumentException("知识卡片超过允许长度");
+        }
         Timestamp now = Timestamp.from(Instant.now());
         Long segment = jdbc.queryForObject("SELECT COALESCE(memory_segment_no, 1) FROM ai_message "
                         + "WHERE run_id = ? AND role = ? ORDER BY sequence_no LIMIT 1", Long.class, runId, "USER");
-        jdbc.update("INSERT INTO ai_message(message_id, conversation_id, run_id, sequence_no, role, content, state, created_at, scope_fingerprint, memory_segment_no) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        jdbc.update("INSERT INTO ai_message(message_id, conversation_id, run_id, sequence_no, role, content, state, created_at, scope_fingerprint, memory_segment_no, knowledge_card_text) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 messageId, conversationId, runId, nextMessageSequence(conversationId), "ASSISTANT", content, state, now,
-                scopeFingerprint, segment == null ? 1L : segment);
+                scopeFingerprint, segment == null ? 1L : segment, knowledgeCardText);
         jdbc.update("UPDATE ai_conversation SET updated_at = ? WHERE id = ?", now, conversationId);
     }
 
@@ -418,8 +431,19 @@ public class AgentStore {
                                    String content, String scopeFingerprint, long durationMillis,
                                    String taskId, long taskRevision, String taskIntent,
                                    boolean clarificationProduced, AiObservationRecorder observations) {
+        return completeSuccess(conversationId, runId, assistantMessageId, content, scopeFingerprint, durationMillis,
+                taskId, taskRevision, taskIntent, clarificationProduced, observations, null);
+    }
+
+    /** Knowledge-aware success boundary; card and message are committed together. */
+    @Transactional
+    public boolean completeSuccess(String conversationId, String runId, String assistantMessageId,
+                                   String content, String scopeFingerprint, long durationMillis,
+                                   String taskId, long taskRevision, String taskIntent,
+                                   boolean clarificationProduced, AiObservationRecorder observations,
+                                   String knowledgeCardText) {
         try {
-            appendAssistant(conversationId, runId, assistantMessageId, content, "COMPLETE", scopeFingerprint);
+            appendAssistant(conversationId, runId, assistantMessageId, content, "COMPLETE", scopeFingerprint, knowledgeCardText);
         }
         catch (RuntimeException failure) {
             throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_WRITE, failure);
@@ -473,8 +497,18 @@ public class AgentStore {
                                    String content, String scopeFingerprint, long durationMillis,
                                    String errorCode, AiObservationRecorder observations,
                                    RetryPlan retryPlan) {
+        return completePartial(conversationId, runId, assistantMessageId, content, scopeFingerprint, durationMillis,
+                errorCode, observations, retryPlan, null);
+    }
+
+    /** Knowledge-aware partial boundary; the validated card is part of the transaction. */
+    @Transactional
+    public boolean completePartial(String conversationId, String runId, String assistantMessageId,
+                                   String content, String scopeFingerprint, long durationMillis,
+                                   String errorCode, AiObservationRecorder observations,
+                                   RetryPlan retryPlan, String knowledgeCardText) {
         try {
-            appendAssistant(conversationId, runId, assistantMessageId, content, PARTIAL, scopeFingerprint);
+            appendAssistant(conversationId, runId, assistantMessageId, content, PARTIAL, scopeFingerprint, knowledgeCardText);
         }
         catch (RuntimeException failure) {
             throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_WRITE, failure);
@@ -595,8 +629,18 @@ public class AgentStore {
                                    String content, String scopeFingerprint, long durationMillis,
                                    String errorCode, AiObservationRecorder observations,
                                    RetryPlan retryPlan) {
+        return completeFailure(conversationId, runId, assistantMessageId, content, scopeFingerprint, durationMillis,
+                errorCode, observations, retryPlan, null);
+    }
+
+    /** Knowledge-aware failed boundary; a safe degradation card is persisted with the result. */
+    @Transactional
+    public boolean completeFailure(String conversationId, String runId, String assistantMessageId,
+                                   String content, String scopeFingerprint, long durationMillis,
+                                   String errorCode, AiObservationRecorder observations,
+                                   RetryPlan retryPlan, String knowledgeCardText) {
         try {
-            appendAssistant(conversationId, runId, assistantMessageId, content, "FAILED", scopeFingerprint);
+            appendAssistant(conversationId, runId, assistantMessageId, content, "FAILED", scopeFingerprint, knowledgeCardText);
         }
         catch (RuntimeException failure) {
             throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_WRITE, failure);
@@ -1358,7 +1402,11 @@ public class AgentStore {
     }
 
     public record MessageRow(String messageId, String runId, String role, String state,
-                             String content, Instant createdAt) {
+                             String content, Instant createdAt, String knowledgeCardText) {
+        public MessageRow(String messageId, String runId, String role, String state,
+                          String content, Instant createdAt) {
+            this(messageId, runId, role, state, content, createdAt, null);
+        }
     }
 
     public record MessagePage(List<MessageRow> records, long total, long page, long size) {

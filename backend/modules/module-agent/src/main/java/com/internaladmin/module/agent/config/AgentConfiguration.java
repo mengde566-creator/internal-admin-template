@@ -52,6 +52,7 @@ public class AgentConfiguration {
                 .build();
         DeepSeekChatOptions options = DeepSeekChatOptions.builder()
                 .model(DeepSeekApi.ChatModel.DEEPSEEK_V4_FLASH)
+                .temperature(0.0)
                 .responseFormat(ResponseFormat.builder()
                         .type(ResponseFormat.Type.JSON_OBJECT)
                         .build())

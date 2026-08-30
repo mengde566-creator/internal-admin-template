@@ -22,7 +22,9 @@ import {
   type ClarificationSelection,
   type Conversation,
   type ClarificationTask,
-  type Message
+  type Message,
+  type KnowledgeAnswer,
+  type KnowledgeCitation
 } from '../ai/agentApi'
 import { formatDateTime } from '../../../shared/utils/dateTime'
 
@@ -32,8 +34,10 @@ type UiMessage = {
   role: 'USER' | 'ASSISTANT'
   content: string
   createdAt: string
+  state?: string
   pending?: boolean
   retryAvailable?: boolean
+  knowledgeAnswer?: KnowledgeAnswer | null
 }
 
 type StockRow = {
@@ -55,7 +59,7 @@ type StockSummaryCard = {
   cardId: string
   revision: number
   messageId?: string
-  cardType: 'stock-summary' | 'item-location' | 'location-contents' | 'movement-list' | 'clarification-choice'
+  cardType: 'stock-summary' | 'item-location' | 'location-contents' | 'movement-list' | 'clarification-choice' | 'knowledge-answer'
   outcome?: string
   status?: string
   itemName?: string
@@ -71,6 +75,7 @@ type StockSummaryCard = {
   truncated?: boolean
   stocks: StockRow[]
   candidates: StockCandidate[]
+  citations?: KnowledgeCitation[]
 }
 
 type AgentMode = 'DOCKED' | 'COMPACT' | 'OVERLAY' | 'DRAWER'
@@ -122,6 +127,7 @@ const conversations = ref<Conversation[]>([])
 const selectedConversationId = ref('')
 const messages = ref<UiMessage[]>([])
 const cards = ref<Record<string, StockSummaryCard>>({})
+const citationsByMessage = ref<Record<string, KnowledgeCitation[]>>({})
 const draft = ref('')
 const loadingConversations = ref(false)
 const loadingHistory = ref(false)
@@ -526,7 +532,9 @@ function toUiMessage(message: Message): UiMessage {
     role: message.role.toUpperCase() === 'USER' ? 'USER' : 'ASSISTANT',
     content: message.content,
     createdAt: message.createdAt,
-    retryAvailable: (message as Message & { retryAvailable?: boolean }).retryAvailable === true
+    state: typeof message.state === 'string' ? message.state.toUpperCase() : undefined,
+    retryAvailable: (message as Message & { retryAvailable?: boolean }).retryAvailable === true,
+    knowledgeAnswer: message.knowledgeAnswer ?? null
   }
 }
 
@@ -578,7 +586,9 @@ async function loadHistory(conversationId: string, clearCards = true, preserveLo
     }
     if (clearCards) {
       cards.value = {}
+      citationsByMessage.value = {}
       restoreClarificationCard(page.activeClarification)
+      loadedMessages.forEach((message) => restoreKnowledgeCard(message.knowledgeAnswer, message.messageId))
     }
   } catch {
     conversationNotice.value = '这段对话暂时无法打开，请稍后再试。'
@@ -633,6 +643,22 @@ function restoreClarificationCard(task: ClarificationTask | null | undefined) {
   }
 }
 
+function restoreKnowledgeCard(answer: KnowledgeAnswer | null | undefined, messageId: string) {
+  if (!answer || answer.cardType !== 'knowledge-answer' || answer.revision !== 0 || !answer.cardId) return
+  const parsed = parseKnowledgeAnswerCard({
+    cardId: answer.cardId,
+    revision: answer.revision,
+    cardType: answer.cardType,
+    outcome: answer.outcome,
+    queriedAt: answer.queriedAt,
+    resultCount: answer.resultCount,
+    truncated: answer.truncated,
+    citations: answer.citations
+  }, messageId)
+  if (!parsed) return
+  cards.value[cardIdentity(parsed.cardId, messageId)] = parsed
+}
+
 async function selectConversation(conversationId: string) {
   if (isRunning.value) return
   if (conversationId === selectedConversationId.value) {
@@ -653,6 +679,7 @@ function startNewConversation() {
   selectedConversationId.value = ''
   messages.value = []
   cards.value = {}
+  citationsByMessage.value = {}
   draft.value = ''
   runState.value = 'idle'
   runNotice.value = ''
@@ -716,7 +743,80 @@ function assistantMessageForRun(runId?: string | null, messageId?: string | null
   return messages.value.find((message) => message.pending)
 }
 
+function knowledgePartialCard(card: StockSummaryCard) {
+  if (card.cardType !== 'knowledge-answer' || card.outcome !== 'DEGRADED' || !card.citations?.length) return false
+  if (!card.messageId) return false
+  return messages.value.some((message) => message.role === 'ASSISTANT'
+    && message.messageId === card.messageId && message.state === 'PARTIAL')
+}
+
+function parseKnowledgeCitation(value: unknown): KnowledgeCitation | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  const fields = Object.keys(raw).sort()
+  const expected = ['chunkNo', 'documentCode', 'excerpt', 'indexedAt', 'section', 'sourceRef', 'synthetic', 'title', 'versionCode', 'versionUpdatedAt']
+  if (fields.length !== expected.length || fields.some((field, index) => field !== expected[index])) return null
+  if (typeof raw.documentCode !== 'string' || !raw.documentCode.trim() || raw.documentCode.length > 128
+    || typeof raw.title !== 'string' || !raw.title.trim() || raw.title.length > 256
+    || typeof raw.versionCode !== 'string' || !raw.versionCode.trim() || raw.versionCode.length > 64
+    || typeof raw.section !== 'string' || !raw.section.trim() || raw.section.length > 256
+    || typeof raw.chunkNo !== 'number' || !Number.isInteger(raw.chunkNo) || raw.chunkNo < 1
+    || typeof raw.excerpt !== 'string' || !raw.excerpt.trim() || raw.excerpt.length > 4000
+    || raw.synthetic !== true
+    || typeof raw.sourceRef !== 'string' || !raw.sourceRef.startsWith('knowledge://') || raw.sourceRef.length > 512
+    || typeof raw.versionUpdatedAt !== 'string' || !raw.versionUpdatedAt.trim()
+    || typeof raw.indexedAt !== 'string' || !raw.indexedAt.trim()) return null
+  if (Number.isNaN(Date.parse(raw.versionUpdatedAt)) || Number.isNaN(Date.parse(raw.indexedAt))) return null
+  return {
+    documentCode: raw.documentCode,
+    title: raw.title,
+    versionCode: raw.versionCode,
+    section: raw.section,
+    chunkNo: raw.chunkNo,
+    excerpt: raw.excerpt,
+    synthetic: true,
+    sourceRef: raw.sourceRef,
+    versionUpdatedAt: raw.versionUpdatedAt,
+    indexedAt: raw.indexedAt
+  }
+}
+
+function parseKnowledgeAnswerCard(payload: Record<string, unknown>, messageId?: string): StockSummaryCard | null {
+  const fields = Object.keys(payload).sort()
+  const expected = ['cardId', 'cardType', 'citations', 'outcome', 'queriedAt', 'resultCount', 'revision', 'truncated']
+  if (fields.length !== expected.length || fields.some((field, index) => field !== expected[index])) return null
+  if (typeof payload.cardId !== 'string' || !payload.cardId.trim() || payload.cardId.length > 128
+    || payload.cardType !== 'knowledge-answer' || payload.revision !== 0
+    || !['ANSWERED', 'NO_EVIDENCE', 'DEGRADED'].includes(String(payload.outcome))
+    || typeof payload.queriedAt !== 'string' || !payload.queriedAt.trim() || Number.isNaN(Date.parse(payload.queriedAt))
+    || typeof payload.resultCount !== 'number' || !Number.isInteger(payload.resultCount) || payload.resultCount < 0 || payload.resultCount > 1
+    || typeof payload.truncated !== 'boolean' || !Array.isArray(payload.citations) || payload.citations.length > 1) return null
+  const citations = payload.citations.map(parseKnowledgeCitation)
+  if (citations.some((citation) => citation === null)) return null
+  const validCitations = citations.filter((citation): citation is KnowledgeCitation => citation !== null)
+  if (payload.resultCount !== validCitations.length) return null
+  if (payload.outcome === 'ANSWERED' && validCitations.length !== 1) return null
+  if (payload.outcome === 'NO_EVIDENCE' && validCitations.length !== 0) return null
+  if (payload.outcome === 'DEGRADED' && validCitations.length > 1) return null
+  const pending = messageId ? citationsByMessage.value[messageId] ?? [] : []
+  const merged = validCitations.length ? validCitations : pending
+  return {
+    cardId: payload.cardId,
+    revision: 0,
+    messageId,
+    cardType: 'knowledge-answer',
+    outcome: payload.outcome as StockSummaryCard['outcome'],
+    queriedAt: payload.queriedAt,
+    resultCount: payload.resultCount,
+    truncated: payload.truncated,
+    citations: merged,
+    stocks: [],
+    candidates: []
+  }
+}
+
 function parseStockCard(payload: Record<string, unknown>, messageId?: string): StockSummaryCard | null {
+  if (payload.cardType === 'knowledge-answer') return parseKnowledgeAnswerCard(payload, messageId)
   if (!['stock-summary', 'item-location', 'location-contents', 'movement-list', 'clarification-choice'].includes(String(payload.cardType))
     || typeof payload.cardId !== 'string' || !payload.cardId.trim() || typeof payload.revision !== 'number') return null
   const outcome = payload.outcome
@@ -770,6 +870,14 @@ function parseStockCard(payload: Record<string, unknown>, messageId?: string): S
 
 function onEvent(event: AgentSseEvent) {
   if (event.conversationId !== selectedConversationId.value) return
+  if (event.type === 'citation.added') {
+    const citation = parseKnowledgeCitation(event.payload)
+    if (!citation || !event.messageId) return
+    citationsByMessage.value[event.messageId] = [citation]
+    const existing = Object.values(cards.value).find((card) => card.cardType === 'knowledge-answer' && card.messageId === event.messageId)
+    if (existing) existing.citations = [citation]
+    return
+  }
   if (event.type === 'message.completed') {
     const message = ensureAssistantMessage(event.messageId, event.runId)
     const payload = event.payload
@@ -787,6 +895,9 @@ function onEvent(event: AgentSseEvent) {
     message.content = payload.message
     message.pending = false
     if (payload.success === false) {
+      const hasKnowledgeCitation = Object.values(cards.value).some((card) =>
+        card.cardType === 'knowledge-answer' && card.messageId === message.messageId && (card.citations?.length ?? 0) > 0)
+      message.state = hasKnowledgeCitation ? 'PARTIAL' : 'FAILED'
       runState.value = 'failed'
       runNotice.value = payload.message
     }
@@ -796,6 +907,10 @@ function onEvent(event: AgentSseEvent) {
     const card = parseStockCard(event.payload, event.messageId)
     if (card) {
       ensureAssistantMessage(event.messageId, event.runId)
+      if (card.cardType === 'knowledge-answer' && event.messageId) {
+        const pending = citationsByMessage.value[event.messageId]
+        if (pending?.length && !card.citations?.length) card.citations = pending
+      }
       cards.value[cardIdentity(card.cardId, card.messageId)] = card
     }
     return
@@ -814,6 +929,7 @@ function onEvent(event: AgentSseEvent) {
       AI_STREAM_DELIVERY_FAILED: STREAM_INTERRUPTED_NOTICE,
       AI_MODEL_OUTPUT_INVALID: '助手回复暂时不可用，请重新查询。',
       AI_MODEL_RESULT_MISMATCH: '查询结果与助手回复不一致，请重新查询。',
+      AI_KNOWLEDGE_UNAVAILABLE: '知识库暂时不可用，请稍后重试。',
       AI_MODEL_UNAVAILABLE: '助手暂时不可用，请稍后重试。',
       AI_HISTORY_WRITE_FAILED: '助手回复保存失败，请重新查询。',
       AI_OBSERVATION_FAILED: '助手运行记录保存失败，请重新查询。',
@@ -821,8 +937,11 @@ function onEvent(event: AgentSseEvent) {
     }
     runNotice.value = failureMessages[code] ?? '这次查询没有完成，请重新查询。'
     const assistant = assistantMessageForRun(event.runId, event.messageId)
-    if (assistant) assistant.pending = false
-    if (assistant) assistant.retryAvailable = event.payload.retryAvailable === true
+    if (assistant) {
+      assistant.pending = false
+      assistant.state = 'FAILED'
+      assistant.retryAvailable = event.payload.retryAvailable === true
+    }
     return
   }
   if (event.type === 'run.completed') {
@@ -830,11 +949,21 @@ function onEvent(event: AgentSseEvent) {
     if (status === 'SUCCESS') runState.value = 'success'
     else if (status === 'PARTIAL') runState.value = 'partial'
     else if (status === 'CANCELLED') runState.value = 'cancelled'
-    if (status === 'PARTIAL') runNotice.value = '已展示部分结果，请重新查询。'
+    if (status === 'PARTIAL') {
+      const knowledgePartial = Object.values(cards.value).some((card) =>
+        knowledgePartialCard(card)
+          && (!event.messageId || card.messageId === event.messageId))
+      if (!knowledgePartial) runNotice.value = '已展示部分结果，请重新查询。'
+    }
     if (status === 'CANCELLED') runNotice.value = '已取消本次查询。'
     const assistant = assistantMessageForRun(event.runId, event.messageId)
-    if (assistant) assistant.pending = false
-    if (assistant) assistant.retryAvailable = event.payload.retryAvailable === true
+    if (assistant) {
+      assistant.pending = false
+      assistant.state = typeof status === 'string'
+        ? (status === 'SUCCESS' ? 'COMPLETE' : status)
+        : undefined
+      assistant.retryAvailable = event.payload.retryAvailable === true
+    }
   }
 }
 
@@ -1103,6 +1232,17 @@ function togglePanel() {
 }
 
 function copyCard(card: StockSummaryCard) {
+  if (card.cardType === 'knowledge-answer') {
+    const lines = ['知识依据']
+    card.citations?.forEach((citation) => {
+      lines.push(`${citation.title} · ${citation.versionCode} · ${citation.section || `片段 ${citation.chunkNo}`}`)
+      lines.push(citation.excerpt)
+    })
+    if (navigator.clipboard) {
+      void navigator.clipboard.writeText(lines.join('\n')).then(() => { runNotice.value = '知识依据已复制。' }).catch(() => { runNotice.value = '当前环境无法复制知识依据。' })
+    }
+    return
+  }
   const title = card.cardType === 'item-location'
     ? `物品位置${card.itemName ? `：${card.itemName}` : ''}`
     : cardSubject(card)
@@ -1124,6 +1264,7 @@ function movementTypeLabel(type: string) {
 }
 
 function cardSubject(card: StockSummaryCard) {
+  if (card.cardType === 'knowledge-answer') return '知识依据'
   if (card.cardType === 'clarification-choice') {
     if (card.candidateKind === 'LOCATION') {
       return [card.selectedWarehouseName, card.selectedCandidateName].filter(Boolean).join(' / ') || '选择仓库和库位'
@@ -1450,12 +1591,23 @@ onBeforeUnmount(() => {
           <article v-else class="stock-card" data-testid="stock-summary-card" :data-message-id="item.card.messageId || undefined">
             <div class="stock-card-heading">
               <div>
-                <span class="card-kicker">{{ item.card.cardType === 'movement-list' ? '近期库存变化' : item.card.cardType === 'item-location' ? '物品所在位置' : item.card.cardType === 'location-contents' ? '库位库存' : item.card.cardType === 'clarification-choice' ? candidateCardTitle(item.card) : '库存摘要' }}</span>
+                <span class="card-kicker">{{ item.card.cardType === 'movement-list' ? '近期库存变化' : item.card.cardType === 'item-location' ? '物品所在位置' : item.card.cardType === 'location-contents' ? '库位库存' : item.card.cardType === 'clarification-choice' ? candidateCardTitle(item.card) : item.card.cardType === 'knowledge-answer' ? '知识依据' : '库存摘要' }}</span>
                 <strong>{{ cardSubject(item.card) }}</strong>
               </div>
               <span v-if="item.card.queriedAt" class="card-time">{{ formatDateTime(item.card.queriedAt) }}</span>
             </div>
-            <div v-if="item.card.cardType === 'clarification-choice' || item.card.status === 'CANDIDATES' || item.card.candidates?.length" class="candidate-section">
+            <div v-if="item.card.cardType === 'knowledge-answer'" class="knowledge-answer-content">
+              <p v-if="item.card.outcome === 'NO_EVIDENCE'" class="agent-muted">没有找到可引用依据。</p>
+              <p v-else-if="knowledgePartialCard(item.card)" class="agent-error">已找到依据，但回答未完整生成。</p>
+              <p v-else-if="item.card.outcome === 'DEGRADED'" class="agent-error">知识库暂时不可用。</p>
+              <div v-for="citation in item.card.citations" :key="`${citation.documentCode}-${citation.versionCode}-${citation.chunkNo}`" class="knowledge-citation">
+                <strong>{{ citation.title }}</strong>
+                <span>{{ citation.versionCode }} · {{ citation.section || `片段 ${citation.chunkNo}` }}</span>
+                <small v-if="citation.synthetic">合成资料</small>
+                <p>{{ citation.excerpt }}</p>
+              </div>
+            </div>
+            <div v-else-if="item.card.cardType === 'clarification-choice' || item.card.status === 'CANDIDATES' || item.card.candidates?.length" class="candidate-section">
               <div v-if="item.card.status === 'CANDIDATES' || item.card.status === 'SUBMITTING' || !item.card.status" class="candidate-list">
                 <div class="candidate-header">
                   <span class="candidate-hint">{{ item.card.candidateKind === 'LOCATION' ? '请点击选择一个仓库和库位：' : '请点击选择一个物品：' }}</span>
@@ -1493,7 +1645,7 @@ onBeforeUnmount(() => {
                 <span>候选已失效，请重新查询。</span>
               </div>
             </div>
-            <div v-if="!item.card.stocks.length && item.card.cardType !== 'clarification-choice' && item.card.status !== 'CANDIDATES' && !item.card.candidates?.length" class="agent-muted">{{ cardEmptyText(item.card) }}</div>
+            <div v-if="item.card.cardType !== 'knowledge-answer' && !item.card.stocks.length && item.card.cardType !== 'clarification-choice' && item.card.status !== 'CANDIDATES' && !item.card.candidates?.length" class="agent-muted">{{ cardEmptyText(item.card) }}</div>
             <div v-for="(stock, index) in item.card.stocks" :key="`${item.card.cardId}-${index}`" class="stock-row">
               <span class="stock-item">
                 <strong>{{ stock.itemName || '未命名物品' }}</strong>
@@ -1505,8 +1657,8 @@ onBeforeUnmount(() => {
             </div>
             <div class="stock-card-actions">
               <button v-if="canCopy" type="button" class="text-button" @click="copyCard(item.card)"><el-icon><CopyDocument /></el-icon>复制摘要</button>
-              <button v-if="canOpenRoute && item.card.stocks[0]" type="button" class="text-button" @click="openCard(item.card)"><el-icon><TopRight /></el-icon>{{ item.card.cardType === 'movement-list' || item.card.cardType === 'location-contents' ? '查看库存' : '查看物品' }}</button>
-              <button v-if="canOpenOperations && item.card.cardType !== 'movement-list' && item.card.stocks.length" type="button" class="text-button" @click="openOperations"><el-icon><TopRight /></el-icon>办理库存操作</button>
+              <button v-if="item.card.cardType !== 'knowledge-answer' && canOpenRoute && item.card.stocks[0]" type="button" class="text-button" @click="openCard(item.card)"><el-icon><TopRight /></el-icon>{{ item.card.cardType === 'movement-list' || item.card.cardType === 'location-contents' ? '查看库存' : '查看物品' }}</button>
+              <button v-if="item.card.cardType !== 'knowledge-answer' && canOpenOperations && item.card.cardType !== 'movement-list' && item.card.stocks.length" type="button" class="text-button" @click="openOperations"><el-icon><TopRight /></el-icon>办理库存操作</button>
             </div>
           </article>
         </template>
@@ -1880,6 +2032,31 @@ onBeforeUnmount(() => {
 .stock-card-heading strong {
   display: block;
   color: var(--ui-text-strong);
+}
+.knowledge-answer-content {
+  display: grid;
+  gap: 8px;
+}
+.knowledge-citation {
+  display: grid;
+  gap: 3px;
+  padding: 8px 0;
+  border-top: 1px solid var(--ui-border);
+}
+.knowledge-citation strong {
+  color: var(--ui-text-strong);
+}
+.knowledge-citation span,
+.knowledge-citation small {
+  color: var(--ui-text-muted);
+  font-size: .75rem;
+}
+.knowledge-citation p {
+  margin: 4px 0 0;
+  color: var(--ui-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
 }
 .card-time {
   color: var(--ui-text-muted);
