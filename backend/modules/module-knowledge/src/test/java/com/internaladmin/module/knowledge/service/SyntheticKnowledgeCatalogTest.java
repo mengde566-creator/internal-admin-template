@@ -13,13 +13,13 @@ class SyntheticKnowledgeCatalogTest {
         var second = SyntheticKnowledgeCatalog.load();
 
         assertThat(first).isEqualTo(second);
-        assertThat(first).hasSize(4);
+        assertThat(first).hasSizeGreaterThan(20);
         assertThat(first).extracting(SyntheticKnowledgeCatalog.Chunk::documentCode)
-                .containsExactlyInAnyOrder("warehouse-rules", "warehouse-rules", "item-codes", "warehouse-codes");
+                .contains("warehouse-rules", "item-codes", "warehouse-codes", "low-stock-policy");
         assertThat(first).filteredOn(chunk -> chunk.documentCode().equals("warehouse-rules"))
                 .extracting(SyntheticKnowledgeCatalog.Chunk::versionCode)
-                .containsExactlyInAnyOrder("v0", "v1");
-        assertThat(first).allSatisfy(chunk -> assertThat(chunk.chunkNo()).isEqualTo(1));
+                .contains("v0", "v1", "v2");
+        assertThat(first).allSatisfy(chunk -> assertThat(chunk.chunkNo()).isPositive());
         assertThat(first).allSatisfy(chunk -> assertThat(chunk.content()).contains("# ").isNotEmpty());
 
         String multiSection = "[{\"documentCode\":\"multi\",\"versionCode\":\"v1\","
@@ -60,5 +60,11 @@ class SyntheticKnowledgeCatalogTest {
         assertThatThrownBy(() -> SyntheticKnowledgeCatalog.parse(emptySection,
                         ignored -> "没有标题的正文"))
                 .hasMessageContaining("缺少Markdown标题");
+
+        String noActiveVersion = "[{\"documentCode\":\"a\",\"versionCode\":\"v1\","
+                + "\"title\":\"A\",\"status\":\"INACTIVE\",\"resource\":\"a.md\"}]";
+        assertThatThrownBy(() -> SyntheticKnowledgeCatalog.parse(noActiveVersion,
+                        ignored -> "# A\n\nbody"))
+                .hasMessageContaining("每个文档必须有一个ACTIVE版本");
     }
 }

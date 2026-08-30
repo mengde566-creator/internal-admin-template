@@ -1,6 +1,7 @@
 package com.internaladmin.module.knowledge.controller;
 
 import com.internaladmin.module.iam.api.PermissionCodes;
+import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
 import com.internaladmin.module.knowledge.service.KnowledgeService;
 import com.internaladmin.platform.web.response.ApiResponse;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -10,8 +11,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.List;
 
 /** Fixed-sample Gate A knowledge endpoints; no upload or arbitrary content input is accepted. */
 @RestController
@@ -45,9 +44,10 @@ public class KnowledgeController {
      */
     @GetMapping("/search")
     @PreAuthorize("hasAuthority('" + PermissionCodes.WAREHOUSE_READ + "')")
-    public ApiResponse<List<KnowledgeService.KnowledgeSearchResult>> search(
+    public ApiResponse<KnowledgeQueryApi.Result> search(
             @RequestParam String query,
             @RequestParam(defaultValue = "5") int topK) {
-        return ApiResponse.ok(service.search(query, topK));
+        KnowledgeQueryApi.Result result = service.query(query, topK);
+        return ApiResponse.ok(result);
     }
 }

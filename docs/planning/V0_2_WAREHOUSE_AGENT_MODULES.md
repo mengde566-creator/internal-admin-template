@@ -151,9 +151,9 @@ FUN-02、FUN-03、FUN-04、FUN-05。
 - 未独立配置且业务库是PostgreSQL时允许复用同一DataSource，但结构与迁移仍归本模块；
 - Agent关闭时不创建知识运行Bean；
 - 知识模块Liquibase负责`vector`、`hstore`、`uuid-ossp`扩展前提及表结构，Spring AI `initialize-schema`保持false；
-- 独立知识连接使用命名的DataSource、JdbcTemplate、事务管理器和Liquibase；PgVectorStore手工绑定该JdbcTemplate并开启结构校验，禁止依赖未限定的默认JdbcTemplate自动装配；
+- 独立知识连接使用命名的DataSource、JdbcTemplate、事务管理器和Liquibase；知识检索通过模块自有Mapper执行有界参数化SQL，禁止依赖未限定的默认JdbcTemplate自动装配；
 - 知识对象固定归属`ai_knowledge` schema，知识Liquibase使用自己的changelog与锁表；即使复用业务PostgreSQL连接，也不得把知识迁移混入业务模块所有权；
-- 首批合成数据使用精确Cosine检索，不建立HNSW/IVFFlat索引；只有规模和延迟证据出现后才评估近似索引；
+- 首批合成数据使用DashScope document/query非对称`dense&sparse`向量；运行期先执行稀疏Cosine，零候选时再执行pgvector精确Dense Cosine，不建立HNSW/IVFFlat索引；只有规模和延迟证据出现后才评估近似索引；
 - 禁止Spring AI自动建表和静默回退内存/SQLite向量库。
 
 ### 禁止
@@ -353,9 +353,10 @@ SSE可以增量发送`run.started`、已验证的`card.replace`和运行状态�
 | `ai_evaluation_case_result` | id、evaluation_run_id、case_code、status、deterministic_pass、judge_score、failure_reason_code、run_id | evaluation_run_id+case_code唯一 |
 | `ai_knowledge_document` | id、document_code、title、synthetic、created_at、updated_at | document_code唯一；0.2 synthetic固定为1 |
 | `ai_knowledge_version` | id、document_id、version_code、status、content_hash、embedding_model、embedding_dimensions、indexed_at | document_id+version_code唯一；PostgreSQL部分唯一索引保证同文档最多一个ACTIVE版本 |
-| `ai_knowledge_vector` | id(UUID)、content、metadata(JSON)、embedding | 结构兼容PgVectorStore；id主键；embedding为vector(1024)；metadata只含documentId、versionId、documentCode、versionCode、chunkNo、contentHash、synthetic，不重复保存生效状态 |
+| `ai_knowledge_vector` | id(UUID)、content、metadata(JSON)、embedding、sparse_norm | id主键；embedding为vector(1024)；metadata只含documentId、versionId、documentCode、versionCode、chunkNo、contentHash、synthetic，不重复保存生效状态 |
+| `ai_knowledge_sparse_vector` | vector_id、token_index、weight | vector_id+token_index唯一；通过外键归属知识片段向量，只保存DashScope稀疏权重 |
 
-History正文只存在`ai_message`；Observation通过逻辑ID关联，不复制正文。`client_request_id`只在当前用户与Conversation范围内去重，重复请求返回既有Run状态，不再次调用模型或Tool；`retry_of_run_id`只表达用户主动重试关系。`active_run_id`只是跨模块逻辑标识，不建立表外键。知识正文只存在知识库版本资源和`ai_knowledge_vector.content`；Observation只保存文档、版本和向量片段ID。`ai_knowledge_version.status`是生效状态唯一事实源；检索先解析当前生效versionId集合，再以metadata过滤向量，禁止依赖可能漂移的向量状态副本。`ai_knowledge_vector`由PgVectorStore使用，文档与版本表负责来源、状态和幂等判断，禁止另建第二张重复向量表。
+History正文只存在`ai_message`；Observation通过逻辑ID关联，不复制正文。`client_request_id`只在当前用户与Conversation范围内去重，重复请求返回既有Run状态，不再次调用模型或Tool；`retry_of_run_id`只表达用户主动重试关系。`active_run_id`只是跨模块逻辑标识，不建立表外键。知识正文只存在知识库版本资源和`ai_knowledge_vector.content`；Observation只保存文档、版本和向量片段ID。`ai_knowledge_version.status`是生效状态唯一事实源；检索在同一条有界SQL中联结并复核当前ACTIVE、synthetic、Embedding profile与维度，禁止依赖向量metadata中的生效状态副本或无界加载全部生效版本。`ai_knowledge_vector`与`ai_knowledge_sparse_vector`共同承载同一片段的Dense与Sparse索引，不另建第二份正文或平行向量事实源。
 
 ## 11. 配置合同
 
@@ -368,11 +369,11 @@ History正文只存在`ai_message`；Observation通过逻辑ID关联，不复制
 | `APP_AI_CHAT_DEEPSEEK_BASE_URL` | `app.ai.chat.deepseek.base-url` | 已锁定官方地址 | DeepSeek接口根地址 |
 | `APP_AI_CHAT_DEEPSEEK_MODEL` | `app.ai.chat.deepseek.model` | `deepseek-v4-flash` | 聊天模型 |
 | `APP_AI_EMBEDDING_QWEN_API_KEY` | `app.ai.embedding.qwen.api-key` | 开启后必填 | 百炼密钥 |
-| `APP_AI_EMBEDDING_QWEN_BASE_URL` | `app.ai.embedding.qwen.base-url` | 北京Workspace兼容地址 | OpenAI兼容Embedding根地址 |
+| `APP_AI_EMBEDDING_QWEN_BASE_URL` | `app.ai.embedding.qwen.base-url` | 北京Workspace兼容地址 | 03F物品索引使用兼容端点；Knowledge从同一可信HTTPS主机派生官方DashScope端点 |
 | `APP_AI_EMBEDDING_QWEN_MODEL` | `app.ai.embedding.qwen.model` | `qwen3.7-text-embedding` | Embedding模型 |
 | `APP_AI_EMBEDDING_QWEN_DIMENSIONS` | `app.ai.embedding.qwen.dimensions` | 固定1024 | 向量维度与表契约 |
 
-Workspace已包含在百炼兼容Base URL中，不再建立第二个workspaceId配置。知识独立数据源只接受可选的`APP_AI_KNOWLEDGE_DATASOURCE_URL/USERNAME/PASSWORD`三项；三项全部缺失时才按已确认规则判断能否复用业务PostgreSQL，部分填写直接判定配置错误。知识库固定使用PostgreSQL驱动，不把驱动类开放为配置分支。知识连接即使复用业务DataSource，也必须使用知识模块自己的Liquibase入口和表归属。
+Workspace已包含在百炼兼容Base URL中，不再建立第二个workspaceId配置或第二套密钥。物品索引继续使用OpenAI兼容Embedding；Knowledge使用同一模型与维度的官方DashScope document/query `dense&sparse`合同。知识独立数据源只接受可选的`APP_AI_KNOWLEDGE_DATASOURCE_URL/USERNAME/PASSWORD`三项；三项全部缺失时才按已确认规则判断能否复用业务PostgreSQL，部分填写直接判定配置错误。知识库固定使用PostgreSQL驱动，不把驱动类开放为配置分支。知识连接即使复用业务DataSource，也必须使用知识模块自己的Liquibase入口和表归属。
 
 Memory空闲TTL默认4小时；History默认180天；Run/Step默认90天；Feedback/Evaluation默认180天。Spring AI与供应商客户端内建重试固定关闭（等价最大Attempt为1），项目层对每个模型或Embedding步骤最多追加2次自动重试并完整记录Attempt。模型超时、单Run模型/Tool/Token/墙钟预算保留为强类型配置，但具体数值必须由真实场景PoC确认，不能由模型按“任务复杂”自行放大。
 

@@ -2,6 +2,9 @@ package com.internaladmin.app;
 
 import com.internaladmin.module.agent.config.AiConfigurationValidator;
 import com.internaladmin.module.knowledge.service.KnowledgeService;
+import com.internaladmin.module.knowledge.service.SyntheticKnowledgeCatalog;
+import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -25,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfEnvironmentVariable(named = "RUN_AI_GATE", matches = "true")
 class AiGateAExternalTest {
 
-    @Autowired
+    @Autowired(required = false)
     private DeepSeekChatModel deepSeekChatModel;
 
     @Autowired
@@ -33,6 +36,8 @@ class AiGateAExternalTest {
 
     @Test
     void deepSeekOrdinaryStream() {
+        Assumptions.assumeTrue(deepSeekChatModel != null,
+                "DeepSeek chat model is unavailable; skip the optional external stream check");
         List<ChatResponse> responses = Flux.from(deepSeekChatModel.stream(
                         new Prompt("Reply with one short word confirming the stream.")))
                 .collectList()
@@ -48,17 +53,24 @@ class AiGateAExternalTest {
     void qwenKnowledgeLifecycle() {
         KnowledgeService.ImportSummary first = knowledgeService.importSyntheticSamples();
         KnowledgeService.ImportSummary repeat = knowledgeService.importSyntheticSamples();
-        assertThat(first.chunksCreated() + first.skippedVersions()).isEqualTo(4);
+        assertThat(first.chunksCreated() + first.chunksSkipped()).isEqualTo(SyntheticKnowledgeCatalog.load().size());
         assertThat(repeat.chunksCreated()).isZero();
-        assertThat(repeat.skippedVersions()).isEqualTo(4);
+        assertThat(repeat.skippedVersions()).isEqualTo(8);
 
-        List<KnowledgeService.KnowledgeSearchResult> results = knowledgeService.search("物品编码规则 库存出库可用余额", 20);
-        assertThat(results).isNotEmpty();
-        assertThat(results).allMatch(result -> !"v0".equals(result.versionCode()));
-        assertThat(results).anyMatch(result -> "warehouse-rules".equals(result.documentCode())
-                && "v1".equals(result.versionCode()));
-        assertThat(results).anyMatch(result -> "item-codes".equals(result.documentCode())
-                && "v1".equals(result.versionCode()));
+        assertCitation("错误的库存流水可以直接改掉吗", "warehouse-rules", "v2");
+        assertCitation("业务编码是不是数据库内部编号", "item-codes", "v2");
+        assertCitation("查询位置时需要提交数据库ID吗", "warehouse-codes", "v2");
+        assertCitation("助手能不能直接帮忙补货", "low-stock-policy", "v1");
+        assertThat(knowledgeService.query("今天午餐吃什么", 1).status())
+                .isEqualTo(KnowledgeQueryApi.Status.NO_EVIDENCE);
         assertThat(AiConfigurationValidator.EMBEDDING_DIMENSIONS).isEqualTo(1024);
+    }
+
+    private void assertCitation(String query, String documentCode, String versionCode) {
+        KnowledgeQueryApi.Result result = knowledgeService.query(query, 1);
+        assertThat(result.status()).isEqualTo(KnowledgeQueryApi.Status.FOUND);
+        assertThat(result.citations()).anyMatch(citation -> documentCode.equals(citation.documentCode())
+                && versionCode.equals(citation.versionCode())
+                && citation.synthetic());
     }
 }

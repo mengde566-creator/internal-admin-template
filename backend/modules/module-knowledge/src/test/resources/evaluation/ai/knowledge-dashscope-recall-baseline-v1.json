@@ -1,0 +1,46 @@
+{
+  "version": "knowledge-dashscope-recall-v1",
+  "corpus": "ai/knowledge-query-evaluation-v1.json",
+  "corpusSha256": "70295274478d59198c606f9820707ea8bbdb2f9b26a507b8baa2f26c33d007ef",
+  "provider": "qwen",
+  "providerInterface": "DASHSCOPE",
+  "providerStatus": "COMPLETED",
+  "model": "qwen3.7-text-embedding",
+  "dimensions": 1024,
+  "activeChunkCount": 24,
+  "uniqueInputCount": 44,
+  "batchSize": 20,
+  "providerRequestCount": 3,
+  "maxRetries": 0,
+  "documentTextType": "document",
+  "queryTextType": "query",
+  "queryInstruct": "fixed-warehouse-policy-v1",
+  "queryInstructSha256": "3b0d15095d6dfd96ae27d625a2e02fb7fa0296adc3b478eee6a66d52dcb65f53",
+  "selected": {"similarityThreshold": 0.75, "topK": 3, "candidateCap": 5},
+  "calibration": {
+    "positiveMacroRecallAt5": 0.9166666666666666,
+    "recallByCategory": {"warehouse-rules": 0.6666666666666666, "item-codes": 1.0, "warehouse-codes": 1.0, "low-stock-policy": 1.0},
+    "negativeZeroResultRate": 1.0,
+    "forbiddenHits": 0,
+    "wrongDocumentReferences": 0,
+    "averageCandidates": 0.6666666666666666,
+    "p95Candidates": 1,
+    "maxCandidates": 1
+  },
+  "holdout": {
+    "positiveMacroRecallAt5": 0.625,
+    "recallByCategory": {"warehouse-rules": 0.5, "item-codes": 1.0, "warehouse-codes": 0.0, "low-stock-policy": 1.0},
+    "negativeZeroResultRate": 1.0,
+    "forbiddenHits": 0,
+    "wrongDocumentReferences": 0,
+    "averageCandidates": 0.375,
+    "p95Candidates": 1,
+    "maxCandidates": 1
+  },
+  "historicalAttempts": [
+    {"providerInterface": "OPENAI_COMPATIBLE", "baselineRef": "evaluation/ai/knowledge-recall-baseline-v1.json", "status": "GATE_NOT_PASSED"},
+    {"providerInterface": "PG_TRGM", "baselineRef": "evaluation/ai/knowledge-trgm-baseline-v1.json", "status": "GATE_NOT_PASSED"}
+  ],
+  "container": {"image": "pgvector/pgvector:0.8.6-pg17-bookworm", "tmpfs": true, "persistentVolume": false},
+  "status": "GATE_NOT_PASSED"
+}

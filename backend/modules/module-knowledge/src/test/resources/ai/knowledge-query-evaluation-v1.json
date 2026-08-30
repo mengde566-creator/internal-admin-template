@@ -1,0 +1,25 @@
+{
+  "version": "knowledge-query-v1",
+  "queries": [
+    {"id":"q01","text":"出库前需要先检查什么","category":"warehouse-rules","correctCandidates":["warehouse-rules:v2"],"split":"calibration"},
+    {"id":"q02","text":"调拨时来源和目标要怎样记账","category":"warehouse-rules","correctCandidates":["warehouse-rules:v2"],"split":"calibration"},
+    {"id":"q03","text":"错误的库存流水可以直接改掉吗","category":"warehouse-rules","correctCandidates":["warehouse-rules:v2"],"split":"holdout"},
+    {"id":"q04","text":"物品编码创建后还能修改吗","category":"item-codes","correctCandidates":["item-codes:v2"],"split":"calibration"},
+    {"id":"q05","text":"编码允许哪些字符","category":"item-codes","correctCandidates":["item-codes:v2"],"split":"calibration"},
+    {"id":"q06","text":"业务编码是不是数据库内部编号","category":"item-codes","correctCandidates":["item-codes:v2"],"split":"holdout"},
+    {"id":"q07","text":"仓库编号在所有仓库中都不能重复吗","category":"warehouse-codes","correctCandidates":["warehouse-codes:v2"],"split":"calibration"},
+    {"id":"q08","text":"不同仓库能否使用同一个库位编码","category":"warehouse-codes","correctCandidates":["warehouse-codes:v2"],"split":"calibration"},
+    {"id":"q09","text":"查询位置时需要提交数据库ID吗","category":"warehouse-codes","correctCandidates":["warehouse-codes:v2"],"split":"holdout"},
+    {"id":"q10","text":"A100库存低于多少会提示","category":"low-stock-policy","correctCandidates":["low-stock-policy:v1"],"split":"calibration"},
+    {"id":"q11","text":"出现低库存后应该怎么处理","category":"low-stock-policy","correctCandidates":["low-stock-policy:v1"],"split":"calibration"},
+    {"id":"q12","text":"助手能不能直接帮忙补货","category":"low-stock-policy","correctCandidates":["low-stock-policy:v1"],"split":"holdout"},
+    {"id":"q13","text":"旧版出库余额不足时允许先登记吗","category":"warehouse-rules","correctCandidates":["warehouse-rules:v2"],"forbiddenCandidates":["warehouse-rules:v0","warehouse-rules:v1"],"split":"holdout"},
+    {"id":"q14","text":"库存差异需要填写什么说明","category":"warehouse-rules","correctCandidates":["warehouse-rules:v2"],"split":"calibration"},
+    {"id":"q15","text":"员工今年有几天年假","category":"negative","correctCandidates":[],"split":"calibration"},
+    {"id":"q16","text":"客户折扣如何审批","category":"negative","correctCandidates":[],"split":"calibration"},
+    {"id":"q17","text":"叉车轮胎气压设置多少","category":"negative","correctCandidates":[],"split":"calibration"},
+    {"id":"q18","text":"今天午餐吃什么","category":"negative","correctCandidates":[],"split":"holdout"},
+    {"id":"q19","text":"如何申请办公用品","category":"negative","correctCandidates":[],"split":"holdout"},
+    {"id":"q20","text":"客户合同什么时候续签","category":"negative","correctCandidates":[],"split":"holdout"}
+  ]
+}

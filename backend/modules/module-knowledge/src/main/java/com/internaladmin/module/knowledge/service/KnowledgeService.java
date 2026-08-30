@@ -1,10 +1,12 @@
 package com.internaladmin.module.knowledge.service;
 
 import com.internaladmin.module.knowledge.api.AiProperties;
+import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
+import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient;
+import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.RetrievalEmbedding;
+import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.SparseEntry;
+import com.pgvector.PGvector;
 import com.internaladmin.module.knowledge.mapper.KnowledgeMapper;
-import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -22,34 +24,44 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.LinkedHashMap;
+import java.util.Objects;
 
 /** Fixed synthetic knowledge import and active-version filtered vector search. */
 @Service
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
-public class KnowledgeService {
+public class KnowledgeService implements KnowledgeQueryApi {
 
-    private static final String EMBEDDING_MODEL = "qwen3.7-text-embedding";
+    /** Versioned storage profile for asymmetric document embeddings. */
+    public static final String EMBEDDING_PROFILE = "dashscope-dense-sparse-document-v1";
+    private static final String LEGACY_EMBEDDING_MODEL = "qwen3.7-text-embedding";
+    /** Only versions published before the asymmetric retrieval profile may use the legacy vector contract. */
+    private static final Set<String> LEGACY_PUBLISHED_VERSION_KEYS = Set.of(
+            "warehouse-rules\u0000v0",
+            "warehouse-rules\u0000v1",
+            "item-codes\u0000v1",
+            "warehouse-codes\u0000v1");
     private static final String CHUNKER_VERSION = "markdown-section-v1";
     private static final int MAX_BATCH = 20;
+    private static final int MAX_QUERY_LIMIT = 5;
+    /** Frozen calibration value from the single DashScope Gate run. */
+    public static final double SIMILARITY_THRESHOLD = 0.65d;
+    public static final int SEARCH_TOP_K = 1;
+    public static final double SPARSE_SIMILARITY_THRESHOLD = 0.80d;
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     private final AiProperties properties;
-    private final DimensionCheckingEmbeddingModel embeddingModel;
-    private final VectorStore vectorStore;
+    private final KnowledgeRetrievalEmbeddingClient embeddingClient;
     private final KnowledgeMapper mapper;
     private final TransactionTemplate transactionTemplate;
 
     public KnowledgeService(AiProperties properties,
-                            @org.springframework.beans.factory.annotation.Qualifier("knowledgeEmbeddingModel")
-                            org.springframework.ai.embedding.EmbeddingModel embeddingModel,
-                            @org.springframework.beans.factory.annotation.Qualifier("knowledgeVectorStore")
-                            VectorStore vectorStore,
+                            KnowledgeRetrievalEmbeddingClient embeddingClient,
                             KnowledgeMapper mapper,
                             @org.springframework.beans.factory.annotation.Qualifier("knowledgeTransactionManager")
                             PlatformTransactionManager transactionManager) {
         this.properties = properties;
-        this.embeddingModel = (DimensionCheckingEmbeddingModel) embeddingModel;
-        this.vectorStore = vectorStore;
+        this.embeddingClient = embeddingClient;
         this.mapper = mapper;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
@@ -61,92 +73,189 @@ public class KnowledgeService {
      */
     public ImportSummary importSyntheticSamples() {
         List<Chunk> chunks = syntheticChunks();
-        if (chunks.size() > MAX_BATCH) {
-            throw new IllegalStateException("AI_EMBEDDING_UNAVAILABLE: synthetic batch exceeds 20 chunks");
+        Map<String, ExistingVersion> existing;
+        try {
+            existing = preflight(chunks);
+        } catch (RuntimeException exception) {
+            if (exception.getMessage() != null && exception.getMessage().startsWith("AI_KNOWLEDGE_IMPORT_CONFLICT")) {
+                throw exception;
+            }
+            throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 无法读取现有知识版本", exception);
         }
-        if (isCompleteExistingIndex(chunks)) {
-            return new ImportSummary(0, 0, 0, distinctVersionCount(chunks));
+        List<Chunk> pending = chunks.stream()
+                .filter(chunk -> !existing.getOrDefault(versionKey(chunk), ExistingVersion.MISSING)
+                        .chunkNumbers().contains(chunk.chunkNo()))
+                .toList();
+        Map<String, RetrievalEmbedding> vectors = embedInBatches(pending);
+        try {
+            ImportSummary summary = transactionTemplate.execute(status -> persist(chunks, existing, vectors));
+            if (summary == null) {
+                throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 知识事务未提交");
+            }
+            return summary;
+        } catch (RuntimeException exception) {
+            if (exception.getMessage() != null && exception.getMessage().startsWith("AI_KNOWLEDGE_")) {
+                throw exception;
+            }
+            throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 知识版本未能完整提交", exception);
         }
-        List<float[]> vectors = embeddingModel.embed(chunks.stream().map(Chunk::content).toList());
-        if (vectors.size() != chunks.size()) {
-            throw new IllegalStateException("AI_EMBEDDING_UNAVAILABLE: vector count does not match chunks");
-        }
-        return transactionTemplate.execute(status -> persist(chunks, vectors));
     }
 
-    private boolean isCompleteExistingIndex(List<Chunk> chunks) {
-        Map<String, List<Chunk>> byVersion = new HashMap<>();
-        for (Chunk chunk : chunks) {
-            byVersion.computeIfAbsent(chunk.documentCode() + "\u0000" + chunk.versionCode(), ignored -> new ArrayList<>())
-                    .add(chunk);
-        }
-        for (List<Chunk> versionChunks : byVersion.values()) {
-            Chunk first = versionChunks.getFirst();
+    private Map<String, ExistingVersion> preflight(List<Chunk> chunks) {
+        Map<String, List<Chunk>> byVersion = chunks.stream().collect(java.util.stream.Collectors.groupingBy(
+                this::versionKey, LinkedHashMap::new, java.util.stream.Collectors.toList()));
+        Map<String, ExistingVersion> existing = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Chunk>> entry : byVersion.entrySet()) {
+            Chunk first = entry.getValue().getFirst();
             String documentId = mapper.findDocumentId(first.documentCode());
             if (documentId == null) {
-                return false;
+                existing.put(entry.getKey(), ExistingVersion.MISSING);
+                continue;
             }
             KnowledgeMapper.VersionRow version = mapper.findVersion(documentId, first.versionCode());
-            if (version == null || !contentHash(versionChunks).equals(version.contentHash())
-                    || !EMBEDDING_MODEL.equals(version.embeddingModel())
+            if (version == null) {
+                existing.put(entry.getKey(), ExistingVersion.MISSING);
+                continue;
+            }
+            String expectedHash = contentHash(entry.getValue());
+            boolean hashMatches = expectedHash.equals(version.contentHash())
+                    || legacyContentHash(entry.getValue()).equals(version.contentHash());
+            boolean legacyPublishedVersion = LEGACY_PUBLISHED_VERSION_KEYS.contains(entry.getKey())
+                    && legacyContentHash(entry.getValue()).equals(version.contentHash())
+                    && LEGACY_EMBEDDING_MODEL.equals(version.embeddingModel());
+            boolean currentDocumentVersion = expectedHash.equals(version.contentHash())
+                    && EMBEDDING_PROFILE.equals(version.embeddingModel());
+            if ((!legacyPublishedVersion && !currentDocumentVersion) || !hashMatches
+                    || properties.getEmbedding().getQwen().getDimensions() == null
                     || properties.getEmbedding().getQwen().getDimensions() != version.embeddingDimensions()) {
-                return false;
+                throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_CONFLICT: 文档版本内容或向量契约不一致");
             }
-            if (mapper.countVectors(version.id()) != versionChunks.size()) {
-                return false;
+            Set<Integer> chunkNumbers = mapper.findVectorChunkNumbers(version.id());
+            Set<Integer> sparseChunkNumbers = EMBEDDING_PROFILE.equals(version.embeddingModel())
+                    ? java.util.Optional.ofNullable(mapper.findSparseChunkNumbers(version.id())).orElse(Set.of()) : Set.of();
+            boolean expectedChunksPresent = entry.getValue().stream().map(Chunk::chunkNo)
+                    .allMatch(chunkNumbers::contains);
+            if (chunkNumbers.size() > entry.getValue().size()
+                    || (!expectedChunksPresent && chunkNumbers.size() >= entry.getValue().size())) {
+                throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_CONFLICT: 已存在向量切片与目录不一致");
             }
+            if (EMBEDDING_PROFILE.equals(version.embeddingModel())
+                    && (!expectedChunksPresent || !sparseChunkNumbers.containsAll(chunkNumbers)
+                    || sparseChunkNumbers.size() != chunkNumbers.size())) {
+                throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_CONFLICT: 稀疏向量切片不完整");
+            }
+            existing.put(entry.getKey(), new ExistingVersion(documentId, version.id(), chunkNumbers));
         }
-        return true;
+        return existing;
     }
 
-    private int distinctVersionCount(List<Chunk> chunks) {
-        return (int) chunks.stream().map(chunk -> chunk.documentCode() + "\u0000" + chunk.versionCode()).distinct().count();
+    private Map<String, RetrievalEmbedding> embedInBatches(List<Chunk> pending) {
+        Map<String, RetrievalEmbedding> vectors = new LinkedHashMap<>();
+        if (pending.isEmpty()) {
+            return vectors;
+        }
+        Integer expectedDimensions = properties.getEmbedding().getQwen().getDimensions();
+        if (!Objects.equals(expectedDimensions, 1024)) {
+            throw new IllegalStateException("AI_CONFIGURATION_INVALID: Embedding维度必须为 1024");
+        }
+        for (int from = 0; from < pending.size(); from += MAX_BATCH) {
+            List<Chunk> batch = pending.subList(from, Math.min(from + MAX_BATCH, pending.size()));
+            List<RetrievalEmbedding> response;
+            try {
+                response = embeddingClient.embedDocuments(batch.stream().map(Chunk::content).toList());
+            } catch (RuntimeException exception) {
+                if (exception.getMessage() != null && exception.getMessage().startsWith("AI_EMBEDDING_UNAVAILABLE")) {
+                    throw exception;
+                }
+                throw new IllegalStateException("AI_EMBEDDING_UNAVAILABLE: Embedding请求失败", exception);
+            }
+            if (response == null || response.size() != batch.size()) {
+                throw new IllegalStateException("AI_EMBEDDING_UNAVAILABLE: vector count does not match chunks");
+            }
+            for (int index = 0; index < batch.size(); index++) {
+                RetrievalEmbedding vector = response.get(index);
+                if (vector == null || vector.denseVector().length != expectedDimensions
+                        || vector.sparseEntries().isEmpty()) {
+                    throw new IllegalStateException("AI_EMBEDDING_UNAVAILABLE: vector dimension is invalid");
+                }
+                vectors.put(chunkKey(batch.get(index)), vector);
+            }
+        }
+        return vectors;
     }
 
     /**
-     * Search only active document versions using PgVectorStore cosine similarity.
+     * Search current ACTIVE synthetic chunks with one bounded SQL cosine query.
      *
      * @param query query text
-     * @param topK maximum result count, capped at 20
+     * @param limit maximum result count, bounded to 5
      * @return active-version results with references
      */
-    public List<KnowledgeSearchResult> search(String query, int topK) {
-        if (query == null || query.isBlank()) {
-            throw new IllegalArgumentException("知识查询不能为空");
+    @Override
+    public KnowledgeQueryApi.Result query(String query, int limit) {
+        validateQuery(query, limit);
+        Instant queriedAt = Instant.now();
+        try {
+            int boundedLimit = Math.min(limit, MAX_QUERY_LIMIT);
+            RetrievalEmbedding queryEmbedding = embeddingClient.embedQuery(query);
+            if (queryEmbedding == null || queryEmbedding.denseVector().length != 1024
+                    || queryEmbedding.sparseEntries().isEmpty()) {
+                throw new IllegalStateException("Embedding查询向量维度无效");
+            }
+            List<KnowledgeMapper.SearchRow> rows = mapper.findActiveSparseChunks(
+                    queryEmbedding.sparseEntries(), SPARSE_SIMILARITY_THRESHOLD, SEARCH_TOP_K + 1,
+                    EMBEDDING_PROFILE, 1024);
+            if (rows != null && !rows.isEmpty()) {
+                // A sparse hit short-circuits the dense stage.
+            } else {
+                rows = mapper.findActiveDenseChunks(new PGvector(queryEmbedding.denseVector()),
+                        SIMILARITY_THRESHOLD, SEARCH_TOP_K + 1, EMBEDDING_PROFILE, 1024);
+            }
+            if (rows == null) {
+                throw new IllegalStateException("知识检索返回为空");
+            }
+            List<KnowledgeQueryApi.Citation> citations = new ArrayList<>();
+            for (KnowledgeMapper.SearchRow row : rows) {
+                if (!Double.isFinite(row.score()) || row.score() < SIMILARITY_THRESHOLD
+                        || row.chunkNo() == null || row.chunkNo() < 1
+                        || row.content() == null || row.content().isBlank()) {
+                    continue;
+                }
+                citations.add(new KnowledgeQueryApi.Citation(row.documentCode(), row.title(),
+                        row.versionCode(), sectionTitle(row.content()), row.chunkNo(),
+                        row.content(), row.score(), true,
+                        "knowledge://" + row.documentCode() + "/" + row.versionCode() + "#" + row.chunkNo(),
+                        row.versionUpdatedAt(), row.indexedAt()));
+                if (citations.size() == Math.min(boundedLimit, SEARCH_TOP_K)) {
+                    break;
+                }
+            }
+            if (citations.isEmpty()) {
+                return KnowledgeQueryApi.Result.noEvidence(queriedAt);
+            }
+            return KnowledgeQueryApi.Result.found(citations, queriedAt,
+                    rows.size() > Math.min(boundedLimit, SEARCH_TOP_K));
+        } catch (RuntimeException exception) {
+            return KnowledgeQueryApi.Result.unavailable(queriedAt);
         }
-        int boundedTopK = Math.max(1, Math.min(topK, 20));
-        Set<String> activeVersionIds = mapper.findActiveVersionIds();
-        if (activeVersionIds.isEmpty()) {
-            return List.of();
-        }
-        List<Object> activeIds = activeVersionIds.stream().sorted().map(id -> (Object) id).toList();
-        SearchRequest request = SearchRequest.builder()
-                .query(query)
-                .topK(boundedTopK)
-                .filterExpression(new FilterExpressionBuilder().in("versionId", activeIds).build())
-                .build();
-        return vectorStore.similaritySearch(request).stream()
-                .filter(document -> activeVersionIds.contains(String.valueOf(document.getMetadata().get("versionId"))))
-                .map(document -> new KnowledgeSearchResult(
-                        document.getText(),
-                        String.valueOf(document.getMetadata().get("documentCode")),
-                        String.valueOf(document.getMetadata().get("versionCode")),
-                        String.valueOf(document.getMetadata().get("chunkNo")),
-                        document.getScore()))
-                .toList();
     }
 
-    private ImportSummary persist(List<Chunk> chunks, List<float[]> vectors) {
+    private ImportSummary persist(List<Chunk> chunks, Map<String, ExistingVersion> existing,
+                                  Map<String, RetrievalEmbedding> vectors) {
         Map<String, List<IndexedChunk>> byVersion = new HashMap<>();
         for (int i = 0; i < chunks.size(); i++) {
             Chunk chunk = chunks.get(i);
             byVersion.computeIfAbsent(chunk.documentCode() + "\u0000" + chunk.versionCode(), ignored -> new ArrayList<>())
-                    .add(new IndexedChunk(chunk, vectors.get(i)));
+                    .add(new IndexedChunk(chunk, vectors.get(chunkKey(chunk))));
         }
         int documentsCreated = 0;
         int versionsCreated = 0;
         int chunksCreated = 0;
-        int skippedVersions = 0;
+        int versionsSkipped = 0;
+        int documentsSkipped = 0;
+        int chunksSkipped = 0;
+        Set<String> createdDocumentCodes = new java.util.HashSet<>();
+        Set<String> countedExistingDocuments = new java.util.HashSet<>();
         for (List<IndexedChunk> versionChunks : byVersion.values()) {
             IndexedChunk first = versionChunks.getFirst();
             String documentId = mapper.findDocumentId(first.chunk.documentCode());
@@ -155,41 +264,51 @@ public class KnowledgeService {
                 mapper.insertDocument(documentId, first.chunk.documentCode(), first.chunk.title(),
                         timestampNow(), timestampNow());
                 documentsCreated++;
+                createdDocumentCodes.add(first.chunk.documentCode());
+            } else {
+                if (!createdDocumentCodes.contains(first.chunk.documentCode())
+                        && countedExistingDocuments.add(first.chunk.documentCode())) {
+                    documentsSkipped++;
+                }
             }
             String contentHash = indexedContentHash(versionChunks);
-            KnowledgeMapper.VersionRow existing = mapper.findVersion(documentId, first.chunk.versionCode());
+            ExistingVersion existingVersion = existing.getOrDefault(versionKey(first.chunk), ExistingVersion.MISSING);
             String versionId;
-            if (existing != null) {
-                if (!contentHash.equals(existing.contentHash())
-                        || !EMBEDDING_MODEL.equals(existing.embeddingModel())
-                        || properties.getEmbedding().getQwen().getDimensions() != existing.embeddingDimensions()) {
-                    throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_CONFLICT: 文档版本内容或向量契约不一致");
-                }
-                versionId = existing.id();
-                int existingChunks = mapper.countVectors(versionId);
-                if (existingChunks == versionChunks.size()) {
-                    if (first.chunk.desiredStatus().equals("ACTIVE")) {
-                        mapper.activateVersion(documentId, versionId, timestampNow());
-                    }
-                    skippedVersions++;
-                    continue;
-                }
+            if (existingVersion != ExistingVersion.MISSING) {
+                versionId = existingVersion.versionId();
+                versionsSkipped++;
+                chunksSkipped += existingVersion.chunkNumbers().size();
             } else {
                 versionId = UUID.randomUUID().toString();
                 mapper.insertVersion(versionId, documentId, first.chunk.versionCode(), contentHash,
-                        EMBEDDING_MODEL, properties.getEmbedding().getQwen().getDimensions(), timestampNow());
+                        EMBEDDING_PROFILE, properties.getEmbedding().getQwen().getDimensions(), timestampNow());
                 versionsCreated++;
             }
             if (first.chunk.desiredStatus().equals("ACTIVE")) {
                 mapper.activateVersion(documentId, versionId, timestampNow());
             }
             for (IndexedChunk indexedChunk : versionChunks) {
-                mapper.insertVector(indexedChunk.chunk.content(), vectorMetadata(documentId, versionId,
-                        indexedChunk.chunk), indexedChunk.vector);
+                if (existingVersion != ExistingVersion.MISSING
+                        && existingVersion.chunkNumbers().contains(indexedChunk.chunk.chunkNo())) {
+                    continue;
+                }
+                RetrievalEmbedding vector = vectors.get(chunkKey(indexedChunk.chunk));
+                if (vector == null) {
+                    throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 缺少待写入向量");
+                }
+                List<SparseEntry> sparseEntries = vector.sparseEntries();
+                double sparseNorm = Math.sqrt(sparseEntries.stream()
+                        .mapToDouble(entry -> (double) entry.weight() * entry.weight()).sum());
+                if (!Double.isFinite(sparseNorm) || sparseNorm <= 0d) {
+                    throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 稀疏向量范数无效");
+                }
+                mapper.insertVector(UUID.randomUUID(), indexedChunk.chunk.content(), vectorMetadata(documentId, versionId,
+                        indexedChunk.chunk), vector.denseVector(), sparseNorm, sparseEntries);
                 chunksCreated++;
             }
         }
-        return new ImportSummary(documentsCreated, versionsCreated, chunksCreated, skippedVersions);
+        return new ImportSummary(documentsCreated, documentsSkipped, versionsCreated, versionsSkipped,
+                chunksCreated, chunksSkipped);
     }
 
     private String vectorMetadata(String documentId, String versionId, Chunk chunk) {
@@ -218,13 +337,47 @@ public class KnowledgeService {
     }
 
     private String contentHash(List<Chunk> chunks) {
-        String content = chunks.stream().map(Chunk::content).reduce("", String::concat);
-        return sha256(content);
+        StringBuilder canonical = new StringBuilder(CHUNKER_VERSION).append('\u0000');
+        for (Chunk chunk : chunks) {
+            String content = chunk.content();
+            canonical.append(chunk.chunkNo()).append(':').append(content.length()).append(':')
+                    .append(content).append('\u0000');
+        }
+        return sha256(canonical.toString());
     }
 
     private String indexedContentHash(List<IndexedChunk> chunks) {
-        String content = chunks.stream().map(indexed -> indexed.chunk.content()).reduce("", String::concat);
-        return sha256(content);
+        return contentHash(chunks.stream().map(IndexedChunk::chunk).toList());
+    }
+
+    /** Hash used by the already published v1 sample before canonical section framing was added. */
+    private String legacyContentHash(List<Chunk> chunks) {
+        return sha256(chunks.stream().map(Chunk::content).reduce("", String::concat));
+    }
+
+    private String versionKey(Chunk chunk) {
+        return chunk.documentCode() + "\u0000" + chunk.versionCode();
+    }
+
+    private String chunkKey(Chunk chunk) {
+        return versionKey(chunk) + "\u0000" + chunk.chunkNo();
+    }
+
+    private static void validateQuery(String query, int limit) {
+        if (query == null || query.isBlank() || query.length() > 2000
+                || query.codePoints().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("知识查询内容无效");
+        }
+        if (limit < 1 || limit > MAX_QUERY_LIMIT) {
+            throw new IllegalArgumentException("知识查询条数必须在1-5之间");
+        }
+    }
+
+    private static String sectionTitle(String content) {
+        if (content == null) return "";
+        int end = content.indexOf('\n');
+        String line = end < 0 ? content : content.substring(0, end);
+        return line.startsWith("# ") ? line.substring(2).trim() : line.trim();
     }
 
     private static String sha256(String value) {
@@ -244,18 +397,26 @@ public class KnowledgeService {
         return Timestamp.from(Instant.now());
     }
 
-    public record ImportSummary(int documentsCreated, int versionsCreated, int chunksCreated, int skippedVersions) {
-    }
+    public record ImportSummary(int documentsCreated, int documentsSkipped, int versionsCreated, int versionsSkipped,
+                                int chunksCreated, int chunksSkipped) {
+        public ImportSummary(int documentsCreated, int versionsCreated, int chunksCreated, int skippedVersions) {
+            this(documentsCreated, 0, versionsCreated, skippedVersions, chunksCreated, 0);
+        }
 
-    public record KnowledgeSearchResult(String content, String documentCode, String versionCode,
-                                        String chunkNo, Double score) {
+        public int skippedVersions() {
+            return versionsSkipped;
+        }
     }
 
     private record Chunk(String documentCode, String versionCode, String title, String desiredStatus,
                          int chunkNo, String content) {
     }
 
-    private record IndexedChunk(Chunk chunk, float[] vector) {
+    private record IndexedChunk(Chunk chunk, RetrievalEmbedding vector) {
+    }
+
+    private record ExistingVersion(String documentId, String versionId, Set<Integer> chunkNumbers) {
+        private static final ExistingVersion MISSING = new ExistingVersion(null, null, Set.of());
     }
 
 }

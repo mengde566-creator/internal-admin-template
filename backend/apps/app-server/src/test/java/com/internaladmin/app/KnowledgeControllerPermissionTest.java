@@ -2,6 +2,7 @@ package com.internaladmin.app;
 
 import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.knowledge.controller.KnowledgeController;
+import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
 import com.internaladmin.module.knowledge.service.KnowledgeService;
 import com.internaladmin.platform.security.config.SecurityConfig;
 import org.junit.jupiter.api.Test;
@@ -21,7 +22,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 import jakarta.annotation.Resource;
-import java.util.List;
+import java.time.Instant;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -57,7 +58,7 @@ class KnowledgeControllerPermissionTest {
 
     @Test
     void warehouseReadUserCanQueryKnowledge() throws Exception {
-        when(knowledgeService.search("仓储", 5)).thenReturn(List.of());
+        when(knowledgeService.query("仓储", 5)).thenReturn(KnowledgeQueryApi.Result.noEvidence(Instant.now()));
 
         mockMvc.perform(get("/api/ai/knowledge/search")
                         .param("query", "仓储")

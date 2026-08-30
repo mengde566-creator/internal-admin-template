@@ -106,7 +106,7 @@ app.ai.embedding.qwen.model = qwen3.7-text-embedding
 app.ai.embedding.qwen.dimensions = 1024
 ```
 
-当前部署提供的`openAiCompatible` HTTPS地址作为`APP_AI_EMBEDDING_QWEN_BASE_URL`；不使用HTTP `apiHost`，也不同时启用DashScope直连接口。workspace已包含在兼容地址中，不建立第二个workspaceId配置，也不把workspace名称作为模型请求参数。启动日志只允许记录provider、model、dimensions和脱敏后的host，不记录完整API Key。
+物品派生索引继续使用`APP_AI_EMBEDDING_QWEN_BASE_URL`的OpenAI兼容 HTTPS 接口；知识库短问题→长文档检索则使用同一 workspace 的官方 DashScope HTTPS 同步接口，固定区分 document/query 文本类型并请求 dense&sparse，不新增 workspaceId 或第二套密钥。启动日志只允许记录 provider、model、dimensions 和脱敏后的 host，不记录完整 API Key。
 
 ### 4.2 MVC与流式响应
 

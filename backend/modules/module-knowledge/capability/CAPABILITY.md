@@ -6,14 +6,14 @@
 
 ## 2. 特有约束
 
-- 只有 `app.ai.enabled=true` 时装配知识数据源、Liquibase、EmbeddingModel 和 PgVectorStore。
-- Embedding 模型固定 `qwen3.7-text-embedding`、1024 维；批次不超过 20 条，只发送片段正文，响应逐条校验维度。
+- 只有 `app.ai.enabled=true` 时装配知识数据源、Liquibase、旧的 OpenAI 兼容 EmbeddingModel（供03F派生索引）和知识检索用 DashScope 非对称客户端。
+- 知识检索模型固定 `qwen3.7-text-embedding`、1024 维；document/query 文本类型分开并请求 `dense&sparse`，每次请求不超过 20 条，只发送片段或原始问题，响应逐条校验 dense 维度与 sparse 项；全批次成功后才提交版本，知识索引 profile 为 `dashscope-dense-sparse-document-v1`。
 - 独立知识 PostgreSQL 配置优先；三项缺失时仅在业务数据源为 PostgreSQL 时复用；部分配置或非 PostgreSQL 业务库明确启动失败。
 - 知识结构归 `ai_knowledge` schema，Spring AI 自动建表关闭；导入在外部调用完成后以短事务幂等写入并切换 ACTIVE 版本。
 
 ## 3. 公开与跨模块契约
 
-`KnowledgeQueryApi` 仅返回带文档/版本/片段引用的检索结果；不暴露 DO、Mapper、JdbcTemplate 或数据库分页对象。固定样本导入入口只接受服务端登记的样本，不接受路径和正文。另以 `AiSearchInfrastructure` 提供受控 AI DataSource、JdbcTemplate 与 1024 维 EmbeddingModel，供已授权的 Adapter 派生索引使用；不暴露知识表或内部 Bean 名称。
+`KnowledgeQueryApi` 仅返回 `FOUND`、`NO_EVIDENCE` 或 `UNAVAILABLE` 及带文档/版本/片段引用的受信结果；不暴露 DO、Mapper、JdbcTemplate 或数据库分页对象。固定样本导入入口只接受服务端登记的样本，不接受路径和正文。知识检索通过 `KnowledgeRetrievalEmbeddingClient` 区分 document/query；另以 `AiSearchInfrastructure` 提供受控 AI DataSource、JdbcTemplate 与旧的 1024 维 EmbeddingModel，供已授权的 Adapter 派生索引使用；不暴露知识表或内部 Bean 名称。
 
 ## 4. 数据所有权
 

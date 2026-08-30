@@ -2,13 +2,13 @@ package com.internaladmin.module.knowledge.config;
 
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.knowledge.api.AiSearchInfrastructure;
+import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient;
+import com.internaladmin.module.knowledge.service.DashScopeKnowledgeEmbeddingClient;
 import com.internaladmin.module.knowledge.service.DimensionCheckingEmbeddingModel;
 import liquibase.integration.spring.SpringLiquibase;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.openai.OpenAiEmbeddingModel;
 import org.springframework.ai.openai.OpenAiEmbeddingOptions;
-import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -102,29 +102,17 @@ public class KnowledgeConfiguration {
     @DependsOn("enabledAiConfiguration")
     public AiSearchInfrastructure aiSearchInfrastructure(
             @Qualifier("knowledgeDataSource") DataSource dataSource,
-            @Qualifier("knowledgeJdbcTemplate") JdbcTemplate jdbcTemplate,
             @Qualifier("knowledgeEmbeddingModel") EmbeddingModel embeddingModel,
             AiProperties properties) {
         AiProperties.Qwen settings = properties.getEmbedding().getQwen();
-        return new AiSearchInfrastructure(dataSource, jdbcTemplate, embeddingModel,
+        return new AiSearchInfrastructure(dataSource, new JdbcTemplate(dataSource), embeddingModel,
                 settings.getModel(), settings.getDimensions());
     }
 
-    @Bean(name = "knowledgeVectorStore")
+    /** Asymmetric document/query client for the knowledge retrieval contract. */
+    @Bean
     @DependsOn("knowledgeLiquibase")
-    public VectorStore knowledgeVectorStore(@Qualifier("knowledgeJdbcTemplate") JdbcTemplate knowledgeJdbcTemplate,
-                                            @Qualifier("knowledgeEmbeddingModel") EmbeddingModel knowledgeEmbeddingModel) {
-        return PgVectorStore.builder(knowledgeJdbcTemplate, knowledgeEmbeddingModel)
-                .schemaName("ai_knowledge")
-                .vectorTableName("ai_knowledge_vector")
-                .dimensions(AiPropertiesDefaults.DIMENSIONS)
-                .distanceType(PgVectorStore.PgDistanceType.COSINE_DISTANCE)
-                .vectorTableValidationsEnabled(true)
-                .initializeSchema(false)
-                .build();
-    }
-
-    private static final class AiPropertiesDefaults {
-        private static final int DIMENSIONS = 1024;
+    public KnowledgeRetrievalEmbeddingClient knowledgeRetrievalEmbeddingClient(AiProperties properties) {
+        return new DashScopeKnowledgeEmbeddingClient(properties.getEmbedding().getQwen());
     }
 }

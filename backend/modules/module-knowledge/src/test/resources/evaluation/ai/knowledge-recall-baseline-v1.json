@@ -1,0 +1,74 @@
+{
+  "version": "knowledge-recall-v1",
+  "corpus": "ai/knowledge-query-evaluation-v1.json",
+  "corpusSha256": "70295274478d59198c606f9820707ea8bbdb2f9b26a507b8baa2f26c33d007ef",
+  "provider": "qwen",
+  "providerStatus": "COMPLETED",
+  "model": "qwen3.7-text-embedding",
+  "dimensions": 1024,
+  "activeChunkCount": 24,
+  "uniqueInputCount": 44,
+  "batchSize": 20,
+  "providerRequestCount": 3,
+  "maxRetries": 0,
+  "thresholdGrid": {"min": 0.50, "max": 0.90, "step": 0.05},
+  "topKOptions": [3, 5],
+  "candidateCap": 5,
+  "selected": {"similarityThreshold": 0.70, "topK": 3},
+  "calibration": {
+    "recallByCategory": {
+      "warehouse-rules": 1.0,
+      "item-codes": 1.0,
+      "warehouse-codes": 1.0,
+      "low-stock-policy": 1.0
+    },
+    "positiveMacroRecallAt5": 1.0,
+    "negativeZeroResultRate": 1.0,
+    "forbiddenHits": 0,
+    "wrongDocumentReferences": 0,
+    "averageCandidates": 0.75,
+    "p95Candidates": 1,
+    "maxCandidates": 1,
+    "candidateCap": 5
+  },
+  "holdout": {
+    "recallByCategory": {
+      "warehouse-rules": 1.0,
+      "item-codes": 1.0,
+      "warehouse-codes": 0.0,
+      "low-stock-policy": 0.0
+    },
+    "positiveMacroRecallAt5": 0.5,
+    "negativeZeroResultRate": 1.0,
+    "forbiddenHits": 0,
+    "wrongDocumentReferences": 1,
+    "averageCandidates": 0.5,
+    "p95Candidates": 2,
+    "maxCandidates": 2,
+    "candidateCap": 5
+  },
+  "vectorOnly": {
+    "recallByCategory": {
+      "warehouse-rules": 1.0,
+      "item-codes": 1.0,
+      "warehouse-codes": 0.0,
+      "low-stock-policy": 0.0
+    },
+    "positiveMacroRecallAt5": 0.5,
+    "negativeZeroResultRate": 1.0,
+    "forbiddenHits": 0,
+    "wrongDocumentReferences": 1,
+    "averageCandidates": 0.5,
+    "p95Candidates": 2,
+    "maxCandidates": 2,
+    "candidateCap": 5
+  },
+  "staleVersionHits": 0,
+  "wrongDocumentReferences": 1,
+  "status": "GATE_NOT_PASSED",
+  "container": {
+    "image": "pgvector/pgvector:0.8.6-pg17-bookworm",
+    "tmpfs": true,
+    "persistentVolume": false
+  }
+}

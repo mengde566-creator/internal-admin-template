@@ -54,6 +54,8 @@ public final class SyntheticKnowledgeCatalog {
         }
         List<Chunk> chunks = new ArrayList<>();
         Set<String> versionKeys = new HashSet<>();
+        Set<String> documents = new HashSet<>();
+        Set<String> activeDocuments = new HashSet<>();
         for (IndexEntry entry : entries) {
             requireText(entry.documentCode(), "documentCode");
             requireText(entry.versionCode(), "versionCode");
@@ -67,6 +69,10 @@ public final class SyntheticKnowledgeCatalog {
             if (!versionKeys.add(key)) {
                 throw invalid("固定知识索引版本重复: " + key);
             }
+            if (entry.status().equals("ACTIVE") && !activeDocuments.add(entry.documentCode())) {
+                throw invalid("固定知识索引同一文档只能有一个ACTIVE版本: " + entry.documentCode());
+            }
+            documents.add(entry.documentCode());
             String markdown = resourceLoader.apply(entry.resource());
             if (markdown == null) {
                 throw invalid("固定知识资源缺失: " + entry.resource());
@@ -77,6 +83,9 @@ public final class SyntheticKnowledgeCatalog {
                 chunks.add(new Chunk(entry.documentCode(), entry.versionCode(), entry.title(), entry.status(),
                         i + 1, section.content()));
             }
+        }
+        if (!activeDocuments.containsAll(documents)) {
+            throw invalid("固定知识索引每个文档必须有一个ACTIVE版本");
         }
         return List.copyOf(chunks);
     }

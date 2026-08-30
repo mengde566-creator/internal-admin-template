@@ -45,4 +45,25 @@
             <column name="id"/>
         </createIndex>
     </changeSet>
+
+    <changeSet id="2026-08-30-0003-add-knowledge-sparse-vectors" author="template" dbms="postgresql">
+        <addColumn schemaName="ai_knowledge" tableName="ai_knowledge_vector">
+            <column name="sparse_norm" type="DOUBLE PRECISION"/>
+        </addColumn>
+        <createTable schemaName="ai_knowledge" tableName="ai_knowledge_sparse_vector">
+            <column name="vector_id" type="UUID"><constraints nullable="false"/></column>
+            <column name="token_index" type="INTEGER"><constraints nullable="false"/></column>
+            <column name="weight" type="DOUBLE PRECISION"><constraints nullable="false"/></column>
+        </createTable>
+        <addPrimaryKey schemaName="ai_knowledge" tableName="ai_knowledge_sparse_vector"
+                       columnNames="vector_id,token_index" constraintName="pk_ai_knowledge_sparse_vector"/>
+        <addForeignKeyConstraint baseTableSchemaName="ai_knowledge" baseTableName="ai_knowledge_sparse_vector"
+                                 baseColumnNames="vector_id" referencedTableSchemaName="ai_knowledge"
+                                 referencedTableName="ai_knowledge_vector" referencedColumnNames="id"
+                                 constraintName="fk_ai_knowledge_sparse_vector"/>
+        <createIndex schemaName="ai_knowledge" tableName="ai_knowledge_sparse_vector"
+                     indexName="idx_ai_knowledge_sparse_token">
+            <column name="token_index"/>
+        </createIndex>
+    </changeSet>
 </databaseChangeLog>
