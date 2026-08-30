@@ -46,10 +46,11 @@ public class AgentStore {
     private static final int MAX_RETRY_PLAN_CHARS = 20_000;
     public static final int MAX_KNOWLEDGE_CARD_CHARS = 20_000;
     private static final java.util.Set<String> RETRYABLE_CODES = java.util.Set.of(
-            "AI_TOOL_TIMEOUT", "AI_TOOL_DATABASE_UNAVAILABLE", "AI_TOOL_EXECUTION_FAILED");
+            "AI_TOOL_TIMEOUT", "AI_TOOL_DATABASE_UNAVAILABLE", "AI_TOOL_EXECUTION_FAILED",
+            "AI_KNOWLEDGE_UNAVAILABLE");
     private static final java.util.Set<String> RETRYABLE_TOOLS = java.util.Set.of(
             "warehouse_current_stock", "warehouse_item_locations", "warehouse_location_contents",
-            "warehouse_recent_movements");
+            "warehouse_recent_movements", "knowledge_search");
 
     /** Narrow failure classification for the History/Observation/terminal success boundary. */
     public enum SuccessBoundaryFailure {
@@ -727,6 +728,15 @@ public class AgentStore {
                         || arguments == null || arguments.length() > 8_000) return null;
                 JsonNode argumentObject = JSON.readTree(arguments);
                 if (argumentObject == null || !argumentObject.isObject()) return null;
+                if ("knowledge_search".equals(toolName)) {
+                    java.util.Set<String> argumentFields = new java.util.HashSet<>();
+                    argumentObject.propertyNames().forEach(argumentFields::add);
+                    JsonNode queryText = argumentObject.get("queryText");
+                    if (!argumentFields.equals(java.util.Set.of("queryText")) || queryText == null
+                            || !queryText.isTextual() || queryText.asText().isBlank()
+                            || queryText.asText().length() > 2_000
+                            || queryText.asText().codePoints().anyMatch(Character::isISOControl)) return null;
+                }
                 previousOrder = node.path("order").asLong();
                 subtasks.add(new RetrySubtask(node.path("order").asLong(), toolName, arguments, errorCode));
             }

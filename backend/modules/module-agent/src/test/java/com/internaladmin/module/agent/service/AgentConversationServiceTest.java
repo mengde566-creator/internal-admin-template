@@ -396,6 +396,44 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void knowledgeUnavailableDoesNotMaskSuccessfulWarehouseResult() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":false,\"code\":\"AI_KNOWLEDGE_UNAVAILABLE\",\"message\":\"知识库暂不可用\",\"data\":null}"));
+        when(store.completePartial(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_KNOWLEDGE_UNAVAILABLE"), eq(observations), any(AgentStore.RetryPlan.class), anyString()))
+                .thenReturn(true);
+        when(store.retryAvailable(anyString(), anyString(), anyLong(), anyString())).thenReturn(true);
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext execution = new AgentExecutionContext(actor, "run-mixed-knowledge-down",
+                "查库存并说明规则", ignored -> { });
+        execution.recordToolSuccess("warehouse_current_stock", "库存结果");
+        execution.recordKnowledgeResult(KnowledgeQueryApi.Result.unavailable(java.time.Instant.parse("2026-08-30T00:00:00Z")));
+        execution.recordKnowledgeCard("{\"cardId\":\"knowledge-run-mixed-knowledge-down\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"DEGRADED\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":0,\"truncated\":false,\"citations\":[]}");
+        execution.recordToolFailure("knowledge_search", "{\"queryText\":\"查库存并说明规则\"}",
+                "AI_KNOWLEDGE_UNAVAILABLE", "知识库暂不可用");
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-mixed-knowledge-down", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        verify(store).completePartial(anyString(), eq("run-mixed-knowledge-down"), anyString(), anyString(),
+                anyString(), anyLong(), eq("AI_KNOWLEDGE_UNAVAILABLE"), eq(observations), any(AgentStore.RetryPlan.class), anyString());
+        assertEquals(0, events.stream().filter(event -> event.name().equals("run.failed")).count());
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("run.completed")
+                && event.data().contains("PARTIAL") && event.data().contains("\"retryAvailable\":true")));
+    }
+
+    @Test
     void invalidCorrectionAfterAValidatedToolCardBecomesPartialNotSuccessful() {
         AgentStore store = mock(AgentStore.class);
         ChatClient client = mock(ChatClient.class);
@@ -667,6 +705,43 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void unavailableKnowledgeOutcomeCreatesStrictKnowledgeRetryPlan() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"ignored\",\"data\":null}"));
+        when(store.completeFailure(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                eq("AI_KNOWLEDGE_UNAVAILABLE"), eq(observations), any(AgentStore.RetryPlan.class), anyString()))
+                .thenReturn(true);
+        when(store.retryAvailable(anyString(), anyString(), anyLong(), anyString())).thenReturn(true);
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext execution = new AgentExecutionContext(actor, "run-knowledge-retry", "查询制度", ignored -> { });
+        execution.recordKnowledgeResult(KnowledgeQueryApi.Result.unavailable(java.time.Instant.parse("2026-08-30T00:00:00Z")));
+        execution.recordKnowledgeCard("{\"cardId\":\"knowledge-run-knowledge-retry\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"DEGRADED\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":0,\"truncated\":false,\"citations\":[]}");
+        execution.recordToolFailure("knowledge_search", "{\"queryText\":\"查询制度\"}",
+                "AI_KNOWLEDGE_UNAVAILABLE", "知识库暂时不可用");
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-knowledge-retry", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+        var plan = org.mockito.ArgumentCaptor.forClass(AgentStore.RetryPlan.class);
+        verify(store).completeFailure(anyString(), eq("run-knowledge-retry"), anyString(), anyString(), anyString(),
+                anyLong(), eq("AI_KNOWLEDGE_UNAVAILABLE"), eq(observations), plan.capture(), anyString());
+        assertEquals("knowledge_search", plan.getValue().subtasks().getFirst().toolName());
+        assertEquals("{\"queryText\":\"查询制度\"}", plan.getValue().subtasks().getFirst().arguments());
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("run.failed")
+                && event.data().contains("\"retryAvailable\":true")));
+        verify(request, never()).call();
+    }
+
+    @Test
     void foundKnowledgeCardIsDowngradedButCitationSurvivesModelFailure() {
         AgentStore store = mock(AgentStore.class);
         ChatClient client = mock(ChatClient.class);
@@ -745,6 +820,8 @@ class AgentConversationServiceTest {
         assertTrue(system.getValue().contains("即使没有说制度或规定，也属于仓储操作规则问题"));
         assertTrue(system.getValue().contains("必须先调用knowledge_search"));
         assertTrue(system.getValue().contains("实时数量、位置和移动事实仍只调用Warehouse工具"));
+        assertTrue(system.getValue().contains("同一个初始工具决策若同时包含知识查询和一个或多个完整的实时仓储子任务"));
+        assertTrue(system.getValue().contains("只有该批次结束、知识调用已受理后，后续模型迭代才只允许知识回答"));
         assertFalse(system.getValue().contains("同时涉及当前库存和最近变化时，先确认用户要查询哪一种"));
     }
 

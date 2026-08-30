@@ -102,7 +102,9 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
             if (toolContext == null || !(toolContext.getContext().get(CONTEXT_KEY) instanceof AgentExecutionContext value)) {
                 throw new AgentToolException(AgentErrorCode.TOOL_FORBIDDEN, "缺少可信运行上下文");
             }
-            if (value.knowledgeOnlyLocked()) {
+            if (value.knowledgeOnlyLocked()
+                    && !value.consumeMixedToolAuthorization(toolName())
+                    && !value.consumeRetryTool(toolName())) {
                 throw new AgentToolException(AgentErrorCode.BUSINESS_REJECTED, "本次运行仅允许知识查询");
             }
             return value;

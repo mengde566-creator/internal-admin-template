@@ -103,6 +103,7 @@ class KnowledgeToolProviderTest {
                 .call("{\"queryText\":\"制度\"}", context(unavailableExecution)));
         assertFalse(unavailableResult.get("success").asBoolean());
         assertEquals("AI_KNOWLEDGE_UNAVAILABLE", unavailableResult.get("code").asText());
+        assertEquals("{\"queryText\":\"制度\"}", unavailableExecution.toolOutcomes().getFirst().arguments());
     }
 
     @Test

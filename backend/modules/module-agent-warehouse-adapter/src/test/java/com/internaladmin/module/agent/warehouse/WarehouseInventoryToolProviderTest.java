@@ -4,6 +4,7 @@ import com.internaladmin.module.agent.api.AgentRunContext;
 import com.internaladmin.module.agent.api.AgentErrorCode;
 import com.internaladmin.module.agent.api.AgentToolException;
 import com.internaladmin.module.agent.knowledge.KnowledgeToolProvider;
+import com.internaladmin.module.agent.config.MixedToolCallingManager;
 import com.internaladmin.module.agent.service.AgentConversationService;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
 import com.internaladmin.module.agent.store.AgentStore;
@@ -29,7 +30,15 @@ import com.internaladmin.platform.kernel.error.ErrorCode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.deepseek.DeepSeekChatOptions;
+import org.springframework.ai.model.tool.ToolCallingManager;
+import org.springframework.ai.model.tool.ToolExecutionResult;
 import org.springframework.ai.tool.ToolCallback;
 import liquibase.integration.spring.SpringLiquibase;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -136,6 +145,49 @@ class WarehouseInventoryToolProviderTest {
         knowledgeThread.join(5_000);
         assertFalse(knowledgeThread.isAlive(), "知识查询线程应在释放后结束");
         verify(knowledge).query("仓储制度", 1);
+    }
+
+    @Test
+    void mixedInitialToolBatchMustKeepWarehouseAllowedAfterKnowledgeBegins() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("NO_DATA", List.of(), List.of(), Instant.now()));
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-mixed-red", "仓储制度和测试物品库存", ignored -> { });
+        assertTrue(execution.openMixedToolAuthorization(List.of(WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL)));
+        execution.beginKnowledgeCall();
+
+        ToolCallback stock = provider(warehouse, iam).getToolCallbacks()[0];
+        String output = stock.call(itemInput("测试物品"),
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        assertTrue(output.contains("\"outcome\":\"NO_DATA\""),
+                "同一初始Tool批次的仓储调用不应因知识查询先开始而被闭锁");
+        verify(warehouse).queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any());
+    }
+
+    @Test
+    void serverRetryAuthorizationAllowsWarehouseSubtaskAfterKnowledgeRetryLocksRun() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("NO_DATA", List.of(), List.of(), Instant.now()));
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                "run-retry-mixed", "重试未完成查询", ignored -> { });
+        execution.beginKnowledgeCall();
+        execution.authorizeRetryTool(WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL);
+
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(itemInput("测试物品"),
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        assertTrue(output.contains("\"outcome\":\"NO_DATA\""));
+        verify(warehouse).queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any());
+        assertFalse(execution.consumeRetryTool(WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL));
     }
 
     @Test
@@ -1040,6 +1092,105 @@ class WarehouseInventoryToolProviderTest {
     }
 
     @Test
+    void mixedKnowledgeAndWarehouseBatchUsesRealCallbacksAndPreservesCardOrder() throws Exception {
+        JdbcTemplate jdbc = database("production-mixed-chain");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        String message = "查一下测试物品库存并说明出库规则";
+        AgentStore.StartRun run = store.startRun(conversationId, "production-mixed-request", message, 7L,
+                actorScopeFingerprint());
+
+        Instant queriedAt = Instant.parse("2026-08-30T00:00:00Z");
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        when(knowledge.query(message, 1)).thenReturn(KnowledgeQueryApi.Result.found(List.of(
+                new KnowledgeQueryApi.Citation("warehouse-rules", "仓储规则", "v2", "出库校验", 1,
+                        "出库前检查可用余额。", 0.9, true,
+                        "knowledge://warehouse-rules/v2#1", queriedAt, queriedAt)), queriedAt, false));
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any()))
+                .thenReturn(stockResult("ITEM-01", "测试物品", "2.0000"));
+        AiObservationRecorder observations = new JdbcAiObservationRecorder(jdbc);
+        KnowledgeToolProvider knowledgeProvider = new KnowledgeToolProvider(knowledge, observations);
+        WarehouseInventoryToolProvider warehouseProvider = provider(warehouse, iam, observations);
+        ToolCallback knowledgeCallback = knowledgeProvider.getToolCallbacks()[0];
+        ToolCallback warehouseCallback = warehouseProvider.getToolCallbacks()[0];
+
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        AgentConversationService service = new AgentConversationService(store, client, observations,
+                new AiProperties(), List.of(warehouseProvider, knowledgeProvider));
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        AtomicLong eventSequence = new AtomicLong();
+        AtomicBoolean clarificationProduced = new AtomicBoolean();
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(actor.getUserId(), actor.getDepartmentId(), false, actor.getAuthorities()),
+                run.runId(), run.effectiveUserMessage(), card -> {
+                    AgentConversationService.CardIdentity identity = service.inspectCard(card);
+                    AgentConversationService.PreparedCard prepared = service.recordCard(run, identity,
+                            actorScopeFingerprint());
+                    if ("knowledge-answer".equals(identity.cardType())) {
+                        events.add(AgentConversationService.envelopedEvent("citation.added", run, eventSequence,
+                                run.assistantMessageId(), service.knowledgeCitationPayload(identity)));
+                    }
+                    events.add(AgentConversationService.envelopedEvent("card.replace", run, eventSequence,
+                            run.assistantMessageId(), prepared.json()));
+                }, new AtomicBoolean(), eventSequence, run.assistantMessageId(), run.taskId(), run.taskRevision(),
+                clarificationProduced);
+
+        ToolCallingManager delegate = mock(ToolCallingManager.class);
+        ToolExecutionResult toolResult = mock(ToolExecutionResult.class);
+        when(delegate.executeToolCalls(any(Prompt.class), any(ChatResponse.class))).thenAnswer(invocation -> {
+            Prompt prompt = invocation.getArgument(0, Prompt.class);
+            ToolContext context = new ToolContext(Map.of("agent.execution", execution));
+            knowledgeCallback.call("{\"queryText\":\"" + message + "\"}", context);
+            warehouseCallback.call(itemInput("测试物品"), context);
+            return toolResult;
+        });
+        MixedToolCallingManager manager = new MixedToolCallingManager(delegate,
+                List.of(warehouseCallback.getToolDefinition().name(), knowledgeCallback.getToolDefinition().name()));
+        DeepSeekChatOptions options = DeepSeekChatOptions.builder()
+                .toolCallbacks(knowledgeCallback, warehouseCallback)
+                .toolContext(Map.of("agent.execution", execution)).build();
+        Prompt toolPrompt = new Prompt(new UserMessage(message), options);
+        ChatResponse toolResponse = new ChatResponse(List.of(new Generation(AssistantMessage.builder().content("")
+                .toolCalls(List.of(
+                        new AssistantMessage.ToolCall("knowledge-1", "function", "knowledge_search",
+                                "{\"queryText\":\"" + message + "\"}"),
+                        new AssistantMessage.ToolCall("stock-1", "function", "warehouse_current_stock", itemInput("测试物品"))))
+                .build())));
+        when(stream.content()).thenAnswer(invocation -> {
+            manager.executeToolCalls(toolPrompt, toolResponse);
+            return Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已完成\",\"data\":null}");
+        });
+
+        service.execute(run, execution, events::add, new AtomicBoolean());
+
+        List<String> eventNames = events.stream().map(AgentConversationService.StreamEvent::name).toList();
+        assertEquals(List.of("run.started", "citation.added", "card.replace", "card.replace",
+                "message.completed", "run.completed"), eventNames);
+        assertTrue(events.get(1).data().contains("warehouse-rules"));
+        assertTrue(events.get(2).data().contains("knowledge-answer"));
+        assertTrue(events.get(3).data().contains("stock-summary"));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM ai_message WHERE run_id = ? AND role = 'ASSISTANT'",
+                Integer.class, run.runId()));
+        assertEquals(AgentStore.COMPLETE, jdbc.queryForObject("SELECT status FROM ai_run WHERE run_id = ?",
+                String.class, run.runId()));
+        assertEquals(AgentStore.TASK_COMPLETED, store.task(run.taskId()).status());
+        verify(knowledge).query(message, 1);
+        verify(warehouse).queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any());
+        assertEquals(List.of("knowledge_search", WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL),
+                execution.toolOutcomes().stream().map(AgentExecutionContext.ToolOutcome::toolName).toList());
+    }
+
+    @Test
     void retryExecutesRealProviderCandidateWithoutReplayingSuccessfulTool() throws Exception {
         JdbcTemplate jdbc = database("production-retry-candidate");
         AgentStore store = new AgentStore(jdbc);
@@ -1117,6 +1268,67 @@ class WarehouseInventoryToolProviderTest {
                 Integer.class, child.runId()));
         assertEquals(AgentStore.COMPLETE, jdbc.queryForObject("SELECT status FROM ai_run WHERE run_id = ?",
                 String.class, child.runId()));
+    }
+
+    @Test
+    void knowledgeUnavailableRetryReplaysOnlyKnowledgeCallbackWithoutChat() throws Exception {
+        JdbcTemplate jdbc = database("production-knowledge-retry");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        String scope = actorScopeFingerprint();
+        String message = "查询出库规则";
+        AgentStore.StartRun source = store.startRun(conversationId, "knowledge-retry-source", message, 7L, scope);
+
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        AtomicBoolean unavailable = new AtomicBoolean(true);
+        Instant queriedAt = Instant.parse("2026-08-30T00:00:00Z");
+        when(knowledge.query(message, 1)).thenAnswer(invocation -> {
+            if (unavailable.get()) throw new IllegalStateException("knowledge database unavailable");
+            return KnowledgeQueryApi.Result.found(List.of(new KnowledgeQueryApi.Citation(
+                    "warehouse-rules", "仓储规则", "v2", "出库校验", 1,
+                    "出库前检查可用余额。", 0.9, true,
+                    "knowledge://warehouse-rules/v2#1", queriedAt, queriedAt)), queriedAt, false);
+        });
+        AiObservationRecorder observations = new JdbcAiObservationRecorder(jdbc);
+        KnowledgeToolProvider knowledgeProvider = new KnowledgeToolProvider(knowledge, observations);
+        ToolCallback knowledgeCallback = knowledgeProvider.getToolCallbacks()[0];
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        AtomicReference<AgentExecutionContext> current = new AtomicReference<>();
+        when(stream.content()).thenAnswer(invocation -> {
+            knowledgeCallback.call("{\"queryText\":\"" + message + "\"}",
+                    new ToolContext(Map.of("agent.execution", current.get())));
+            return Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"ignored\",\"data\":null}");
+        });
+        AgentConversationService service = new AgentConversationService(store, client, observations,
+                new AiProperties(), List.of(knowledgeProvider));
+        List<AgentConversationService.StreamEvent> sourceEvents = new ArrayList<>();
+        current.set(executionFor(service, source, scope, new ArrayList<>(), sourceEvents));
+        service.execute(source, current.get(), sourceEvents::add, new AtomicBoolean());
+
+        assertEquals(AgentStore.FAILED, store.status(source.runId()));
+        assertTrue(store.retryAvailable(conversationId, source.runId(), 7L, scope));
+        AgentStore.StartRun child = store.startRetryRun(conversationId, "knowledge-retry-child", source.runId(),
+                7L, scope, Duration.ofHours(1));
+        unavailable.set(false);
+        List<String> childCards = new ArrayList<>();
+        List<AgentConversationService.StreamEvent> childEvents = new ArrayList<>();
+        current.set(executionFor(service, child, scope, childCards, childEvents));
+        service.execute(child, current.get(), childEvents::add, new AtomicBoolean());
+
+        verify(client, times(1)).prompt();
+        verify(knowledge, times(2)).query(message, 1);
+        assertEquals(AgentStore.COMPLETE, store.status(child.runId()));
+        assertEquals(1, childCards.size());
+        assertTrue(childCards.getFirst().contains("warehouse-rules"));
+        assertEquals(List.of("run.started", "card.replace", "message.completed", "run.completed"),
+                childEvents.stream().map(AgentConversationService.StreamEvent::name).toList());
     }
 
     private WarehouseInventoryToolProvider provider(WarehouseQueryApi warehouse, IamActorApi iam) {

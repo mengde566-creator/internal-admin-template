@@ -1,14 +1,24 @@
 package com.internaladmin.app;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.internaladmin.module.agent.api.AgentRunContext;
 import com.internaladmin.module.agent.knowledge.KnowledgeToolProvider;
 import com.internaladmin.module.agent.service.AgentConversationService;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
 import com.internaladmin.module.agent.store.AgentStore;
 import com.internaladmin.module.agent.warehouse.WarehouseInventoryToolProvider;
+import com.internaladmin.module.agent.warehouse.WarehouseSearchSynchronizer;
 import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
 import com.internaladmin.module.agent.model.dto.MessageDTO;
 import com.internaladmin.module.agent.model.dto.MessagePageDTO;
+import com.internaladmin.module.iam.mapper.UserMapper;
+import com.internaladmin.module.iam.model.entity.UserDO;
+import com.internaladmin.module.warehouse.model.dto.InventoryLineDTO;
+import com.internaladmin.module.warehouse.model.dto.InventoryRequestDTO;
+import com.internaladmin.module.warehouse.model.dto.ItemCreateDTO;
+import com.internaladmin.module.warehouse.model.dto.LocationCreateDTO;
+import com.internaladmin.module.warehouse.model.dto.WarehouseCreateDTO;
+import com.internaladmin.module.warehouse.service.WarehouseService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -27,6 +37,8 @@ import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import liquibase.integration.spring.SpringLiquibase;
 
 import javax.sql.DataSource;
@@ -59,8 +71,7 @@ class AgentKnowledgeExternalIT {
     private static final String KNOWLEDGE_URL = "jdbc:postgresql://127.0.0.1:15432/internal_admin_knowledge";
     private static final Path BUSINESS_DB = Path.of(System.getProperty("java.io.tmpdir"),
             "agent-knowledge-gate-" + UUID.randomUUID() + ".db");
-    private static final AgentRunContext ACTOR = new AgentRunContext(700001L, 700002L, true,
-            List.of("warehouse:read"));
+    private AgentRunContext actor;
 
     @Autowired
     private AgentConversationService service;
@@ -72,6 +83,12 @@ class AgentKnowledgeExternalIT {
     private KnowledgeToolProvider knowledgeToolProvider;
     @Autowired
     private WarehouseInventoryToolProvider warehouseInventoryToolProvider;
+    @Autowired
+    private WarehouseService warehouseService;
+    @Autowired
+    private UserMapper userMapper;
+    @Autowired(required = false)
+    private WarehouseSearchSynchronizer warehouseSearchSynchronizer;
     @Autowired
     private ChatClient chatClient;
 
@@ -95,7 +112,7 @@ class AgentKnowledgeExternalIT {
     }
 
     @Test
-    void knowledgeAnswersUseTheRealToolStoreAndSseChain() {
+    void mixedWarehouseAndKnowledgeRunsUseOneInitialToolBatchAndPreserveOrder() {
         Assumptions.assumeTrue(KNOWLEDGE_URL.equals(env("SPRING_DATASOURCE_URL")),
                 "知识库目标必须是本项目本机 127.0.0.1:15432/internal_admin_knowledge");
         Assumptions.assumeTrue(!env("SPRING_DATASOURCE_USERNAME").isBlank(), "知识库用户名未配置");
@@ -107,60 +124,107 @@ class AgentKnowledgeExternalIT {
         assertThat(warehouseInventoryToolProvider).isNotNull();
         assertThat(chatClient).isNotNull();
 
-        runNoEvidence("叉车轮胎气压设置多少");
-        runFound("错误的库存流水可以直接改掉吗？", "warehouse-rules", "v2");
-        runFound("业务编码是不是数据库内部编号？", "item-codes", "v2");
-        runFound("查询位置时需要提交数据库ID吗？", "warehouse-codes", "v2");
+        prepareA100Fixture();
+        RunEvidence warehouseFirst = execute("查一下A100现在还有多少，低于制度阈值后应该怎么处理？");
+        assertMixedRun(warehouseFirst, List.of("warehouse_current_stock", "knowledge_search"));
+        RunEvidence knowledgeFirst = execute("按制度A100低库存该怎么办，再看看现在还有多少？");
+        assertMixedRun(knowledgeFirst, List.of("knowledge_search", "warehouse_current_stock"));
     }
 
-    private void runFound(String question, String documentCode, String versionCode) {
-        RunEvidence evidence = execute(question);
+    private void assertMixedRun(RunEvidence evidence, List<String> expectedToolOrder) {
+        assertThat(evidence.toolOrder()).containsExactlyElementsOf(expectedToolOrder);
         assertThat(evidence.knowledgeCalls()).hasSize(1);
-        assertThat(evidence.knowledgeCalls().getFirst().arguments()).isEqualTo(normalizeQuestion(question));
+        assertThat(evidence.knowledgeCalls().getFirst().arguments())
+                .isEqualTo("{\"queryText\":\"" + jsonEscape(normalizeQuestion(evidence.question())) + "\"}");
         assertThat(evidence.knowledgeCalls().getFirst().success()).isTrue();
         assertThat(evidence.knowledgeCalls().getFirst().errorCode()).isNull();
+        assertThat(evidence.warehouseCalls()).hasSize(1);
+        assertThat(evidence.warehouseCalls().getFirst().success()).isTrue();
+        assertThat(evidence.warehouseCalls().getFirst().errorCode()).isNull();
+        List<String> expectedEvents = expectedToolOrder.getFirst().equals(KnowledgeToolProvider.TOOL_NAME)
+                ? List.of("run.started", "citation.added", "card.replace", "card.replace", "message.completed", "run.completed")
+                : List.of("run.started", "card.replace", "citation.added", "card.replace", "message.completed", "run.completed");
         assertThat(evidence.events().stream().map(AgentConversationService.StreamEvent::name).toList())
-                .containsExactly("run.started", "citation.added", "card.replace", "message.completed", "run.completed");
+                .containsExactlyElementsOf(expectedEvents);
         assertThat(evidence.events().stream().map(AgentConversationService.StreamEvent::data))
-                .anyMatch(data -> data.contains("\"documentCode\":\"" + documentCode + "\"")
-                        && data.contains("\"versionCode\":\"" + versionCode + "\""));
+                .anyMatch(data -> data.contains("\"documentCode\":\"low-stock-policy\"")
+                        && data.contains("\"versionCode\":\"v1\""));
         assertThat(evidence.events().stream().map(AgentConversationService.StreamEvent::data))
-                .noneMatch(data -> data.contains("itemId") || data.contains("departmentId") || data.contains("userId"));
-        assertThat(evidence.warehouseCalls()).isEmpty();
+                .noneMatch(data -> data.contains("itemId") || data.contains("locationId")
+                        || data.contains("versionId") || data.contains("score") || data.contains("vector"));
+        assertThat(evidence.events().stream().map(AgentConversationService.StreamEvent::data).toList())
+                .anyMatch(data -> data.contains("A100"));
         assertThat(evidence.assistant().knowledgeAnswer()).isNotNull();
         assertThat(evidence.assistant().knowledgeAnswer().outcome()).isEqualTo("ANSWERED");
         assertThat(evidence.assistant().knowledgeAnswer().citations()).hasSize(1);
+        assertThat(evidence.assistant().knowledgeAnswer().citations().getFirst().documentCode())
+                .isEqualTo("low-stock-policy");
+        assertThat(evidence.assistant().knowledgeAnswer().citations().getFirst().versionCode()).isEqualTo("v1");
         assertThat(evidence.assistant().state()).isEqualTo(AgentStore.COMPLETE);
+        assertThat(evidence.historyAssistant().messageId()).isEqualTo(evidence.assistant().messageId());
+        assertThat(evidence.historyAssistant().knowledgeAnswer()).isEqualTo(evidence.assistant().knowledgeAnswer());
+        assertThat(evidence.taskStatus()).isEqualTo(AgentStore.TASK_COMPLETED);
+        assertThat(evidence.taskRevision()).isGreaterThanOrEqualTo(1L);
+        assertThat(evidence.lateWarehouseDenied()).isTrue();
+        assertThat(evidence.warehouseCallsAfterLateAttempt()).isEqualTo(1);
     }
 
-    private void runNoEvidence(String question) {
-        RunEvidence evidence = execute(question);
-        assertThat(evidence.knowledgeCalls()).hasSize(1);
-        assertThat(evidence.knowledgeCalls().getFirst().arguments()).isEqualTo(normalizeQuestion(question));
-        assertThat(evidence.events().stream().map(AgentConversationService.StreamEvent::name).toList())
-                .containsExactly("run.started", "card.replace", "message.completed", "run.completed");
-        assertThat(evidence.events()).noneMatch(event -> "citation.added".equals(event.name()));
-        assertThat(evidence.events().stream().map(AgentConversationService.StreamEvent::data))
-                .anyMatch(data -> data.contains("没有找到可引用依据"));
-        assertThat(evidence.warehouseCalls()).isEmpty();
-        assertThat(evidence.assistant().knowledgeAnswer()).isNotNull();
-        assertThat(evidence.assistant().knowledgeAnswer().outcome()).isEqualTo("NO_EVIDENCE");
-        assertThat(evidence.assistant().knowledgeAnswer().citations()).isEmpty();
-        assertThat(evidence.assistant().state()).isEqualTo(AgentStore.COMPLETE);
+    private void prepareA100Fixture() {
+        if (warehouseSearchSynchronizer != null) {
+            // The fixture is created through the normal WarehouseService write path.  Stop the
+            // adapter-owned derived-index worker first so this gate measures only the authorised
+            // Knowledge query embedding, not an unrelated warehouse index update.
+            warehouseSearchSynchronizer.stop();
+        }
+        UserDO admin = userMapper.selectOne(new LambdaQueryWrapper<UserDO>().eq(UserDO::getUsername, "admin"));
+        assertThat(admin).as("临时业务SQLite应由正常入口初始化管理员").isNotNull();
+        actor = new AgentRunContext(admin.getId(), admin.getDepartmentId(), true, List.of("warehouse:read"));
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(admin.getId(), "04c-gate"));
+        try {
+            ItemCreateDTO item = new ItemCreateDTO();
+            item.setCode("A100");
+            item.setName("A100合成物品");
+            item.setBaseUnit("件");
+            Long itemId = warehouseService.createItem(item);
+
+            WarehouseCreateDTO warehouse = new WarehouseCreateDTO();
+            warehouse.setCode("WH-04C-A100");
+            warehouse.setName("04C合成仓库");
+            warehouse.setDepartmentId(admin.getDepartmentId());
+            Long warehouseId = warehouseService.createWarehouse(warehouse);
+
+            LocationCreateDTO location = new LocationCreateDTO();
+            location.setWarehouseId(warehouseId);
+            location.setCode("A100-01");
+            location.setName("A100合成库位");
+            Long locationId = warehouseService.createLocation(location);
+
+            InventoryLineDTO line = new InventoryLineDTO();
+            line.setItemId(itemId);
+            line.setLocationId(locationId);
+            line.setQuantity("12");
+            InventoryRequestDTO inbound = new InventoryRequestDTO();
+            inbound.setRequestId("04C-A100-" + UUID.randomUUID());
+            inbound.setLines(List.of(line));
+            warehouseService.inbound(inbound);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
     }
 
     private RunEvidence execute(String question) {
-        var conversation = service.createConversation(ACTOR.userId());
+        var conversation = service.createConversation(actor.userId());
         AgentStore.StartRun run = service.start(conversation.conversationId(), UUID.randomUUID().toString(),
-                question, ACTOR);
+                question, actor);
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
         Set<String> cardKeys = java.util.concurrent.ConcurrentHashMap.newKeySet();
         AtomicLong sequence = new AtomicLong();
-        AgentExecutionContext execution = new AgentExecutionContext(ACTOR, run.runId(),
+        AgentExecutionContext execution = new AgentExecutionContext(actor, run.runId(),
                 run.effectiveUserMessage() == null ? question : run.effectiveUserMessage(), card -> {
             AgentConversationService.CardIdentity identity = service.inspectCard(card);
             if (!cardKeys.add(identity.key())) return;
-            AgentConversationService.PreparedCard prepared = service.recordCard(run, identity, ACTOR.scopeFingerprint());
+            AgentConversationService.PreparedCard prepared = service.recordCard(run, identity, actor.scopeFingerprint());
             if ("knowledge-answer".equals(identity.cardType())) {
                 String citation = service.knowledgeCitationPayload(identity);
                 if (citation != null) {
@@ -173,8 +237,8 @@ class AgentKnowledgeExternalIT {
         }, new AtomicBoolean(), sequence, run.assistantMessageId(), run.taskId(), run.taskRevision(),
                 new AtomicBoolean());
         service.execute(run, execution, events::add, new AtomicBoolean());
-        MessagePageDTO history = service.pageMessages(conversation.conversationId(), ACTOR.userId(),
-                ACTOR.scopeFingerprint(), 1, 50);
+        MessagePageDTO history = service.pageMessages(conversation.conversationId(), actor.userId(),
+                actor.scopeFingerprint(), 1, 50);
         MessageDTO assistant = history.records().stream()
                 .filter(message -> "ASSISTANT".equals(message.role()))
                 .findFirst().orElseThrow(() -> new AssertionError("助手History缺失"));
@@ -184,7 +248,24 @@ class AgentKnowledgeExternalIT {
         List<AgentExecutionContext.ToolOutcome> warehouseCalls = execution.toolOutcomes().stream()
                 .filter(outcome -> outcome.toolName() != null && outcome.toolName().startsWith("warehouse_"))
                 .toList();
-        return new RunEvidence(events, assistant, knowledgeCalls, warehouseCalls);
+        boolean lateDenied = false;
+        try {
+            var stockCallback = java.util.Arrays.stream(warehouseInventoryToolProvider.getToolCallbacks())
+                    .filter(callback -> WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL
+                            .equals(callback.getToolDefinition().name())).findFirst().orElseThrow();
+            stockCallback.call("{\"itemMentions\":[\"A100\"],\"excludedItemMentions\":[],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",
+                    new org.springframework.ai.chat.model.ToolContext(java.util.Map.of("agent.execution", execution)));
+        } catch (com.internaladmin.module.agent.api.AgentToolException denied) {
+            lateDenied = "AI_BUSINESS_REJECTED".equals(denied.getErrorCode().getCode());
+        }
+        List<String> toolOrder = execution.toolOutcomes().stream().map(AgentExecutionContext.ToolOutcome::toolName).toList();
+        MessageDTO historyAssistant = history.records().stream()
+                .filter(message -> "ASSISTANT".equals(message.role()))
+                .findFirst().orElseThrow(() -> new AssertionError("History助手缺失"));
+        AgentStore.TaskRow task = store.task(run.taskId());
+        long taskRevision = task == null ? -1L : task.revision();
+        return new RunEvidence(question, events, assistant, historyAssistant, knowledgeCalls, warehouseCalls,
+                toolOrder, task == null ? null : task.status(), taskRevision, lateDenied, warehouseCalls.size());
     }
 
     private static String env(String name) {
@@ -197,9 +278,17 @@ class AgentKnowledgeExternalIT {
                 .trim().replaceAll("\\s+", " ");
     }
 
-    private record RunEvidence(List<AgentConversationService.StreamEvent> events, MessageDTO assistant,
+    private static String jsonEscape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+    }
+
+    private record RunEvidence(String question, List<AgentConversationService.StreamEvent> events, MessageDTO assistant,
+                               MessageDTO historyAssistant,
                                List<AgentExecutionContext.ToolOutcome> knowledgeCalls,
-                               List<AgentExecutionContext.ToolOutcome> warehouseCalls) {
+                               List<AgentExecutionContext.ToolOutcome> warehouseCalls,
+                               List<String> toolOrder, String taskStatus, long taskRevision,
+                               boolean lateWarehouseDenied, int warehouseCallsAfterLateAttempt) {
     }
 
     /**

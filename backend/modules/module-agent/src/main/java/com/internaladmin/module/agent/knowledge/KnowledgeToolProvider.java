@@ -79,7 +79,9 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                     throw new IllegalArgumentException("queryText无效");
                 }
                 if (!normalized.equals(normalize(execution.message()))) {
-                    throw new IllegalArgumentException("queryText必须与当前用户问题一致");
+                    if (!execution.consumeRetryKnowledgeQuery(normalized)) {
+                        throw new IllegalArgumentException("queryText必须与当前用户问题一致");
+                    }
                 }
                 if (!execution.actor().hasAuthority("warehouse:read")) {
                     return failure(execution, AgentErrorCode.TOOL_FORBIDDEN);
@@ -98,13 +100,14 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                             AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode());
                     String output = failureJson(AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(),
                             AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getMessage());
-                    execution.recordToolFailure(TOOL_NAME, normalized, AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(), output);
+                    execution.recordToolFailure(TOOL_NAME, retryArguments(normalized),
+                            AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(), output);
                     emitCard(execution, result, "DEGRADED");
                     return output;
                 }
                 observe(execution, "SUCCEEDED", retrievalStartedAt, null);
                 String output = successJson(result);
-                execution.recordToolSuccess(TOOL_NAME, normalized, output);
+                execution.recordToolSuccess(TOOL_NAME, retryArguments(normalized), output);
                 execution.markToolOutputProduced();
                 emitCard(execution, result, result.status() == KnowledgeQueryApi.Status.NO_EVIDENCE ? "NO_EVIDENCE" : "ANSWERED");
                 return output;
@@ -121,7 +124,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                 String output = failureJson(AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(),
                         AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getMessage());
                 execution.recordKnowledgeResult(KnowledgeQueryApi.Result.unavailable(Instant.now()));
-                execution.recordToolFailure(TOOL_NAME, normalized, AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(), output);
+                execution.recordToolFailure(TOOL_NAME, retryArguments(normalized), AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(), output);
                 emitCard(execution, execution.knowledgeResult(), "DEGRADED");
                 return output;
             }
@@ -175,6 +178,15 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
             String output = failureJson(code.getCode(), code.getMessage());
             execution.recordToolFailure(TOOL_NAME, null, code.getCode(), output);
             return output;
+        }
+
+        private String retryArguments(String queryText) {
+            if (queryText == null || queryText.isBlank()) return null;
+            try {
+                return JSON.writeValueAsString(Map.of("queryText", queryText));
+            } catch (RuntimeException ignored) {
+                return null;
+            }
         }
 
         private String failureJson(String code, String message) {

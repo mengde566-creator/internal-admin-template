@@ -196,10 +196,61 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         return knowledgeCallAttempted();
     }
 
+    /**
+     * Opens a bounded authorization window for the non-knowledge callbacks that
+     * belong to the same initial model tool-call batch.  The window is only
+     * created by the server-side ToolCallingManager before delegation; model
+     * arguments and knowledge content cannot create it.
+     */
+    public boolean openMixedToolAuthorization(List<String> toolNames) {
+        return knowledgeState.openMixedAuthorization(toolNames);
+    }
+
+    /** Consume one pre-registered callback invocation in the current batch. */
+    public boolean consumeMixedToolAuthorization(String toolName) {
+        return knowledgeState.consumeMixedAuthorization(toolName);
+    }
+
+    /** Always clear a batch authorization, including delegate failures. */
+    public void closeMixedToolAuthorization() {
+        knowledgeState.closeMixedAuthorization();
+    }
+
+    /** Server-only authorization used by a persisted Knowledge retry child. */
+    public void authorizeRetryKnowledgeQuery(String normalizedQuery) {
+        knowledgeState.authorizeRetryQuery(normalizedQuery);
+    }
+
+    /** Consume the one query authorized for this retry callback. */
+    public boolean consumeRetryKnowledgeQuery(String normalizedQuery) {
+        return knowledgeState.consumeRetryQuery(normalizedQuery);
+    }
+
+    public void clearRetryKnowledgeQueryAuthorization() {
+        knowledgeState.clearRetryQueryAuthorization();
+    }
+
+    /** Server-only authorization for the current non-knowledge retry callback. */
+    public void authorizeRetryTool(String toolName) {
+        knowledgeState.authorizeRetryTool(toolName);
+    }
+
+    /** Consume the one server-authorized retry callback invocation. */
+    public boolean consumeRetryTool(String toolName) {
+        return knowledgeState.consumeRetryTool(toolName);
+    }
+
+    public void clearRetryToolAuthorization() {
+        knowledgeState.clearRetryToolAuthorization();
+    }
+
     public static final class KnowledgeState {
         private boolean attempted;
         private KnowledgeQueryApi.Result result;
         private String cardJson;
+        private final List<String> mixedAuthorizedTools = new ArrayList<>();
+        private String retryQuery;
+        private String retryTool;
 
         public synchronized boolean begin() {
             if (attempted) return false;
@@ -218,6 +269,56 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         public synchronized void recordCard(String value) { cardJson = value; }
 
         public synchronized String cardJson() { return cardJson; }
+
+        private synchronized boolean openMixedAuthorization(List<String> toolNames) {
+            if (attempted || !mixedAuthorizedTools.isEmpty() || toolNames == null
+                    || toolNames.isEmpty() || toolNames.size() > ToolOutcomeLedger.MAX_OUTCOMES) {
+                return false;
+            }
+            mixedAuthorizedTools.clear();
+            mixedAuthorizedTools.addAll(toolNames);
+            return true;
+        }
+
+        private synchronized boolean consumeMixedAuthorization(String toolName) {
+            if (toolName == null || mixedAuthorizedTools.isEmpty()) return false;
+            int index = mixedAuthorizedTools.indexOf(toolName);
+            if (index < 0) return false;
+            mixedAuthorizedTools.remove(index);
+            return true;
+        }
+
+        private synchronized void closeMixedAuthorization() {
+            mixedAuthorizedTools.clear();
+        }
+
+        private synchronized void authorizeRetryQuery(String normalizedQuery) {
+            retryQuery = normalizedQuery;
+        }
+
+        private synchronized boolean consumeRetryQuery(String normalizedQuery) {
+            if (retryQuery == null || !retryQuery.equals(normalizedQuery)) return false;
+            retryQuery = null;
+            return true;
+        }
+
+        private synchronized void clearRetryQueryAuthorization() {
+            retryQuery = null;
+        }
+
+        private synchronized void authorizeRetryTool(String toolName) {
+            retryTool = toolName;
+        }
+
+        private synchronized boolean consumeRetryTool(String toolName) {
+            if (retryTool == null || !retryTool.equals(toolName)) return false;
+            retryTool = null;
+            return true;
+        }
+
+        private synchronized void clearRetryToolAuthorization() {
+            retryTool = null;
+        }
     }
 
     public static final class ToolOutcomeLedger {
