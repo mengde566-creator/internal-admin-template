@@ -895,8 +895,11 @@ export interface components {
         ClarificationOptionDTO: {
             baseUnit?: string;
             code?: string;
+            indexedAt?: string;
             name?: string;
             optionToken?: string;
+            versionCode?: string;
+            versionUpdatedAt?: string;
             warehouseCode?: string;
             warehouseName?: string;
         };
@@ -1058,6 +1061,8 @@ export interface components {
             cardId?: string;
             cardType?: string;
             citations?: components["schemas"]["KnowledgeCitationDTO"][];
+            documents?: components["schemas"]["KnowledgeDocumentDTO"][];
+            mode?: string;
             outcome?: string;
             /** Format: date-time */
             queriedAt?: string;
@@ -1076,6 +1081,16 @@ export interface components {
             indexedAt?: string;
             section?: string;
             sourceRef?: string;
+            synthetic?: boolean;
+            title?: string;
+            versionCode?: string;
+            /** Format: date-time */
+            versionUpdatedAt?: string;
+        };
+        KnowledgeDocumentDTO: {
+            documentCode?: string;
+            /** Format: date-time */
+            indexedAt?: string;
             synthetic?: boolean;
             title?: string;
             versionCode?: string;

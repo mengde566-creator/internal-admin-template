@@ -529,10 +529,19 @@
           "code": {
             "type": "string"
           },
+          "indexedAt": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
           "optionToken": {
+            "type": "string"
+          },
+          "versionCode": {
+            "type": "string"
+          },
+          "versionUpdatedAt": {
             "type": "string"
           },
           "warehouseCode": {
@@ -1102,6 +1111,15 @@
             },
             "type": "array"
           },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeDocumentDTO"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "type": "string"
+          },
           "outcome": {
             "type": "string"
           },
@@ -1143,6 +1161,31 @@
             "type": "string"
           },
           "sourceRef": {
+            "type": "string"
+          },
+          "synthetic": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "versionCode": {
+            "type": "string"
+          },
+          "versionUpdatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "KnowledgeDocumentDTO": {
+        "properties": {
+          "documentCode": {
+            "type": "string"
+          },
+          "indexedAt": {
+            "format": "date-time",
             "type": "string"
           },
           "synthetic": {

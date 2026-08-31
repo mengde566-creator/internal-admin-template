@@ -24,7 +24,8 @@ import {
   type ClarificationTask,
   type Message,
   type KnowledgeAnswer,
-  type KnowledgeCitation
+  type KnowledgeCitation,
+  type KnowledgeDocument
 } from '../ai/agentApi'
 import { formatDateTime } from '../../../shared/utils/dateTime'
 
@@ -53,7 +54,7 @@ type StockRow = {
   occurredAt?: string
 }
 
-type StockCandidate = { code: string; name: string; baseUnit?: string; optionToken?: string; warehouseCode?: string; warehouseName?: string }
+type StockCandidate = { code: string; name: string; baseUnit?: string; optionToken?: string; warehouseCode?: string; warehouseName?: string; versionCode?: string; versionUpdatedAt?: string; indexedAt?: string }
 
 type StockSummaryCard = {
   cardId: string
@@ -67,8 +68,8 @@ type StockSummaryCard = {
   selectedCandidateName?: string
   selectedWarehouseCode?: string
   selectedWarehouseName?: string
-  candidateKind?: 'ITEM' | 'LOCATION'
-  candidateIntent?: 'CURRENT_STOCK' | 'ITEM_LOCATIONS' | 'LOCATION_CONTENTS'
+  candidateKind?: 'ITEM' | 'LOCATION' | 'DOCUMENT'
+  candidateIntent?: 'CURRENT_STOCK' | 'ITEM_LOCATIONS' | 'LOCATION_CONTENTS' | 'KNOWLEDGE_DOCUMENT_READ'
   baseUnit?: string
   queriedAt?: string
   resultCount?: number
@@ -76,6 +77,8 @@ type StockSummaryCard = {
   stocks: StockRow[]
   candidates: StockCandidate[]
   citations?: KnowledgeCitation[]
+  mode?: KnowledgeAnswer['mode']
+  documents?: KnowledgeDocument[]
 }
 
 type AgentMode = 'DOCKED' | 'COMPACT' | 'OVERLAY' | 'DRAWER'
@@ -602,6 +605,7 @@ function restoreClarificationCard(task: ClarificationTask | null | undefined) {
   const candidateKind = task.candidateKind
   const candidateIntent = task.candidateIntent
   const validSemantics = (candidateKind === 'LOCATION' && candidateIntent === 'LOCATION_CONTENTS')
+    || (candidateKind === 'DOCUMENT' && candidateIntent === 'KNOWLEDGE_DOCUMENT_READ')
     || (candidateKind === 'ITEM' && (candidateIntent === 'CURRENT_STOCK' || candidateIntent === 'ITEM_LOCATIONS'))
   if (!validSemantics) return
   if (task.status === 'FAILED_RETRYABLE' || (!task.options?.length && (task.selectedName || task.selectedCode))) {
@@ -637,7 +641,10 @@ function restoreClarificationCard(task: ClarificationTask | null | undefined) {
       baseUnit: option.baseUnit ?? '',
       optionToken: option.optionToken ?? '',
       warehouseCode: option.warehouseCode ?? '',
-      warehouseName: option.warehouseName ?? ''
+      warehouseName: option.warehouseName ?? '',
+      versionCode: option.versionCode,
+      versionUpdatedAt: option.versionUpdatedAt,
+      indexedAt: option.indexedAt
     })),
     stocks: []
   }
@@ -645,7 +652,7 @@ function restoreClarificationCard(task: ClarificationTask | null | undefined) {
 
 function restoreKnowledgeCard(answer: KnowledgeAnswer | null | undefined, messageId: string) {
   if (!answer || answer.cardType !== 'knowledge-answer' || answer.revision !== 0 || !answer.cardId) return
-  const parsed = parseKnowledgeAnswerCard({
+  const payload: Record<string, unknown> = {
     cardId: answer.cardId,
     revision: answer.revision,
     cardType: answer.cardType,
@@ -654,7 +661,12 @@ function restoreKnowledgeCard(answer: KnowledgeAnswer | null | undefined, messag
     resultCount: answer.resultCount,
     truncated: answer.truncated,
     citations: answer.citations
-  }, messageId)
+  }
+  if (answer.mode || answer.documents?.length) {
+    payload.mode = answer.mode ?? 'SECTION_SEARCH'
+    payload.documents = answer.documents ?? []
+  }
+  const parsed = parseKnowledgeAnswerCard(payload, messageId)
   if (!parsed) return
   cards.value[cardIdentity(parsed.cardId, messageId)] = parsed
 }
@@ -781,21 +793,54 @@ function parseKnowledgeCitation(value: unknown): KnowledgeCitation | null {
   }
 }
 
+function parseKnowledgeDocument(value: unknown): KnowledgeDocument | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  const fields = Object.keys(raw).sort()
+  const expected = ['documentCode', 'indexedAt', 'synthetic', 'title', 'versionCode', 'versionUpdatedAt']
+  if (fields.length !== expected.length || fields.some((field, index) => field !== expected[index])) return null
+  if (typeof raw.documentCode !== 'string' || !raw.documentCode.trim() || raw.documentCode.length > 128
+    || typeof raw.title !== 'string' || !raw.title.trim() || raw.title.length > 256
+    || typeof raw.versionCode !== 'string' || !raw.versionCode.trim() || raw.versionCode.length > 64
+    || typeof raw.versionUpdatedAt !== 'string' || !raw.versionUpdatedAt.trim()
+    || typeof raw.indexedAt !== 'string' || !raw.indexedAt.trim()
+    || raw.synthetic !== true
+    || Number.isNaN(Date.parse(raw.versionUpdatedAt)) || Number.isNaN(Date.parse(raw.indexedAt))) return null
+  return {
+    documentCode: raw.documentCode,
+    title: raw.title,
+    versionCode: raw.versionCode,
+    versionUpdatedAt: raw.versionUpdatedAt,
+    indexedAt: raw.indexedAt,
+    synthetic: true
+  }
+}
+
 function parseKnowledgeAnswerCard(payload: Record<string, unknown>, messageId?: string): StockSummaryCard | null {
   const fields = Object.keys(payload).sort()
   const expected = ['cardId', 'cardType', 'citations', 'outcome', 'queriedAt', 'resultCount', 'revision', 'truncated']
-  if (fields.length !== expected.length || fields.some((field, index) => field !== expected[index])) return null
+  const withMode = [...expected, 'mode'].sort()
+  const extended = [...expected, 'documents', 'mode'].sort()
+  const matches = (values: string[]) => fields.length === values.length && fields.every((field, index) => field === values[index])
+  if (!matches(expected) && !matches(withMode) && !matches(extended)) return null
   if (typeof payload.cardId !== 'string' || !payload.cardId.trim() || payload.cardId.length > 128
     || payload.cardType !== 'knowledge-answer' || payload.revision !== 0
     || !['ANSWERED', 'NO_EVIDENCE', 'DEGRADED'].includes(String(payload.outcome))
     || typeof payload.queriedAt !== 'string' || !payload.queriedAt.trim() || Number.isNaN(Date.parse(payload.queriedAt))
-    || typeof payload.resultCount !== 'number' || !Number.isInteger(payload.resultCount) || payload.resultCount < 0 || payload.resultCount > 1
-    || typeof payload.truncated !== 'boolean' || !Array.isArray(payload.citations) || payload.citations.length > 1) return null
+    || typeof payload.resultCount !== 'number' || !Number.isInteger(payload.resultCount) || payload.resultCount < 0 || payload.resultCount > 20
+    || typeof payload.truncated !== 'boolean' || !Array.isArray(payload.citations) || payload.citations.length > 20) return null
+  if ((matches(withMode) || matches(extended)) && !['SECTION_SEARCH', 'ACTIVE_CATALOG', 'ACTIVE_DOCUMENT'].includes(String(payload.mode))) return null
+  if (matches(extended) && (!Array.isArray(payload.documents) || payload.documents.length > 20)) return null
+  const documentValues = matches(extended) && Array.isArray(payload.documents) ? payload.documents : []
+  const documents: Array<KnowledgeDocument | null> = documentValues.map((document: unknown) => parseKnowledgeDocument(document))
+  if (documents.some((document) => document === null)) return null
+  if (payload.mode === 'ACTIVE_CATALOG' && payload.outcome === 'ANSWERED' && documents.length === 0) return null
   const citations = payload.citations.map(parseKnowledgeCitation)
   if (citations.some((citation) => citation === null)) return null
   const validCitations = citations.filter((citation): citation is KnowledgeCitation => citation !== null)
-  if (payload.resultCount !== validCitations.length) return null
-  if (payload.outcome === 'ANSWERED' && validCitations.length !== 1) return null
+  const expectedResultCount = payload.mode === 'ACTIVE_CATALOG' ? documents.length : validCitations.length
+  if (payload.resultCount !== expectedResultCount) return null
+  if (payload.outcome === 'ANSWERED' && validCitations.length === 0 && payload.mode !== 'ACTIVE_CATALOG') return null
   if (payload.outcome === 'NO_EVIDENCE' && validCitations.length !== 0) return null
   if (payload.outcome === 'DEGRADED' && validCitations.length > 1) return null
   const pending = messageId ? citationsByMessage.value[messageId] ?? [] : []
@@ -810,6 +855,8 @@ function parseKnowledgeAnswerCard(payload: Record<string, unknown>, messageId?: 
     resultCount: payload.resultCount,
     truncated: payload.truncated,
     citations: merged,
+    mode: matches(withMode) || matches(extended) ? payload.mode as KnowledgeAnswer['mode'] : 'SECTION_SEARCH',
+    documents: documents.filter((document): document is KnowledgeDocument => document !== null),
     stocks: [],
     candidates: []
   }
@@ -845,7 +892,10 @@ function parseStockCard(payload: Record<string, unknown>, messageId?: string): S
       baseUnit: typeof row.baseUnit === 'string' ? row.baseUnit as string : undefined,
       optionToken: typeof row.optionToken === 'string' ? row.optionToken as string : undefined,
       warehouseCode: typeof row.warehouseCode === 'string' ? row.warehouseCode as string : undefined,
-      warehouseName: typeof row.warehouseName === 'string' ? row.warehouseName as string : undefined
+      warehouseName: typeof row.warehouseName === 'string' ? row.warehouseName as string : undefined,
+      versionCode: typeof row.versionCode === 'string' ? row.versionCode as string : undefined,
+      versionUpdatedAt: typeof row.versionUpdatedAt === 'string' ? row.versionUpdatedAt as string : undefined,
+      indexedAt: typeof row.indexedAt === 'string' ? row.indexedAt as string : undefined
     }))
   return {
     cardId: payload.cardId,
@@ -854,8 +904,8 @@ function parseStockCard(payload: Record<string, unknown>, messageId?: string): S
     cardType: payload.cardType as StockSummaryCard['cardType'],
     status: typeof payload.status === 'string' ? payload.status : (payload.cardType === 'clarification-choice' ? 'CANDIDATES' : undefined),
     outcome: typeof payload.outcome === 'string' ? payload.outcome : undefined,
-    candidateKind: payload.candidateKind === 'LOCATION' ? 'LOCATION' : payload.candidateKind === 'ITEM' ? 'ITEM' : undefined,
-    candidateIntent: payload.candidateIntent === 'ITEM_LOCATIONS' || payload.candidateIntent === 'LOCATION_CONTENTS' || payload.candidateIntent === 'CURRENT_STOCK'
+    candidateKind: payload.candidateKind === 'LOCATION' ? 'LOCATION' : payload.candidateKind === 'DOCUMENT' ? 'DOCUMENT' : payload.candidateKind === 'ITEM' ? 'ITEM' : undefined,
+    candidateIntent: payload.candidateIntent === 'ITEM_LOCATIONS' || payload.candidateIntent === 'LOCATION_CONTENTS' || payload.candidateIntent === 'CURRENT_STOCK' || payload.candidateIntent === 'KNOWLEDGE_DOCUMENT_READ'
       ? payload.candidateIntent
       : undefined,
     itemName: typeof payload.itemName === 'string' ? payload.itemName : undefined,
@@ -1266,6 +1316,7 @@ function movementTypeLabel(type: string) {
 function cardSubject(card: StockSummaryCard) {
   if (card.cardType === 'knowledge-answer') return '知识依据'
   if (card.cardType === 'clarification-choice') {
+    if (card.candidateKind === 'DOCUMENT') return card.selectedCandidateName ? `资料：${card.selectedCandidateName}` : '选择知识资料'
     if (card.candidateKind === 'LOCATION') {
       return [card.selectedWarehouseName, card.selectedCandidateName].filter(Boolean).join(' / ') || '选择仓库和库位'
     }
@@ -1282,12 +1333,14 @@ function cardSubject(card: StockSummaryCard) {
 }
 
 function candidateCardTitle(card: StockSummaryCard) {
+  if (card.candidateKind === 'DOCUMENT') return '请从下面选择一份知识资料'
   if (card.candidateKind === 'LOCATION') return '请从下面选择一个仓库和库位'
   if (card.candidateKind === 'ITEM') return '请从下面选择一个物品'
   return '候选确认'
 }
 
 function selectedCandidateLabel(card: StockSummaryCard) {
+  if (card.candidateKind === 'DOCUMENT') return card.selectedCandidateName || '已选知识资料'
   if (card.candidateKind === 'LOCATION') {
     return [card.selectedWarehouseName, card.selectedCandidateName].filter(Boolean).join(' / ') || '已选仓库和库位'
   }
@@ -1298,6 +1351,7 @@ function candidateTaskMessage(card: StockSummaryCard) {
   const name = (card.selectedCandidateName || card.itemName || '').trim()
   const code = (card.selectedCandidateCode || '').trim()
   if (!name && !code) return ''
+  if (card.candidateKind === 'DOCUMENT') return `读取知识资料「${name || code}」的全部内容`
   if (card.candidateIntent === 'ITEM_LOCATIONS') {
     return `查询物品「${name}」${code ? `（${code}）` : ''}所在的位置`
   }
@@ -1312,6 +1366,7 @@ function candidateTaskMessage(card: StockSummaryCard) {
 }
 
 function candidateSelectionMessage(card: StockSummaryCard, candidate: StockCandidate) {
+  if (card.candidateKind === 'DOCUMENT') return `选择知识资料「${candidate.name}」`
   if (card.candidateKind === 'LOCATION') {
     return `选择仓库「${candidate.warehouseName || candidate.warehouseCode || ''}」的库位「${candidate.name}」`
   }
@@ -1600,17 +1655,25 @@ onBeforeUnmount(() => {
               <p v-if="item.card.outcome === 'NO_EVIDENCE'" class="agent-muted">没有找到可引用依据。</p>
               <p v-else-if="knowledgePartialCard(item.card)" class="agent-error">已找到依据，但回答未完整生成。</p>
               <p v-else-if="item.card.outcome === 'DEGRADED'" class="agent-error">知识库暂时不可用。</p>
+              <div v-if="item.card.documents?.length" class="knowledge-document-list">
+                <div v-for="document in item.card.documents" :key="`${document.documentCode}-${document.versionCode}`" class="knowledge-citation">
+                  <strong>{{ document.title }}</strong>
+                  <span>{{ document.versionCode }}</span>
+                  <small v-if="document.synthetic">合成资料</small>
+                </div>
+              </div>
               <div v-for="citation in item.card.citations" :key="`${citation.documentCode}-${citation.versionCode}-${citation.chunkNo}`" class="knowledge-citation">
                 <strong>{{ citation.title }}</strong>
                 <span>{{ citation.versionCode }} · {{ citation.section || `片段 ${citation.chunkNo}` }}</span>
                 <small v-if="citation.synthetic">合成资料</small>
                 <p>{{ citation.excerpt }}</p>
               </div>
+              <p v-if="item.card.truncated" class="agent-muted">已展示部分内容。</p>
             </div>
             <div v-else-if="item.card.cardType === 'clarification-choice' || item.card.status === 'CANDIDATES' || item.card.candidates?.length" class="candidate-section">
               <div v-if="item.card.status === 'CANDIDATES' || item.card.status === 'SUBMITTING' || !item.card.status" class="candidate-list">
                 <div class="candidate-header">
-                  <span class="candidate-hint">{{ item.card.candidateKind === 'LOCATION' ? '请点击选择一个仓库和库位：' : '请点击选择一个物品：' }}</span>
+                  <span class="candidate-hint">{{ item.card.candidateKind === 'LOCATION' ? '请点击选择一个仓库和库位：' : item.card.candidateKind === 'DOCUMENT' ? '请点击选择一份知识资料：' : '请点击选择一个物品：' }}</span>
                   <button type="button" class="text-button candidate-switch-btn" :disabled="isRunning" @click="confirmSwitchToFreeText">
                     改为直接提问
                   </button>

@@ -159,6 +159,93 @@ class KnowledgeServiceSearchTest {
         assertThatThrownBy(() -> service.query("仓储", 6)).isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void listsActiveDocumentsWithoutEmbeddingAndReadsBoundedDocumentInChunkOrder() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
+        Instant now = Instant.parse("2026-08-30T00:00:00Z");
+        when(mapper.findActiveDocuments(20, KnowledgeService.EMBEDDING_PROFILE, 1024)).thenReturn(List.of(
+                new KnowledgeMapper.ActiveDocumentRow("warehouse-rules", "仓储操作规则（当前版）", "v2", now, now, true)));
+        when(mapper.readActiveDocument("warehouse-rules", 21, KnowledgeService.EMBEDDING_PROFILE, 1024)).thenReturn(List.of(
+                new KnowledgeMapper.DocumentChunkRow("warehouse-rules", "仓储操作规则（当前版）", "v2", now, now,
+                        "# 出库校验\n\n检查余额", 2),
+                new KnowledgeMapper.DocumentChunkRow("warehouse-rules", "仓储操作规则（当前版）", "v2", now, now,
+                        "# 入库记录\n\n记录数量", 1)));
+        KnowledgeService service = service(mapper, client);
+
+        assertThat(service.listActiveDocuments().documents()).extracting(KnowledgeQueryApi.ActiveDocument::documentCode)
+                .containsExactly("warehouse-rules");
+        KnowledgeQueryApi.DocumentResult document = service.readActiveDocument("warehouse-rules", 20, 20_000);
+        assertThat(document.citations()).extracting(KnowledgeQueryApi.Citation::chunkNo).containsExactly(1, 2);
+        verifyNoInteractions(client);
+    }
+
+    @Test
+    void activeCatalogUsesStableSyntheticRegistrationOrder() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
+        Instant now = Instant.parse("2026-08-30T00:00:00Z");
+        when(mapper.findActiveDocuments(20, KnowledgeService.EMBEDDING_PROFILE, 1024)).thenReturn(List.of(
+                new KnowledgeMapper.ActiveDocumentRow("low-stock-policy", "低库存处置", "v1", now, now, true),
+                new KnowledgeMapper.ActiveDocumentRow("warehouse-codes", "仓库与库位编码", "v2", now, now, true),
+                new KnowledgeMapper.ActiveDocumentRow("item-codes", "物品编码", "v2", now, now, true),
+                new KnowledgeMapper.ActiveDocumentRow("warehouse-rules", "仓储操作规则", "v2", now, now, true)));
+
+        assertThat(service(mapper, client).listActiveDocuments().documents())
+                .extracting(KnowledgeQueryApi.ActiveDocument::documentCode)
+                .containsExactly("warehouse-rules", "item-codes", "warehouse-codes", "low-stock-policy");
+        verifyNoInteractions(client);
+    }
+
+    @Test
+    void mixedActiveVersionsAreNotReportedAsACompleteDocument() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
+        Instant now = Instant.parse("2026-08-30T00:00:00Z");
+        when(mapper.readActiveDocument("rules", 21, KnowledgeService.EMBEDDING_PROFILE, 1024)).thenReturn(List.of(
+                new KnowledgeMapper.DocumentChunkRow("rules", "规则", "v2", now, now, "# 一\n\n甲", 1),
+                new KnowledgeMapper.DocumentChunkRow("rules", "规则（旧）", "v1", now, now, "# 二\n\n乙", 2)));
+
+        assertThat(service(mapper, client).readActiveDocument("rules", 20, 20_000).status())
+                .isEqualTo(KnowledgeQueryApi.Status.NO_EVIDENCE);
+    }
+
+    @Test
+    void fullDocumentReadTruncatesAtCharacterBudgetWithoutEmbedding() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
+        Instant now = Instant.parse("2026-08-30T00:00:00Z");
+        when(mapper.readActiveDocument(anyString(), anyInt(), anyString(), anyInt())).thenReturn(List.of(
+                new KnowledgeMapper.DocumentChunkRow("rules", "规则", "v2", now, now, "# 一\n\n12345", 1),
+                new KnowledgeMapper.DocumentChunkRow("rules", "规则", "v2", now, now, "# 二\n\n67890", 2)));
+        KnowledgeQueryApi.DocumentResult result = service(mapper, client).readActiveDocument("rules", 20, 12);
+        assertThat(result.status()).isEqualTo(KnowledgeQueryApi.Status.FOUND);
+        assertThat(result.truncated()).isTrue();
+        assertThat(result.citations()).hasSize(1);
+        verifyNoInteractions(client);
+    }
+
+    @Test
+    void fullDocumentReadUsesTwentyChunkContractAndMarksTwentyFirstAsTruncated() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
+        Instant now = Instant.parse("2026-08-30T00:00:00Z");
+        List<KnowledgeMapper.DocumentChunkRow> rows = new java.util.ArrayList<>();
+        for (int chunk = 1; chunk <= 21; chunk++) {
+            rows.add(new KnowledgeMapper.DocumentChunkRow("rules", "规则", "v2", now, now,
+                    "# 第" + chunk + "节\n\n内容", chunk));
+        }
+        when(mapper.readActiveDocument("rules", 21, KnowledgeService.EMBEDDING_PROFILE, 1024)).thenReturn(rows);
+
+        KnowledgeQueryApi.DocumentResult result = service(mapper, client).readActiveDocument("rules", 20, 20_000);
+
+        assertThat(result.status()).isEqualTo(KnowledgeQueryApi.Status.FOUND);
+        assertThat(result.citations()).hasSize(20);
+        assertThat(result.truncated()).isTrue();
+        verify(mapper).readActiveDocument("rules", 21, KnowledgeService.EMBEDDING_PROFILE, 1024);
+        verifyNoInteractions(client);
+    }
+
     private static KnowledgeService service(KnowledgeMapper mapper, KnowledgeRetrievalEmbeddingClient client) {
         return new KnowledgeService(new AiProperties(), client, mapper, mock(PlatformTransactionManager.class));
     }

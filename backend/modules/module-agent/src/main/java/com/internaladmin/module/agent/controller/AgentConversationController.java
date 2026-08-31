@@ -142,10 +142,11 @@ public class AgentConversationController {
                         AgentConversationService.PreparedCard prepared = service.recordCard(run, identity,
                                 actor.scopeFingerprint());
                         if ("knowledge-answer".equals(identity.cardType())) {
-                            String citation = service.knowledgeCitationPayload(identity);
-                            if (citation != null && !send(emitter, AgentConversationService.envelopedEvent(
-                                    "citation.added", run, eventSequence, messageId, citation))) {
-                                throw new IllegalStateException("SSE知识引用发送失败");
+                            for (String citation : service.knowledgeCitationPayloads(identity)) {
+                                if (!send(emitter, AgentConversationService.envelopedEvent(
+                                        "citation.added", run, eventSequence, messageId, citation))) {
+                                    throw new IllegalStateException("SSE知识引用发送失败");
+                                }
                             }
                         }
                         if (!send(emitter, AgentConversationService.envelopedEvent(

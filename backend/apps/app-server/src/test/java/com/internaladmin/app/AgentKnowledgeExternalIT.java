@@ -134,8 +134,11 @@ class AgentKnowledgeExternalIT {
     private void assertMixedRun(RunEvidence evidence, List<String> expectedToolOrder) {
         assertThat(evidence.toolOrder()).containsExactlyElementsOf(expectedToolOrder);
         assertThat(evidence.knowledgeCalls()).hasSize(1);
-        assertThat(evidence.knowledgeCalls().getFirst().arguments())
-                .isEqualTo("{\"queryText\":\"" + jsonEscape(normalizeQuestion(evidence.question())) + "\"}");
+        tools.jackson.databind.JsonNode knowledgeArguments = tools.jackson.databind.json.JsonMapper.builder()
+                .build().readTree(evidence.knowledgeCalls().getFirst().arguments());
+        assertThat(knowledgeArguments.get("queryText").asText())
+                .isEqualTo(normalizeQuestion(evidence.question()));
+        assertThat(knowledgeArguments.get("operation").asText()).isEqualTo("SEARCH");
         assertThat(evidence.knowledgeCalls().getFirst().success()).isTrue();
         assertThat(evidence.knowledgeCalls().getFirst().errorCode()).isNull();
         assertThat(evidence.warehouseCalls()).hasSize(1);
@@ -276,11 +279,6 @@ class AgentKnowledgeExternalIT {
     private static String normalizeQuestion(String value) {
         return Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFKC)
                 .trim().replaceAll("\\s+", " ");
-    }
-
-    private static String jsonEscape(String value) {
-        return value.replace("\\", "\\\\").replace("\"", "\\\"")
-                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
     }
 
     private record RunEvidence(String question, List<AgentConversationService.StreamEvent> events, MessageDTO assistant,

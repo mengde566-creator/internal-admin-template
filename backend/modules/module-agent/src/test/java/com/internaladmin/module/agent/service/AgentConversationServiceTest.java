@@ -419,7 +419,7 @@ class AgentConversationServiceTest {
         execution.recordToolSuccess("warehouse_current_stock", "库存结果");
         execution.recordKnowledgeResult(KnowledgeQueryApi.Result.unavailable(java.time.Instant.parse("2026-08-30T00:00:00Z")));
         execution.recordKnowledgeCard("{\"cardId\":\"knowledge-run-mixed-knowledge-down\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"DEGRADED\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":0,\"truncated\":false,\"citations\":[]}");
-        execution.recordToolFailure("knowledge_search", "{\"queryText\":\"查库存并说明规则\"}",
+        execution.recordToolFailure("knowledge_search", "{\"operation\":\"SEARCH\",\"queryText\":\"查库存并说明规则\"}",
                 "AI_KNOWLEDGE_UNAVAILABLE", "知识库暂不可用");
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
         new AgentConversationService(store, client, observations, new AiProperties()).execute(
@@ -669,6 +669,60 @@ class AgentConversationServiceTest {
     }
 
     @Test
+    void emptyActiveCatalogNoEvidenceCardIsAccepted() {
+        AgentConversationService service = new AgentConversationService(mock(AgentStore.class),
+                mock(ChatClient.class), mock(AiObservationRecorder.class), new AiProperties());
+
+        var card = service.inspectCard("{\"cardId\":\"knowledge-catalog-empty\",\"revision\":0,"
+                + "\"cardType\":\"knowledge-answer\",\"outcome\":\"NO_EVIDENCE\","
+                + "\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":0,\"truncated\":false,"
+                + "\"citations\":[],\"mode\":\"ACTIVE_CATALOG\",\"documents\":[]}");
+
+        assertEquals("knowledge-catalog-empty", card.cardId());
+    }
+
+    @Test
+    void activeCatalogAnswerIsServerOwnedAndDoesNotUseModelText() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"模型编造的资料清单\",\"data\":null}"));
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                nullable(String.class), eq(0L), nullable(String.class), eq(false), eq(observations), anyString())).thenReturn(true);
+
+        String now = "2026-08-30T00:00:00Z";
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext execution = new AgentExecutionContext(actor, "run-catalog", "系统收录了哪些仓储制度", ignored -> { });
+        execution.recordKnowledgeResult(KnowledgeQueryApi.Result.found(List.of(), java.time.Instant.parse(now), false));
+        execution.recordKnowledgeCard("{\"cardId\":\"knowledge-run-catalog\",\"revision\":0,\"cardType\":\"knowledge-answer\","
+                + "\"outcome\":\"ANSWERED\",\"mode\":\"ACTIVE_CATALOG\",\"queriedAt\":\"" + now + "\","
+                + "\"resultCount\":2,\"truncated\":false,\"documents\":["
+                + "{\"documentCode\":\"warehouse-rules\",\"title\":\"仓储操作规则\",\"versionCode\":\"v2\",\"versionUpdatedAt\":\"" + now + "\",\"indexedAt\":\"" + now + "\",\"synthetic\":true},"
+                + "{\"documentCode\":\"item-codes\",\"title\":\"物品编码规则\",\"versionCode\":\"v2\",\"versionUpdatedAt\":\"" + now + "\",\"indexedAt\":\"" + now + "\",\"synthetic\":true}],"
+                + "\"citations\":[]}");
+
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        new AgentConversationService(store, client, observations, new AiProperties()).execute(
+                new AgentStore.StartRun("c-1", "run-catalog", true, AgentStore.RUNNING), execution,
+                events::add, new AtomicBoolean());
+
+        assertTrue(events.stream().anyMatch(event -> event.name().equals("message.completed")
+                && event.data().contains("当前系统收录2份可查看的仓储资料")));
+        assertTrue(events.stream().noneMatch(event -> event.data().contains("模型编造的资料清单")));
+        verify(request, never()).call();
+        verify(store).completeSuccess(anyString(), eq("run-catalog"), anyString(),
+                eq("当前系统收录2份可查看的仓储资料"), anyString(), anyLong(), nullable(String.class), eq(0L),
+                nullable(String.class), eq(false), eq(observations), contains("ACTIVE_CATALOG"));
+    }
+
+    @Test
     void unavailableKnowledgeOutcomePersistsDegradedCardAndFailsWithoutWarehouseFallback() {
         AgentStore store = mock(AgentStore.class);
         ChatClient client = mock(ChatClient.class);
@@ -725,7 +779,7 @@ class AgentConversationServiceTest {
         AgentExecutionContext execution = new AgentExecutionContext(actor, "run-knowledge-retry", "查询制度", ignored -> { });
         execution.recordKnowledgeResult(KnowledgeQueryApi.Result.unavailable(java.time.Instant.parse("2026-08-30T00:00:00Z")));
         execution.recordKnowledgeCard("{\"cardId\":\"knowledge-run-knowledge-retry\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"DEGRADED\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":0,\"truncated\":false,\"citations\":[]}");
-        execution.recordToolFailure("knowledge_search", "{\"queryText\":\"查询制度\"}",
+        execution.recordToolFailure("knowledge_search", "{\"operation\":\"SEARCH\",\"queryText\":\"查询制度\"}",
                 "AI_KNOWLEDGE_UNAVAILABLE", "知识库暂时不可用");
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
         new AgentConversationService(store, client, observations, new AiProperties()).execute(
@@ -735,7 +789,7 @@ class AgentConversationServiceTest {
         verify(store).completeFailure(anyString(), eq("run-knowledge-retry"), anyString(), anyString(), anyString(),
                 anyLong(), eq("AI_KNOWLEDGE_UNAVAILABLE"), eq(observations), plan.capture(), anyString());
         assertEquals("knowledge_search", plan.getValue().subtasks().getFirst().toolName());
-        assertEquals("{\"queryText\":\"查询制度\"}", plan.getValue().subtasks().getFirst().arguments());
+        assertEquals("{\"operation\":\"SEARCH\",\"queryText\":\"查询制度\"}", plan.getValue().subtasks().getFirst().arguments());
         assertTrue(events.stream().anyMatch(event -> event.name().equals("run.failed")
                 && event.data().contains("\"retryAvailable\":true")));
         verify(request, never()).call();
@@ -765,7 +819,7 @@ class AgentConversationServiceTest {
                 "warehouse-rules", "仓储制度", "v2", "出库校验", 1, "出库前检查可用余额", 0.9,
                 true, "knowledge://warehouse-rules/v2/1", timestamp, timestamp)), timestamp, false));
         execution.recordKnowledgeCard("{\"cardId\":\"knowledge-run-knowledge-partial\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"ANSWERED\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":1,\"truncated\":false,\"citations\":[{\"documentCode\":\"warehouse-rules\",\"title\":\"仓储制度\",\"versionCode\":\"v2\",\"section\":\"出库校验\",\"chunkNo\":1,\"excerpt\":\"出库前检查可用余额\",\"synthetic\":true,\"sourceRef\":\"knowledge://warehouse-rules/v2/1\",\"versionUpdatedAt\":\"2026-08-30T00:00:00Z\",\"indexedAt\":\"2026-08-30T00:00:00Z\"}]}" );
-        execution.recordToolSuccess("knowledge_search", "{\"queryText\":\"查询制度\"}", "知识结果");
+        execution.recordToolSuccess("knowledge_search", "{\"operation\":\"SEARCH\",\"queryText\":\"查询制度\"}", "知识结果");
         execution.markToolOutputProduced();
 
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
@@ -820,6 +874,10 @@ class AgentConversationServiceTest {
         assertTrue(system.getValue().contains("即使没有说制度或规定，也属于仓储操作规则问题"));
         assertTrue(system.getValue().contains("必须先调用knowledge_search"));
         assertTrue(system.getValue().contains("实时数量、位置和移动事实仍只调用Warehouse工具"));
+        assertTrue(system.getValue().contains("operation，且只能选择SEARCH、LIST_ACTIVE或READ_ACTIVE"));
+        assertTrue(system.getValue().contains("询问当前收录资料目录时用LIST_ACTIVE"));
+        assertTrue(system.getValue().contains("要求完整或全部条款时用READ_ACTIVE（服务端先定位并确认唯一资料）"));
+        assertTrue(system.getValue().contains("同一问题涉及多个知识主题时只调用一次knowledge_search"));
         assertTrue(system.getValue().contains("同一个初始工具决策若同时包含知识查询和一个或多个完整的实时仓储子任务"));
         assertTrue(system.getValue().contains("只有该批次结束、知识调用已受理后，后续模型迭代才只允许知识回答"));
         assertFalse(system.getValue().contains("同时涉及当前库存和最近变化时，先确认用户要查询哪一种"));

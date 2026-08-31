@@ -137,6 +137,46 @@ public class KnowledgeMapper {
                 resultSet.getDouble("score"), (Integer) resultSet.getObject("chunk_no")));
     }
 
+    /** Current synthetic documents, ordered by stable business code/version. */
+    public List<ActiveDocumentRow> findActiveDocuments(int limit, String embeddingProfile, int dimensions) {
+        if (limit < 1 || limit > 20) throw new IllegalArgumentException("知识目录参数无效");
+        return jdbcTemplate.query("SELECT d.document_code, d.title, v.version_code, d.updated_at, v.indexed_at "
+                        + "FROM ai_knowledge.ai_knowledge_document d "
+                        + "JOIN ai_knowledge.ai_knowledge_version v ON v.document_id = d.id "
+                        + "WHERE v.status = 'ACTIVE' AND d.synthetic = TRUE "
+                        + "AND v.embedding_model = ? AND v.embedding_dimensions = ? "
+                        + "ORDER BY CASE d.document_code "
+                        + "WHEN 'warehouse-rules' THEN 1 WHEN 'item-codes' THEN 2 "
+                        + "WHEN 'warehouse-codes' THEN 3 WHEN 'low-stock-policy' THEN 4 ELSE 5 END, "
+                        + "d.document_code, v.version_code LIMIT ?",
+                (rs, rowNum) -> new ActiveDocumentRow(rs.getString("document_code"), rs.getString("title"),
+                        rs.getString("version_code"), toInstant(rs.getTimestamp("updated_at")),
+                        toInstant(rs.getTimestamp("indexed_at")), true), embeddingProfile, dimensions, limit);
+    }
+
+    /** Read one current active document in chunk order; service applies the character budget. */
+    public List<DocumentChunkRow> readActiveDocument(String documentCode, int limit, String embeddingProfile, int dimensions) {
+        if (documentCode == null || documentCode.isBlank() || limit < 1 || limit > 101) {
+            throw new IllegalArgumentException("知识文档参数无效");
+        }
+        String chunkNo = "CASE WHEN vec.metadata->>'chunkNo' ~ '^[0-9]+$' "
+                + "THEN CAST(vec.metadata->>'chunkNo' AS INTEGER) ELSE NULL END";
+        String sql = "SELECT d.document_code, d.title, v.version_code, d.updated_at, v.indexed_at, "
+                + "vec.content, " + chunkNo + " AS chunk_no "
+                + "FROM ai_knowledge.ai_knowledge_document d "
+                + "JOIN ai_knowledge.ai_knowledge_version v ON v.document_id = d.id "
+                + "JOIN ai_knowledge.ai_knowledge_vector vec ON vec.metadata->>'versionId' = v.id "
+                + "WHERE d.document_code = ? AND v.status = 'ACTIVE' AND d.synthetic = TRUE "
+                + "AND v.embedding_model = ? AND v.embedding_dimensions = ? "
+                + "AND vec.sparse_norm > 0 AND EXISTS (SELECT 1 FROM ai_knowledge.ai_knowledge_sparse_vector s WHERE s.vector_id = vec.id) "
+                + "ORDER BY " + chunkNo + ", vec.id LIMIT ?";
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new DocumentChunkRow(
+                rs.getString("document_code"), rs.getString("title"), rs.getString("version_code"),
+                toInstant(rs.getTimestamp("updated_at")), toInstant(rs.getTimestamp("indexed_at")),
+                rs.getString("content"), (Integer) rs.getObject("chunk_no")),
+                documentCode, embeddingProfile, dimensions, limit);
+    }
+
     public String findDocumentId(String documentCode) {
         List<String> ids = jdbcTemplate.queryForList(
                 "SELECT id FROM ai_knowledge.ai_knowledge_document WHERE document_code = ?",
@@ -172,10 +212,18 @@ public class KnowledgeMapper {
     }
 
     public void activateVersion(String documentId, String versionId, Timestamp indexedAt) {
+        activateVersion(documentId, versionId, indexedAt, null);
+    }
+
+    public void activateVersion(String documentId, String versionId, Timestamp indexedAt, String title) {
         jdbcTemplate.update("UPDATE ai_knowledge.ai_knowledge_version SET status = 'INACTIVE' "
-                + "WHERE document_id = ? AND status = 'ACTIVE'", documentId);
+                        + "WHERE document_id = ? AND status = 'ACTIVE'", documentId);
         jdbcTemplate.update("UPDATE ai_knowledge.ai_knowledge_version SET status = 'ACTIVE', indexed_at = ? WHERE id = ?",
                 indexedAt, versionId);
+        if (title != null && !title.isBlank()) {
+            jdbcTemplate.update("UPDATE ai_knowledge.ai_knowledge_document SET title = ?, updated_at = ? WHERE id = ?",
+                    title, indexedAt, documentId);
+        }
     }
 
     public void insertVector(UUID vectorId, String content, String metadata, float[] vector,
@@ -214,6 +262,15 @@ public class KnowledgeMapper {
     public record SearchRow(String documentCode, String title, String versionCode,
                             Instant versionUpdatedAt, Instant indexedAt, String content,
                             double score, Integer chunkNo) {
+    }
+
+    public record ActiveDocumentRow(String documentCode, String title, String versionCode,
+                                    Instant versionUpdatedAt, Instant indexedAt, boolean synthetic) {
+    }
+
+    public record DocumentChunkRow(String documentCode, String title, String versionCode,
+                                   Instant versionUpdatedAt, Instant indexedAt, String content,
+                                   Integer chunkNo) {
     }
 
     private static Instant toInstant(Timestamp timestamp) {

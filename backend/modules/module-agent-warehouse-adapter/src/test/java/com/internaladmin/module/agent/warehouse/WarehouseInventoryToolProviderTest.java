@@ -91,7 +91,7 @@ class WarehouseInventoryToolProviderTest {
                 "run-knowledge-lock", "仓储制度", cards::add);
         ToolContext toolContext = new ToolContext(Map.of("agent.execution", execution));
         String knowledgeOutput = new KnowledgeToolProvider(knowledge, mock(AiObservationRecorder.class))
-                .getToolCallbacks()[0].call("{\"queryText\":\"仓储制度\"}", toolContext);
+                .getToolCallbacks()[0].call("{\"queryText\":\"仓储制度\",\"operation\":\"SEARCH\"}", toolContext);
 
         assertTrue(knowledgeOutput.contains("\"code\":\"SUCCESS\""));
         assertNotNull(execution.knowledgeCardJson());
@@ -126,7 +126,7 @@ class WarehouseInventoryToolProviderTest {
         ToolContext toolContext = new ToolContext(Map.of("agent.execution", execution));
         ToolCallback knowledgeCallback = new KnowledgeToolProvider(knowledge).getToolCallbacks()[0];
         Thread knowledgeThread = new Thread(() -> knowledgeCallback.call(
-                "{\"queryText\":\"仓储制度\"}", toolContext));
+                "{\"queryText\":\"仓储制度\",\"operation\":\"SEARCH\"}", toolContext));
         knowledgeThread.start();
 
         assertTrue(queryEntered.await(5, TimeUnit.SECONDS), "KnowledgeQueryApi应已进入阻塞窗口");
@@ -215,7 +215,7 @@ class WarehouseInventoryToolProviderTest {
         AgentExecutionContext denied = new AgentExecutionContext(
                 new AgentRunContext(7L, 3L, false, List.of()), "run-knowledge-denied", "制度", ignored -> { });
         String deniedKnowledge = new KnowledgeToolProvider(knowledge).getToolCallbacks()[0]
-                .call("{\"queryText\":\"制度\"}", new ToolContext(Map.of("agent.execution", denied)));
+                .call("{\"queryText\":\"制度\",\"operation\":\"SEARCH\"}", new ToolContext(Map.of("agent.execution", denied)));
         assertTrue(deniedKnowledge.contains("AI_TOOL_FORBIDDEN"));
         String warehouseDenied = deniedProvider.getToolCallbacks()[0].call(itemInput("制度"),
                 new ToolContext(Map.of("agent.execution", denied)));
@@ -1150,7 +1150,7 @@ class WarehouseInventoryToolProviderTest {
         when(delegate.executeToolCalls(any(Prompt.class), any(ChatResponse.class))).thenAnswer(invocation -> {
             Prompt prompt = invocation.getArgument(0, Prompt.class);
             ToolContext context = new ToolContext(Map.of("agent.execution", execution));
-            knowledgeCallback.call("{\"queryText\":\"" + message + "\"}", context);
+            knowledgeCallback.call("{\"queryText\":\"" + message + "\",\"operation\":\"SEARCH\"}", context);
             warehouseCallback.call(itemInput("测试物品"), context);
             return toolResult;
         });
@@ -1163,7 +1163,7 @@ class WarehouseInventoryToolProviderTest {
         ChatResponse toolResponse = new ChatResponse(List.of(new Generation(AssistantMessage.builder().content("")
                 .toolCalls(List.of(
                         new AssistantMessage.ToolCall("knowledge-1", "function", "knowledge_search",
-                                "{\"queryText\":\"" + message + "\"}"),
+                                "{\"queryText\":\"" + message + "\",\"operation\":\"SEARCH\"}"),
                         new AssistantMessage.ToolCall("stock-1", "function", "warehouse_current_stock", itemInput("测试物品"))))
                 .build())));
         when(stream.content()).thenAnswer(invocation -> {
@@ -1302,7 +1302,7 @@ class WarehouseInventoryToolProviderTest {
         when(request.stream()).thenReturn(stream);
         AtomicReference<AgentExecutionContext> current = new AtomicReference<>();
         when(stream.content()).thenAnswer(invocation -> {
-            knowledgeCallback.call("{\"queryText\":\"" + message + "\"}",
+            knowledgeCallback.call("{\"queryText\":\"" + message + "\",\"operation\":\"SEARCH\"}",
                     new ToolContext(Map.of("agent.execution", current.get())));
             return Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"ignored\",\"data\":null}");
         });

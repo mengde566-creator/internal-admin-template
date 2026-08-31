@@ -44,6 +44,9 @@ public class KnowledgeService implements KnowledgeQueryApi {
     private static final String CHUNKER_VERSION = "markdown-section-v1";
     private static final int MAX_BATCH = 20;
     private static final int MAX_QUERY_LIMIT = 5;
+    /** Shared end-to-end full-document bound (Knowledge, Agent card and History). */
+    public static final int MAX_DOCUMENT_CHUNKS = 20;
+    private static final int MAX_DOCUMENT_CHARS = 20_000;
     /** Frozen calibration value from the single DashScope Gate run. */
     public static final double SIMILARITY_THRESHOLD = 0.65d;
     public static final int SEARCH_TOP_K = 1;
@@ -193,23 +196,33 @@ public class KnowledgeService implements KnowledgeQueryApi {
      */
     @Override
     public KnowledgeQueryApi.Result query(String query, int limit) {
+        return queryInternal(query, limit, SEARCH_TOP_K);
+    }
+
+    @Override
+    public KnowledgeQueryApi.Result searchSections(String query, int limit) {
+        return queryInternal(query, limit, Math.min(2, limit));
+    }
+
+    private KnowledgeQueryApi.Result queryInternal(String query, int limit, int stageTopK) {
         validateQuery(query, limit);
         Instant queriedAt = Instant.now();
         try {
             int boundedLimit = Math.min(limit, MAX_QUERY_LIMIT);
+            stageTopK = Math.min(stageTopK, boundedLimit);
             RetrievalEmbedding queryEmbedding = embeddingClient.embedQuery(query);
             if (queryEmbedding == null || queryEmbedding.denseVector().length != 1024
                     || queryEmbedding.sparseEntries().isEmpty()) {
                 throw new IllegalStateException("Embedding查询向量维度无效");
             }
             List<KnowledgeMapper.SearchRow> rows = mapper.findActiveSparseChunks(
-                    queryEmbedding.sparseEntries(), SPARSE_SIMILARITY_THRESHOLD, SEARCH_TOP_K + 1,
+                    queryEmbedding.sparseEntries(), SPARSE_SIMILARITY_THRESHOLD, stageTopK + 1,
                     EMBEDDING_PROFILE, 1024);
             if (rows != null && !rows.isEmpty()) {
                 // A sparse hit short-circuits the dense stage.
             } else {
                 rows = mapper.findActiveDenseChunks(new PGvector(queryEmbedding.denseVector()),
-                        SIMILARITY_THRESHOLD, SEARCH_TOP_K + 1, EMBEDDING_PROFILE, 1024);
+                        SIMILARITY_THRESHOLD, stageTopK + 1, EMBEDDING_PROFILE, 1024);
             }
             if (rows == null) {
                 throw new IllegalStateException("知识检索返回为空");
@@ -226,7 +239,7 @@ public class KnowledgeService implements KnowledgeQueryApi {
                         row.content(), row.score(), true,
                         "knowledge://" + row.documentCode() + "/" + row.versionCode() + "#" + row.chunkNo(),
                         row.versionUpdatedAt(), row.indexedAt()));
-                if (citations.size() == Math.min(boundedLimit, SEARCH_TOP_K)) {
+                if (citations.size() == stageTopK) {
                     break;
                 }
             }
@@ -234,10 +247,102 @@ public class KnowledgeService implements KnowledgeQueryApi {
                 return KnowledgeQueryApi.Result.noEvidence(queriedAt);
             }
             return KnowledgeQueryApi.Result.found(citations, queriedAt,
-                    rows.size() > Math.min(boundedLimit, SEARCH_TOP_K));
+                    rows.size() > stageTopK);
         } catch (RuntimeException exception) {
             return KnowledgeQueryApi.Result.unavailable(queriedAt);
         }
+    }
+
+    @Override
+    public KnowledgeQueryApi.CatalogResult listActiveDocuments() {
+        Instant queriedAt = Instant.now();
+        try {
+            List<KnowledgeMapper.ActiveDocumentRow> rows = mapper.findActiveDocuments(20, EMBEDDING_PROFILE, 1024);
+            List<KnowledgeQueryApi.ActiveDocument> documents = rows == null ? List.of() : rows.stream()
+                    .filter(row -> row != null && row.synthetic() && row.documentCode() != null
+                            && !row.documentCode().isBlank() && row.title() != null && !row.title().isBlank()
+                            && row.versionCode() != null && !row.versionCode().isBlank()
+                            && row.versionUpdatedAt() != null && row.indexedAt() != null)
+                    .map(row -> new KnowledgeQueryApi.ActiveDocument(row.documentCode(), row.title(), row.versionCode(),
+                            row.versionUpdatedAt(), row.indexedAt(), true)).toList();
+            if (documents.isEmpty()) {
+                return KnowledgeQueryApi.CatalogResult.noEvidence(queriedAt);
+            }
+            documents = documents.stream().sorted(java.util.Comparator
+                    .comparingInt((KnowledgeQueryApi.ActiveDocument document) -> catalogOrder(document.documentCode()))
+                    .thenComparing(KnowledgeQueryApi.ActiveDocument::documentCode)
+                    .thenComparing(KnowledgeQueryApi.ActiveDocument::versionCode)).toList();
+            return KnowledgeQueryApi.CatalogResult.found(documents, queriedAt, rows.size() > documents.size());
+        } catch (RuntimeException exception) {
+            return KnowledgeQueryApi.CatalogResult.unavailable(queriedAt);
+        }
+    }
+
+    @Override
+    public KnowledgeQueryApi.DocumentResult readActiveDocument(String documentCode, int maxChunks, int maxChars) {
+        if (documentCode == null || documentCode.isBlank() || documentCode.length() > 128) {
+            throw new IllegalArgumentException("知识文档标识无效");
+        }
+        if (maxChunks < 1 || maxChunks > MAX_DOCUMENT_CHUNKS || maxChars < 1 || maxChars > MAX_DOCUMENT_CHARS) {
+            throw new IllegalArgumentException("知识文档读取边界无效");
+        }
+        Instant queriedAt = Instant.now();
+        try {
+            List<KnowledgeMapper.DocumentChunkRow> rows = mapper.readActiveDocument(documentCode, maxChunks + 1,
+                    EMBEDDING_PROFILE, 1024);
+            if (rows == null || rows.isEmpty()) return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
+            rows = rows.stream().filter(Objects::nonNull)
+                    .filter(row -> row.chunkNo() != null && row.chunkNo() >= 1
+                            && row.content() != null && !row.content().isBlank()
+                            && documentCode.equals(row.documentCode())
+                            && row.title() != null && !row.title().isBlank()
+                            && row.versionCode() != null && !row.versionCode().isBlank()
+                            && row.versionUpdatedAt() != null && row.indexedAt() != null)
+                    .sorted(java.util.Comparator.comparing(row -> row.chunkNo() == null ? Integer.MAX_VALUE : row.chunkNo()))
+                    .toList();
+            if (rows.isEmpty()) return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
+            KnowledgeMapper.DocumentChunkRow first = rows.getFirst();
+            for (KnowledgeMapper.DocumentChunkRow row : rows) {
+                if (!Objects.equals(first.versionCode(), row.versionCode())
+                        || !Objects.equals(first.title(), row.title())
+                        || !Objects.equals(first.versionUpdatedAt(), row.versionUpdatedAt())
+                        || !Objects.equals(first.indexedAt(), row.indexedAt())) {
+                    return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
+                }
+            }
+            KnowledgeQueryApi.ActiveDocument document = new KnowledgeQueryApi.ActiveDocument(
+                    first.documentCode(), first.title(), first.versionCode(), first.versionUpdatedAt(), first.indexedAt(), true);
+            List<KnowledgeQueryApi.Citation> citations = new ArrayList<>();
+            int usedChars = 0;
+            boolean truncated = rows.size() > maxChunks;
+            for (int i = 0; i < rows.size() && citations.size() < maxChunks; i++) {
+                KnowledgeMapper.DocumentChunkRow row = rows.get(i);
+                int next = usedChars + row.content().length();
+                if (next > maxChars) {
+                    truncated = true;
+                    break;
+                }
+                usedChars = next;
+                citations.add(new KnowledgeQueryApi.Citation(row.documentCode(), row.title(), row.versionCode(),
+                        sectionTitle(row.content()), row.chunkNo(), row.content(), 1d, true,
+                        "knowledge://" + row.documentCode() + "/" + row.versionCode() + "#" + row.chunkNo(),
+                        row.versionUpdatedAt(), row.indexedAt()));
+            }
+            if (citations.isEmpty()) return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
+            return KnowledgeQueryApi.DocumentResult.found(document, citations, queriedAt, truncated);
+        } catch (RuntimeException exception) {
+            return KnowledgeQueryApi.DocumentResult.unavailable(queriedAt);
+        }
+    }
+
+    private static int catalogOrder(String documentCode) {
+        return switch (documentCode) {
+            case "warehouse-rules" -> 1;
+            case "item-codes" -> 2;
+            case "warehouse-codes" -> 3;
+            case "low-stock-policy" -> 4;
+            default -> 5;
+        };
     }
 
     private ImportSummary persist(List<Chunk> chunks, Map<String, ExistingVersion> existing,
@@ -285,7 +390,7 @@ public class KnowledgeService implements KnowledgeQueryApi {
                 versionsCreated++;
             }
             if (first.chunk.desiredStatus().equals("ACTIVE")) {
-                mapper.activateVersion(documentId, versionId, timestampNow());
+                mapper.activateVersion(documentId, versionId, timestampNow(), first.chunk.title());
             }
             for (IndexedChunk indexedChunk : versionChunks) {
                 if (existingVersion != ExistingVersion.MISSING

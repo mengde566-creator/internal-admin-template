@@ -36,23 +36,39 @@ export type KnowledgeAnswer = {
   resultCount: number
   truncated: boolean
   citations: KnowledgeCitation[]
+  mode?: 'SECTION_SEARCH' | 'ACTIVE_CATALOG' | 'ACTIVE_DOCUMENT'
+  documents?: KnowledgeDocument[]
+}
+export type KnowledgeDocument = {
+  documentCode: string
+  title: string
+  versionCode: string
+  versionUpdatedAt: string
+  indexedAt: string
+  synthetic: boolean
 }
 export type Message = Omit<Required<NonNullable<NonNullable<MessagePageSchema['records']>[number]>>, 'knowledgeAnswer'> & {
   knowledgeAnswer?: KnowledgeAnswer | null
 }
 type ClarificationTaskSchema = NonNullable<MessagePageSchema['activeClarification']>
-export type ClarificationOption = Required<NonNullable<ClarificationTaskSchema['options']>[number]>
+type ClarificationOptionSchema = NonNullable<ClarificationTaskSchema['options']>[number]
+export type ClarificationOption = Required<Omit<ClarificationOptionSchema, 'versionCode' | 'versionUpdatedAt' | 'indexedAt'>> & {
+  versionCode?: string
+  versionUpdatedAt?: string
+  indexedAt?: string
+}
+export type KnowledgeClarificationOption = ClarificationOption
 export type ClarificationTask = {
   clarificationId: string
   revision: number
   status: string
-  candidateKind: 'ITEM' | 'LOCATION' | ''
-  candidateIntent: 'CURRENT_STOCK' | 'ITEM_LOCATIONS' | 'LOCATION_CONTENTS' | ''
+  candidateKind: 'ITEM' | 'LOCATION' | 'DOCUMENT' | ''
+  candidateIntent: 'CURRENT_STOCK' | 'ITEM_LOCATIONS' | 'LOCATION_CONTENTS' | 'KNOWLEDGE_DOCUMENT_READ' | ''
   selectedCode: string
   selectedName: string
   selectedWarehouseCode: string
   selectedWarehouseName: string
-  options: ClarificationOption[]
+  options: KnowledgeClarificationOption[]
 }
 export type MessagePage = Required<Omit<MessagePageSchema, 'records' | 'activeClarification'>> & {
   records: Message[]
@@ -121,6 +137,14 @@ function normaliseKnowledgeAnswer(value: unknown): KnowledgeAnswer | null {
     versionUpdatedAt: typeof item.versionUpdatedAt === 'string' ? item.versionUpdatedAt : '',
     indexedAt: typeof item.indexedAt === 'string' ? item.indexedAt : ''
   })) : []
+  const documents = Array.isArray(raw.documents) ? raw.documents.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object')).map((item) => ({
+    documentCode: typeof item.documentCode === 'string' ? item.documentCode : '',
+    title: typeof item.title === 'string' ? item.title : '',
+    versionCode: typeof item.versionCode === 'string' ? item.versionCode : '',
+    versionUpdatedAt: typeof item.versionUpdatedAt === 'string' ? item.versionUpdatedAt : '',
+    indexedAt: typeof item.indexedAt === 'string' ? item.indexedAt : '',
+    synthetic: item.synthetic === true
+  })) : []
   return {
     cardId: raw.cardId,
     revision: raw.revision,
@@ -129,7 +153,9 @@ function normaliseKnowledgeAnswer(value: unknown): KnowledgeAnswer | null {
     queriedAt: typeof raw.queriedAt === 'string' ? raw.queriedAt : '',
     resultCount: typeof raw.resultCount === 'number' ? raw.resultCount : citations.length,
     truncated: raw.truncated === true,
-    citations
+    citations,
+    mode: raw.mode === 'ACTIVE_CATALOG' || raw.mode === 'ACTIVE_DOCUMENT' || raw.mode === 'SECTION_SEARCH' ? raw.mode : undefined,
+    documents
   }
 }
 
@@ -160,8 +186,8 @@ export async function fetchConversationMessages(conversationId: string, page = 1
           clarificationId: raw.activeClarification.clarificationId ?? '',
           revision: raw.activeClarification.revision ?? 0,
           status: raw.activeClarification.status ?? 'READY',
-          candidateKind: raw.activeClarification.candidateKind === 'LOCATION' ? 'LOCATION' : raw.activeClarification.candidateKind === 'ITEM' ? 'ITEM' : '',
-          candidateIntent: raw.activeClarification.candidateIntent === 'ITEM_LOCATIONS' || raw.activeClarification.candidateIntent === 'LOCATION_CONTENTS' || raw.activeClarification.candidateIntent === 'CURRENT_STOCK'
+          candidateKind: raw.activeClarification.candidateKind === 'LOCATION' ? 'LOCATION' : raw.activeClarification.candidateKind === 'DOCUMENT' ? 'DOCUMENT' : raw.activeClarification.candidateKind === 'ITEM' ? 'ITEM' : '',
+          candidateIntent: raw.activeClarification.candidateIntent === 'ITEM_LOCATIONS' || raw.activeClarification.candidateIntent === 'LOCATION_CONTENTS' || raw.activeClarification.candidateIntent === 'CURRENT_STOCK' || raw.activeClarification.candidateIntent === 'KNOWLEDGE_DOCUMENT_READ'
             ? raw.activeClarification.candidateIntent
             : '',
           selectedCode: raw.activeClarification.selectedCode ?? '',
@@ -174,7 +200,10 @@ export async function fetchConversationMessages(conversationId: string, page = 1
             baseUnit: option?.baseUnit ?? '',
             optionToken: option?.optionToken ?? '',
             warehouseCode: option?.warehouseCode ?? '',
-            warehouseName: option?.warehouseName ?? ''
+            warehouseName: option?.warehouseName ?? '',
+            versionCode: (option as typeof option & { versionCode?: string })?.versionCode,
+            versionUpdatedAt: (option as typeof option & { versionUpdatedAt?: string })?.versionUpdatedAt,
+            indexedAt: (option as typeof option & { indexedAt?: string })?.indexedAt
           }))
         }
       : null,

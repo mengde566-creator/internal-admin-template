@@ -389,6 +389,63 @@ class AgentStoreConversationContractTest {
     }
 
     @Test
+    void latestKnowledgeReferencesRequireCompleteAnsweredFreshAndStrictCards() throws Exception {
+        JdbcTemplate jdbc = database("conversation-knowledge-reference-valid");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, "knowledge-reference-valid", "制度追问", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+
+        assertTrue(store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(),
+                "依据", "scope-7", 1L, null, 0L, null, false, observations,
+                answeredKnowledgeCard("ANSWERED", "SECTION_SEARCH", 1)));
+        assertEquals(1, store.latestKnowledgeReferences(conversationId, 7L, "scope-7", Duration.ofHours(1)).size());
+        assertTrue(store.latestKnowledgeReferences(conversationId, 7L, "scope-7", Duration.ZERO).isEmpty(),
+                "已过期的引用不得授权后续全文读取");
+
+        assertNoLatestReferenceForThreeDocuments("conversation-knowledge-reference-too-many-documents");
+
+        assertNoLatestReferenceForCompleteCard("conversation-knowledge-reference-no-evidence", "NO_EVIDENCE", "SECTION_SEARCH");
+        assertNoLatestReferenceForCompleteCard("conversation-knowledge-reference-degraded", "DEGRADED", "SECTION_SEARCH");
+        assertNoLatestReferenceForCompleteCard("conversation-knowledge-reference-catalog", "ANSWERED", "ACTIVE_CATALOG");
+        assertNoLatestReferenceForPartialCard("conversation-knowledge-reference-partial");
+        assertNoLatestReferenceForFailedCard("conversation-knowledge-reference-failed");
+    }
+
+    @Test
+    void trustedKnowledgeReferenceRequiresCurrentConversationOwnerScopeAndFreshTask() throws Exception {
+        JdbcTemplate jdbc = database("conversation-knowledge-task-reference");
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun candidateRun = store.startRun(conversationId, "knowledge-task-candidate", "完整资料", 7L, "scope-7");
+        AgentStore.TaskRow ready = store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
+                Instant.now().plus(Duration.ofHours(1)), "{}", "DOCUMENT",
+                "[{\"optionToken\":\"doc-token\",\"code\":\"warehouse-rules\",\"name\":\"仓储操作规则\",\"versionCode\":\"v2\",\"versionUpdatedAt\":\"2026-08-30T00:00:00Z\",\"indexedAt\":\"2026-08-30T00:00:00Z\"}]",
+                "KNOWLEDGE_DOCUMENT_READ");
+        assertTrue(store.complete(candidateRun.runId()));
+        AgentStore.TaskSelection selected = store.selectClarification(conversationId, ready.taskId(), ready.revision(),
+                "scope-7", "doc-token");
+
+        assertNotNull(store.trustedKnowledgeReference(selected.task(), conversationId, 7L, "scope-7"));
+        assertNull(store.trustedKnowledgeReference(selected.task(), conversationId, 8L, "scope-7"));
+        assertNull(store.trustedKnowledgeReference(selected.task(), "other-conversation", 7L, "scope-7"));
+        assertNull(store.trustedKnowledgeReference(selected.task(), conversationId, 7L, "scope-other"));
+
+        AgentStore.TaskRow expired = new AgentStore.TaskRow(selected.task().taskId(), conversationId,
+                selected.task().memorySegmentNo(), selected.task().adapter(), selected.task().intent(),
+                AgentStore.TASK_COLLECTING, selected.task().revision(), "scope-7", Instant.now().minusSeconds(1),
+                selected.task().confirmedConditions(), selected.task().missingFields(), selected.task().candidates());
+        assertNull(store.trustedKnowledgeReference(expired, conversationId, 7L, "scope-7"));
+
+        AgentStore.TaskRow wrongStatus = new AgentStore.TaskRow(selected.task().taskId(), conversationId,
+                selected.task().memorySegmentNo(), selected.task().adapter(), selected.task().intent(),
+                AgentStore.TASK_COMPLETED, selected.task().revision(), "scope-7", Instant.now().plus(Duration.ofHours(1)),
+                selected.task().confirmedConditions(), selected.task().missingFields(), selected.task().candidates());
+        assertNull(store.trustedKnowledgeReference(wrongStatus, conversationId, 7L, "scope-7"));
+    }
+
+    @Test
     void retryPlanIsConsumedOnceAndChildLinksDirectParent() throws Exception {
         JdbcTemplate jdbc = database("conversation-retry-plan");
         AgentStore store = new AgentStore(jdbc);
@@ -426,6 +483,22 @@ class AgentStoreConversationContractTest {
                 7L, "scope-7", Duration.ofHours(1));
         assertFalse(replay.newRun());
         assertEquals(child.runId(), replay.runId(), "相同clientRequestId只返回既有子Run");
+    }
+
+    @Test
+    void knowledgeRetryPlanPreservesOperationAndRejectsLegacyOrForgedArguments() {
+        AgentStore store = new AgentStore(mock(JdbcTemplate.class));
+        String valid = "{\"kind\":\"WAREHOUSE_RETRY_PLAN\",\"version\":1,"
+                + "\"sourceRunId\":\"run-1\",\"taskIntent\":\"KNOWLEDGE\",\"successfulCount\":0,"
+                + "\"subtasks\":[{\"order\":1,\"toolName\":\"knowledge_search\","
+                + "\"arguments\":\"{\\\"operation\\\":\\\"LIST_ACTIVE\\\",\\\"queryText\\\":\\\"系统收录了哪些资料\\\"}\","
+                + "\"errorCode\":\"AI_KNOWLEDGE_UNAVAILABLE\"}]}";
+        AgentStore.RetryPlan plan = store.parseRetryPlan(valid, "run-1");
+        assertNotNull(plan);
+        assertTrue(plan.subtasks().getFirst().arguments().contains("LIST_ACTIVE"));
+
+        String legacy = valid.replace("\\\"operation\\\":\\\"LIST_ACTIVE\\\",", "");
+        assertNull(store.parseRetryPlan(legacy, "run-1"));
     }
 
     @Test
@@ -515,6 +588,67 @@ class AgentStoreConversationContractTest {
         while (value.length() < targetLength - 2) value.append('x');
         value.append("\"}");
         return value.toString();
+    }
+
+    private String answeredKnowledgeCard(String outcome, String mode, int resultCount) {
+        String citations = resultCount == 0 ? "[]" : "[{\"documentCode\":\"warehouse-rules\",\"title\":\"仓储操作规则\",\"versionCode\":\"v2\",\"section\":\"出库校验\",\"chunkNo\":1,\"excerpt\":\"出库前检查可用余额。\",\"synthetic\":true,\"sourceRef\":\"knowledge://warehouse-rules/v2/1\",\"versionUpdatedAt\":\"2026-08-30T00:00:00Z\",\"indexedAt\":\"2026-08-30T00:00:00Z\"}]";
+        return "{\"cardId\":\"knowledge-card\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\""
+                + outcome + "\",\"mode\":\"" + mode + "\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":"
+                + resultCount + ",\"truncated\":false,\"citations\":" + citations + "}";
+    }
+
+    private void assertNoLatestReferenceForCompleteCard(String databaseName, String outcome, String mode) throws Exception {
+        JdbcTemplate jdbc = database(databaseName);
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+        store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(), "依据", "scope-7", 1L,
+                null, 0L, null, false, observations, answeredKnowledgeCard(outcome, mode, 0));
+        assertTrue(store.latestKnowledgeReferences(conversationId, 7L, "scope-7", Duration.ofHours(1)).isEmpty());
+    }
+
+    private void assertNoLatestReferenceForPartialCard(String databaseName) throws Exception {
+        JdbcTemplate jdbc = database(databaseName);
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(run.runId()), eq(AgentStore.PARTIAL), eq("AI_MODEL_UNAVAILABLE"))).thenReturn(true);
+        store.completePartial(conversationId, run.runId(), run.assistantMessageId(), "依据暂时无法总结", "scope-7", 1L,
+                "AI_MODEL_UNAVAILABLE", observations, null, answeredKnowledgeCard("DEGRADED", "SECTION_SEARCH", 1));
+        assertTrue(store.latestKnowledgeReferences(conversationId, 7L, "scope-7", Duration.ofHours(1)).isEmpty());
+    }
+
+    private void assertNoLatestReferenceForFailedCard(String databaseName) throws Exception {
+        JdbcTemplate jdbc = database(databaseName);
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(run.runId()), eq(AgentStore.FAILED), eq("AI_MODEL_UNAVAILABLE"))).thenReturn(true);
+        store.completeFailure(conversationId, run.runId(), run.assistantMessageId(), "暂时无法完成", "scope-7", 1L,
+                "AI_MODEL_UNAVAILABLE", observations, null, answeredKnowledgeCard("DEGRADED", "SECTION_SEARCH", 1));
+        assertTrue(store.latestKnowledgeReferences(conversationId, 7L, "scope-7", Duration.ofHours(1)).isEmpty());
+    }
+
+    private void assertNoLatestReferenceForThreeDocuments(String databaseName) throws Exception {
+        JdbcTemplate jdbc = database(databaseName);
+        AgentStore store = new AgentStore(jdbc);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+        String citation = "{\"documentCode\":\"rules\",\"title\":\"规则\",\"versionCode\":\"v1\",\"section\":\"章节\",\"chunkNo\":1,\"excerpt\":\"依据\",\"synthetic\":true,\"sourceRef\":\"knowledge://rules/v1/1\",\"versionUpdatedAt\":\"2026-08-30T00:00:00Z\",\"indexedAt\":\"2026-08-30T00:00:00Z\"}";
+        String citations = "[" + citation.replace("\"documentCode\":\"rules\"", "\"documentCode\":\"rules-a\"")
+                + "," + citation.replace("\"documentCode\":\"rules\"", "\"documentCode\":\"rules-b\"")
+                + "," + citation.replace("\"documentCode\":\"rules\"", "\"documentCode\":\"rules-c\"") + "]";
+        String card = "{\"cardId\":\"too-many\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"ANSWERED\",\"mode\":\"SECTION_SEARCH\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":3,\"truncated\":false,\"citations\":" + citations + "}";
+        store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(), "依据", "scope-7", 1L,
+                null, 0L, null, false, observations, card);
+        assertTrue(store.latestKnowledgeReferences(conversationId, 7L, "scope-7", Duration.ofHours(1)).isEmpty(),
+                "超过两个不同文档的引用不得作为后续读取凭据");
     }
 
     private void consumeRetry(AgentStore store, String conversationId, String sourceRunId,

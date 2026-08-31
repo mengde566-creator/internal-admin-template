@@ -732,10 +732,13 @@ public class AgentStore {
                     java.util.Set<String> argumentFields = new java.util.HashSet<>();
                     argumentObject.propertyNames().forEach(argumentFields::add);
                     JsonNode queryText = argumentObject.get("queryText");
-                    if (!argumentFields.equals(java.util.Set.of("queryText")) || queryText == null
+                    JsonNode operation = argumentObject.get("operation");
+                    if (!argumentFields.equals(java.util.Set.of("queryText", "operation")) || queryText == null
                             || !queryText.isTextual() || queryText.asText().isBlank()
                             || queryText.asText().length() > 2_000
-                            || queryText.asText().codePoints().anyMatch(Character::isISOControl)) return null;
+                            || queryText.asText().codePoints().anyMatch(Character::isISOControl)
+                            || operation == null || !operation.isTextual()
+                            || !java.util.Set.of("SEARCH", "LIST_ACTIVE", "READ_ACTIVE").contains(operation.asText())) return null;
                 }
                 previousOrder = node.path("order").asLong();
                 subtasks.add(new RetrySubtask(node.path("order").asLong(), toolName, arguments, errorCode));
@@ -899,6 +902,146 @@ public class AgentStore {
                         rs.getString("missing_fields"), rs.getString("candidates")), taskId);
         if (rows.isEmpty()) throw new BusinessException(ErrorCode.NOT_FOUND, "任务不存在");
         return rows.get(0);
+    }
+
+    /** Return server-owned document references from the latest eligible knowledge answer. */
+    public List<AgentExecutionContext.TrustedKnowledgeReference> latestKnowledgeReferences(
+            String conversationId, Long userId, String scopeFingerprint, Duration ttl) {
+        String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
+        List<MessageRow> rows = jdbc.query("SELECT m.message_id, m.created_at, m.state, m.knowledge_card_text "
+                        + "FROM ai_message m JOIN ai_conversation c ON c.id = m.conversation_id "
+                        + "WHERE m.conversation_id = ? AND c.user_id = ? AND m.role = 'ASSISTANT' "
+                        + "AND m.state = 'COMPLETE' "
+                        + "AND m.scope_fingerprint = ? AND m.knowledge_card_text IS NOT NULL "
+                        + "ORDER BY m.sequence_no DESC LIMIT 1",
+                (rs, row) -> new MessageRow(rs.getString("message_id"), null, "ASSISTANT", rs.getString("state"), null,
+                        readInstant(rs, "created_at"), rs.getString("knowledge_card_text")),
+                conversationId, userId, effectiveScope);
+        if (rows.isEmpty()) return List.of();
+        MessageRow row = rows.getFirst();
+        Instant now = Instant.now();
+        if (!COMPLETE.equals(row.state()) || row.createdAt() == null
+                || row.knowledgeCardText() == null || row.knowledgeCardText().length() > MAX_KNOWLEDGE_CARD_CHARS) return List.of();
+        Duration effectiveTtl = ttl == null ? Duration.ofHours(4) : ttl;
+        Instant expiresAt;
+        try {
+            expiresAt = row.createdAt().plus(effectiveTtl);
+        } catch (RuntimeException invalidTtl) {
+            return List.of();
+        }
+        if (!expiresAt.isAfter(now)) return List.of();
+        try {
+            JsonNode root = JSON.readTree(row.knowledgeCardText());
+            if (root == null || !"knowledge-answer".equals(root.path("cardType").asText())) return List.of();
+            java.util.Set<String> baseFields = java.util.Set.of("cardId", "revision", "cardType", "outcome",
+                    "queriedAt", "resultCount", "truncated", "citations");
+            java.util.Set<String> actualFields = new java.util.HashSet<>(); root.propertyNames().forEach(actualFields::add);
+            java.util.Set<String> withMode = new java.util.HashSet<>(baseFields); withMode.add("mode");
+            if (!baseFields.equals(actualFields) && !withMode.equals(actualFields)) return List.of();
+            if (!root.path("cardId").isTextual() || root.path("cardId").asText().isBlank()
+                    || root.path("cardId").asText().length() > 128
+                    || !root.path("revision").isIntegralNumber() || root.path("revision").asLong() != 0) return List.of();
+            if (!"ANSWERED".equals(root.path("outcome").asText())) return List.of();
+            String mode = root.path("mode").asText("SECTION_SEARCH");
+            if (!java.util.Set.of("SECTION_SEARCH", "ACTIVE_DOCUMENT").contains(mode)) return List.of();
+            JsonNode resultCount = root.get("resultCount");
+            JsonNode truncated = root.get("truncated");
+            JsonNode queriedAt = root.get("queriedAt");
+            if (resultCount == null || !resultCount.isIntegralNumber() || truncated == null || !truncated.isBoolean()
+                    || queriedAt == null || !queriedAt.isTextual() || parseInstant(queriedAt.asText()) == null) return List.of();
+            JsonNode citations = root.get("citations");
+            if (citations == null || !citations.isArray() || citations.size() == 0 || citations.size() > 20) return List.of();
+            if (resultCount.asInt() != citations.size()) return List.of();
+            List<AgentExecutionContext.TrustedKnowledgeReference> references = new ArrayList<>();
+            java.util.Set<String> seenDocuments = new java.util.LinkedHashSet<>();
+            for (JsonNode citation : citations) {
+                if (!validKnowledgeCitation(citation)) {
+                    return List.of();
+                }
+                String documentCode = citation.path("documentCode").asText();
+                String versionCode = citation.path("versionCode").asText();
+                if (!seenDocuments.add(documentCode + "\u0000" + versionCode)) continue;
+                Instant versionUpdatedAt = parseInstant(citation.path("versionUpdatedAt").asText(null));
+                Instant indexedAt = parseInstant(citation.path("indexedAt").asText(null));
+                if (versionUpdatedAt == null || indexedAt == null || references.size() >= 2) return List.of();
+                references.add(new AgentExecutionContext.TrustedKnowledgeReference(conversationId,
+                        row.messageId(), effectiveScope, expiresAt, documentCode,
+                        versionCode, citation.path("title").asText(), versionUpdatedAt, indexedAt));
+            }
+            return references.size() <= 2 ? List.copyOf(references) : List.of();
+        } catch (RuntimeException ignored) {
+            return List.of();
+        }
+    }
+
+    /** Convert a selected document task into a server-owned read reference. */
+    public AgentExecutionContext.TrustedKnowledgeReference trustedKnowledgeReference(TaskRow task,
+                                                                                      String expectedConversationId,
+                                                                                      Long expectedUserId,
+                                                                                      String expectedScopeFingerprint) {
+        if (task == null || task.confirmedConditions() == null || task.confirmedConditions().isBlank()
+                || !"KNOWLEDGE_DOCUMENT_READ".equals(task.intent()) || task.expiresAt() == null
+                || !task.expiresAt().isAfter(Instant.now()) || expectedConversationId == null
+                || expectedConversationId.isBlank() || expectedUserId == null) return null;
+        String effectiveScope = expectedScopeFingerprint == null ? "" : expectedScopeFingerprint;
+        if (!expectedConversationId.equals(task.conversationId())
+                || !effectiveScope.equals(task.scopeFingerprint())
+                || !(TASK_READY.equals(task.status()) || TASK_COLLECTING.equals(task.status()))) return null;
+        try {
+            Integer owner = jdbc.queryForObject("SELECT COUNT(*) FROM ai_conversation WHERE id = ? AND user_id = ?",
+                    Integer.class, expectedConversationId, expectedUserId);
+            if (owner == null || owner != 1) return null;
+            JsonNode root = JSON.readTree(task.confirmedConditions());
+            if (root == null || !root.isObject()) return null;
+            java.util.Set<String> names = new java.util.HashSet<>(); root.propertyNames().forEach(names::add);
+            java.util.Set<String> allowed = java.util.Set.of("type", "intent", "code", "name", "baseUnit",
+                    "documentCode", "title", "versionCode", "versionUpdatedAt", "indexedAt");
+            if (!allowed.containsAll(names) || names.contains("pendingMentions") || names.contains("pendingOptions")
+                    || !"DOCUMENT".equals(root.path("type").asText())
+                    || !"KNOWLEDGE_DOCUMENT_READ".equals(root.path("intent").asText())) return null;
+            String code = root.path("documentCode").asText(null);
+            String version = root.path("versionCode").asText(null);
+            String title = root.path("title").asText(null);
+            if (code == null || code.isBlank() || code.length() > 128 || version == null || version.isBlank()
+                    || version.length() > 64 || title == null || title.isBlank() || title.length() > 256) return null;
+            Instant versionUpdatedAt = parseInstant(root.path("versionUpdatedAt").asText(null));
+            Instant indexedAt = parseInstant(root.path("indexedAt").asText(null));
+            if (versionUpdatedAt == null || indexedAt == null) return null;
+            return new AgentExecutionContext.TrustedKnowledgeReference(expectedConversationId, null,
+                    effectiveScope, task.expiresAt(), code, version, title,
+                    versionUpdatedAt, indexedAt);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private static boolean validKnowledgeCitation(JsonNode citation) {
+        if (citation == null || !citation.isObject()) return false;
+        java.util.Set<String> expected = java.util.Set.of("documentCode", "title", "versionCode", "section",
+                "chunkNo", "excerpt", "synthetic", "sourceRef", "versionUpdatedAt", "indexedAt");
+        java.util.Set<String> actual = new java.util.HashSet<>(); citation.propertyNames().forEach(actual::add);
+        if (!expected.equals(actual)) return false;
+        if (!validText(citation, "documentCode", 128) || !validText(citation, "title", 256)
+                || !validText(citation, "versionCode", 64) || !validText(citation, "section", 256)
+                || !validText(citation, "excerpt", 4000) || !validText(citation, "sourceRef", 512)) return false;
+        JsonNode chunkNo = citation.get("chunkNo");
+        if (chunkNo == null || !chunkNo.isIntegralNumber() || chunkNo.asInt() < 1) return false;
+        JsonNode synthetic = citation.get("synthetic");
+        if (synthetic == null || !synthetic.isBoolean() || !synthetic.asBoolean()
+                || !citation.path("sourceRef").asText().startsWith("knowledge://")) return false;
+        return parseInstant(citation.path("versionUpdatedAt").asText(null)) != null
+                && parseInstant(citation.path("indexedAt").asText(null)) != null;
+    }
+
+    private static boolean validText(JsonNode object, String name, int maxLength) {
+        JsonNode value = object.get(name);
+        return value != null && value.isTextual() && !value.asText().isBlank()
+                && value.asText().length() <= maxLength;
+    }
+
+    private static Instant parseInstant(String value) {
+        if (value == null || value.isBlank()) return null;
+        try { return Instant.parse(value); } catch (RuntimeException ignored) { return null; }
     }
 
     /**
@@ -1088,7 +1231,9 @@ public class AgentStore {
                 names.addAll(candidate.propertyNames());
                 if (!names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit"))
                         && !names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "warehouseCode", "warehouseName"))
-                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "mention", "resolved"))) {
+                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "mention", "resolved"))
+                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "versionCode"))
+                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "versionCode", "versionUpdatedAt", "indexedAt"))) {
                     throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
                 }
                 String token = text(candidate, "optionToken", 256);
@@ -1103,6 +1248,7 @@ public class AgentStore {
                     String type = switch (intent) {
                         case "CURRENT_STOCK", "ITEM_LOCATIONS", "RECENT_MOVEMENTS" -> "ITEM";
                         case "LOCATION_CONTENTS" -> "LOCATION";
+                        case "KNOWLEDGE_DOCUMENT_READ" -> "DOCUMENT";
                         default -> throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
                     };
                     boolean hasWarehouseFields = names.contains("warehouseCode") || names.contains("warehouseName");
@@ -1119,6 +1265,9 @@ public class AgentStore {
                     if ("ITEM".equals(type) && hasWarehouseFields) {
                         throw new BusinessException(ErrorCode.CONFLICT, "候选与物品任务不匹配，请重新查询");
                     }
+                    if ("DOCUMENT".equals(type) && hasWarehouseFields) {
+                        throw new BusinessException(ErrorCode.CONFLICT, "候选与知识任务不匹配，请重新查询");
+                    }
                     confirmed.put("type", type);
                     confirmed.put("intent", intent);
                     if (mention != null) confirmed.put("mention", mention);
@@ -1126,6 +1275,15 @@ public class AgentStore {
                         confirmed.put("code", code);
                         confirmed.put("name", name);
                         confirmed.put("baseUnit", baseUnit == null ? "" : baseUnit);
+                    }
+                    if ("DOCUMENT".equals(type)) {
+                        confirmed.put("documentCode", code);
+                        confirmed.put("title", name);
+                        confirmed.put("versionCode", text(candidate, "versionCode", 64));
+                        if (names.contains("versionUpdatedAt")) {
+                            confirmed.put("versionUpdatedAt", text(candidate, "versionUpdatedAt", 64));
+                            confirmed.put("indexedAt", text(candidate, "indexedAt", 64));
+                        }
                     }
                     if (warehouseCode != null) {
                         confirmed.put("warehouseCode", warehouseCode);
@@ -1166,6 +1324,7 @@ public class AgentStore {
                         case "ITEM_LOCATIONS" -> resolved ? "查询物品「" + name + "」（" + code + "）所在的位置" : "查询物品线索「" + mention + "」所在的位置";
                         case "RECENT_MOVEMENTS" -> resolved ? "查询物品「" + name + "」（" + code + "）的近期库存变化" : "查询物品线索「" + mention + "」的近期库存变化";
                         case "LOCATION_CONTENTS" -> "查询仓库「" + warehouseName + "」的库位「" + name + "」有哪些库存";
+                        case "KNOWLEDGE_DOCUMENT_READ" -> "读取知识资料「" + name + "」（" + code + "）的全部内容";
                         default -> throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
                     };
                     return new TaskSelection(task, conditions, effective);

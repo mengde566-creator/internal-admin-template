@@ -20,25 +20,26 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                    ToolOutcomeLedger outcomes,
                                    AtomicBoolean clarificationProduced,
                                    AtomicReference<List<TrustedItemReference>> trustedItemsRef,
+                                   AtomicReference<List<TrustedKnowledgeReference>> trustedKnowledgeRef,
                                    KnowledgeState knowledgeState) {
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter) {
         this(actor, runId, message, toolCardEmitter, new AtomicBoolean(), new AtomicLong(),
-                java.util.UUID.randomUUID().toString(), null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new KnowledgeState());
+                java.util.UUID.randomUUID().toString(), null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState());
     }
 
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
                                  AtomicLong eventSequence, String messageId) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new KnowledgeState());
+                null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState());
     }
 
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
                                  AtomicLong eventSequence, String messageId, String taskId, long taskRevision) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new KnowledgeState());
+                taskId, taskRevision, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState());
     }
 
     /** Constructor used by the HTTP callback to share the trusted clarification marker. */
@@ -47,7 +48,7 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                  AtomicLong eventSequence, String messageId, String taskId, long taskRevision,
                                  AtomicBoolean clarificationProduced) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, new ToolOutcomeLedger(), clarificationProduced, new AtomicReference<>(List.of()), new KnowledgeState());
+                taskId, taskRevision, new ToolOutcomeLedger(), clarificationProduced, new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState());
     }
 
     /** Compatibility constructor retained for adapter fixtures that carry mutable state explicitly. */
@@ -57,7 +58,7 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                  ToolOutcomeLedger outcomes, AtomicBoolean clarificationProduced,
                                  AtomicReference<List<TrustedItemReference>> trustedItemsRef) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, outcomes, clarificationProduced, trustedItemsRef, new KnowledgeState());
+                taskId, taskRevision, outcomes, clarificationProduced, trustedItemsRef, new AtomicReference<>(List.of()), new KnowledgeState());
     }
 
     public void setTrustedItemReferences(List<TrustedItemReference> references) {
@@ -68,8 +69,26 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         return trustedItemsRef.get();
     }
 
+    public void setTrustedKnowledgeReferences(List<TrustedKnowledgeReference> references) {
+        trustedKnowledgeRef.set(references == null ? List.of() : List.copyOf(references));
+    }
+
+    public List<TrustedKnowledgeReference> trustedKnowledgeReferences() {
+        return trustedKnowledgeRef.get();
+    }
+
     public record TrustedItemReference(String taskId, long revision, String scopeFingerprint,
                                        Instant expiresAt, String code, String name, String baseUnit) { }
+
+    /** Server-owned citation/document identity used for bounded follow-up reads. */
+    public record TrustedKnowledgeReference(String conversationId, String messageId, String scopeFingerprint,
+                                            Instant expiresAt, String documentCode, String versionCode,
+                                            String title, Instant versionUpdatedAt, Instant indexedAt) {
+        public TrustedKnowledgeReference(String conversationId, String messageId, String scopeFingerprint,
+                                         Instant expiresAt, String documentCode, String versionCode, String title) {
+            this(conversationId, messageId, scopeFingerprint, expiresAt, documentCode, versionCode, title, null, null);
+        }
+    }
 
     public void markToolOutputProduced() {
         toolOutputProduced.set(true);
@@ -218,12 +237,22 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
 
     /** Server-only authorization used by a persisted Knowledge retry child. */
     public void authorizeRetryKnowledgeQuery(String normalizedQuery) {
-        knowledgeState.authorizeRetryQuery(normalizedQuery);
+        authorizeRetryKnowledgeQuery("SEARCH", normalizedQuery);
+    }
+
+    /** Server-only authorization used by a persisted operation-aware Knowledge retry child. */
+    public void authorizeRetryKnowledgeQuery(String operation, String normalizedQuery) {
+        knowledgeState.authorizeRetryQuery(operation, normalizedQuery);
     }
 
     /** Consume the one query authorized for this retry callback. */
     public boolean consumeRetryKnowledgeQuery(String normalizedQuery) {
-        return knowledgeState.consumeRetryQuery(normalizedQuery);
+        return consumeRetryKnowledgeQuery("SEARCH", normalizedQuery);
+    }
+
+    /** Consume the one server-authorized operation/query pair. */
+    public boolean consumeRetryKnowledgeQuery(String operation, String normalizedQuery) {
+        return knowledgeState.consumeRetryQuery(operation, normalizedQuery);
     }
 
     public void clearRetryKnowledgeQueryAuthorization() {
@@ -250,6 +279,7 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         private String cardJson;
         private final List<String> mixedAuthorizedTools = new ArrayList<>();
         private String retryQuery;
+        private String retryOperation;
         private String retryTool;
 
         public synchronized boolean begin() {
@@ -292,17 +322,21 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
             mixedAuthorizedTools.clear();
         }
 
-        private synchronized void authorizeRetryQuery(String normalizedQuery) {
+        private synchronized void authorizeRetryQuery(String operation, String normalizedQuery) {
+            retryOperation = operation;
             retryQuery = normalizedQuery;
         }
 
-        private synchronized boolean consumeRetryQuery(String normalizedQuery) {
-            if (retryQuery == null || !retryQuery.equals(normalizedQuery)) return false;
+        private synchronized boolean consumeRetryQuery(String operation, String normalizedQuery) {
+            if (retryQuery == null || !java.util.Objects.equals(retryOperation, operation)
+                    || !retryQuery.equals(normalizedQuery)) return false;
+            retryOperation = null;
             retryQuery = null;
             return true;
         }
 
         private synchronized void clearRetryQueryAuthorization() {
+            retryOperation = null;
             retryQuery = null;
         }
 
