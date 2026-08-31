@@ -78,6 +78,12 @@ export const router = createRouter({
           name: 'system-config',
           component: () => import('../../modules/iam/pages/SystemConfigPage.vue'),
           meta: { title: '登录安全', permission: 'system:config:manage' }
+        },
+        {
+          path: 'ai-observability',
+          name: 'ai-observability',
+          component: () => import('../../modules/observability/pages/AiObservabilityPage.vue'),
+          meta: { title: 'AI 观测', permission: 'ai:observability:view' }
         }
       ]
     },

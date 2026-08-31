@@ -11,9 +11,14 @@ const api = vi.hoisted(() => ({
   fetchConversationMessages: vi.fn(),
   runAgent: vi.fn()
 }))
+const feedbackApi = vi.hoisted(() => ({
+  putMessageFeedback: vi.fn(),
+  deleteMessageFeedback: vi.fn()
+}))
 const routerPush = vi.hoisted(() => vi.fn())
 
 vi.mock('../ai/agentApi', () => api)
+vi.mock('../ai/feedbackApi', () => feedbackApi)
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
 
 const stubs = {
@@ -65,6 +70,8 @@ describe('仓储助手可见交互', () => {
     api.fetchConversations.mockResolvedValue({ records: [{ conversationId: 'conversation-1', createdAt: '2026-08-20T08:00:00Z', updatedAt: '2026-08-20T08:30:00Z' }], total: 1, page: 1, size: 10 })
     api.fetchConversationMessages.mockResolvedValue({ records: [{ messageId: 'message-old', runId: 'run-old', role: 'USER', state: 'COMPLETE', content: '上次查询', createdAt: '2026-08-20T08:00:00Z' }], total: 1, page: 1, size: 50 })
     api.createConversation.mockResolvedValue({ conversationId: 'conversation-1', createdAt: '2026-08-21T08:00:00Z', updatedAt: '2026-08-21T08:00:00Z' })
+    feedbackApi.putMessageFeedback.mockReset().mockResolvedValue({ rating: 'HELPFUL', reason: 'ACCURATE', createdAt: '2026-08-21T08:30:01Z', updatedAt: '2026-08-21T08:30:01Z' })
+    feedbackApi.deleteMessageFeedback.mockReset().mockResolvedValue(undefined)
     api.runAgent.mockImplementation(async (_id: string, _requestId: string, _text: string, _signal: AbortSignal, onEvent: (value: any) => void) => {
       onEvent(event('run.started', 1))
       onEvent(event('card.replace', 2, { cardId: 'stock-summary', revision: 0, cardType: 'stock-summary', itemName: '物品 A', baseUnit: '件', queriedAt: '2026-08-21T08:30:00Z', rows: [{ itemCode: 'A-001', itemName: '物品 A', quantity: '9.8765', baseUnit: '件', warehouseName: '一号仓库', locationName: '一号库位' }] }))
@@ -99,6 +106,26 @@ describe('仓储助手可见交互', () => {
     expect(wrapper.findAll('[data-testid="stock-summary-card"]')).toHaveLength(1)
     expect(wrapper.text()).toContain('已找到库存。')
     expect(wrapper.text()).toContain('复制摘要')
+  })
+
+  it('完整助手回答显示反馈控件，提交并撤销沿用消息事实', async () => {
+    const wrapper = mount(WarehouseAgentPanel, { props: { mode: 'DOCKED' }, global: { stubs } })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('物品 A 当前有库存吗？')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    const feedback = wrapper.get('[data-testid="feedback-message-1"]')
+    await feedback.get('button').trigger('click')
+    await feedback.findAll('button').find((button) => button.text() === '保存')!.trigger('click')
+    await flushPromises()
+    expect(feedbackApi.putMessageFeedback).toHaveBeenCalledWith('message-1', 'HELPFUL', 'ACCURATE')
+    expect(wrapper.text()).toContain('反馈已保存')
+
+    await feedback.findAll('button').find((button) => button.text() === '撤销')!.trigger('click')
+    await flushPromises()
+    expect(feedbackApi.deleteMessageFeedback).toHaveBeenCalledWith('message-1')
+    expect(wrapper.text()).toContain('已撤销反馈')
   })
 
   it('展示服务端校验通过的部分结果消息并保持PARTIAL终态语义', async () => {

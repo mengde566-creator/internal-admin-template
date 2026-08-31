@@ -10,10 +10,12 @@ import com.internaladmin.module.agent.model.dto.MessagePageDTO;
 import com.internaladmin.module.agent.model.dto.KnowledgeAnswerDTO;
 import com.internaladmin.module.agent.model.dto.KnowledgeCitationDTO;
 import com.internaladmin.module.agent.model.dto.KnowledgeDocumentDTO;
+import com.internaladmin.module.agent.model.dto.MessageFeedbackDTO;
 import com.internaladmin.module.agent.model.dto.ClarificationOptionDTO;
 import com.internaladmin.module.agent.model.dto.ClarificationTaskDTO;
 import com.internaladmin.module.agent.store.AgentStore;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
+import com.internaladmin.module.ai.observability.api.AiFeedbackApi;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.platform.kernel.error.BusinessException;
 import com.internaladmin.platform.kernel.error.ErrorCode;
@@ -58,22 +60,36 @@ public class AgentConversationService {
     private final AiObservationRecorder observations;
     private final AiProperties properties;
     private final List<AgentToolProvider> toolProviders;
+    private AiFeedbackApi feedbackApi;
     private static final tools.jackson.databind.ObjectMapper JSON = JsonMapper.builder().build();
     private static final Logger LOG = LoggerFactory.getLogger(AgentConversationService.class);
     public AgentConversationService(AgentStore store, ChatClient chatClient,
                                     AiObservationRecorder observations, AiProperties properties) {
-        this(store, chatClient, observations, properties, List.of());
+        this(store, chatClient, observations, properties, List.of(), null);
     }
 
     @Autowired
     public AgentConversationService(AgentStore store, ChatClient chatClient,
                                     AiObservationRecorder observations, AiProperties properties,
                                     List<AgentToolProvider> toolProviders) {
+        this(store, chatClient, observations, properties, toolProviders, null);
+    }
+
+    public AgentConversationService(AgentStore store, ChatClient chatClient,
+                                    AiObservationRecorder observations, AiProperties properties,
+                                    List<AgentToolProvider> toolProviders, AiFeedbackApi feedbackApi) {
         this.store = store;
         this.chatClient = chatClient;
         this.observations = observations;
         this.properties = properties;
         this.toolProviders = toolProviders == null ? List.of() : List.copyOf(toolProviders);
+        this.feedbackApi = feedbackApi;
+    }
+
+    /** Feedback is optional when the Agent test fixture runs without the observability bean. */
+    @Autowired(required = false)
+    public void setFeedbackApi(AiFeedbackApi feedbackApi) {
+        this.feedbackApi = feedbackApi;
     }
 
     public AgentStore.StartRun start(String conversationId, String clientRequestId,
@@ -192,11 +208,28 @@ public class AgentConversationService {
         AgentStore.MessagePage result = store.pageMessages(conversationId, userId, page, size);
         AgentStore.TaskRow task = scopeFingerprint == null
                 ? null : store.activeClarification(conversationId, userId, scopeFingerprint);
+        List<String> assistantMessageIds = result.records().stream()
+                .filter(row -> "ASSISTANT".equalsIgnoreCase(row.role()))
+                .map(AgentStore.MessageRow::messageId)
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .toList();
+        Map<String, AiFeedbackApi.FeedbackSnapshot> feedbackByMessage = assistantMessageIds.isEmpty()
+                || feedbackApi == null ? Map.of() : feedbackApi.findForAssistantMessages(assistantMessageIds, userId);
+        if (feedbackByMessage == null) feedbackByMessage = Map.of();
+        Map<String, AiFeedbackApi.FeedbackSnapshot> finalFeedbackByMessage = feedbackByMessage;
         return new MessagePageDTO(result.records().stream()
                         .map(row -> new MessageDTO(row.messageId(), row.runId(), row.role(), row.state(),
                                 row.content(), row.createdAt(), store.retryAvailable(conversationId, row.runId(), userId, scopeFingerprint),
-                                toKnowledgeAnswer(row.knowledgeCardText())))
+                                toKnowledgeAnswer(row.knowledgeCardText()), feedbackFor(finalFeedbackByMessage, row)))
                         .toList(), result.total(), result.page(), result.size(), toClarificationTask(task));
+    }
+
+    private MessageFeedbackDTO feedbackFor(Map<String, AiFeedbackApi.FeedbackSnapshot> feedbackByMessage,
+                                           AgentStore.MessageRow row) {
+        if (!"ASSISTANT".equalsIgnoreCase(row.role()) || row.messageId() == null) return null;
+        AiFeedbackApi.FeedbackSnapshot value = feedbackByMessage.get(row.messageId());
+        return value == null ? null : new MessageFeedbackDTO(value.rating(), value.reason(), value.createdAt(), value.updatedAt());
     }
 
     private ClarificationTaskDTO toClarificationTask(AgentStore.TaskRow task) {
@@ -739,6 +772,33 @@ public class AgentConversationService {
 
     public void execute(AgentStore.StartRun run, AgentExecutionContext execution,
                         Consumer<StreamEvent> emitter, AtomicBoolean cancelled) {
+        AiObservationRecorder.RunHandle observationRun = new AiObservationRecorder.RunHandle(run.runId());
+        if (run.newRun()) {
+            try {
+                AiObservationRecorder.RunHandle createdRun = observations.beginRun(new AiObservationRecorder.RunMetadata(
+                        run.runId(), run.taskId(), run.conversationId(), run.memorySegmentNo(),
+                        null, run.retryPlan() == null ? null : run.retryPlan().sourceRunId(), null, run.assistantMessageId(), execution.actor().userId(),
+                        execution.actor().scopeFingerprint(), "DEEPSEEK",
+                        properties.getChat().getDeepseek().getModel()));
+                if (createdRun != null) observationRun = createdRun;
+            } catch (RuntimeException observationFailure) {
+                LOG.error("AI observation run could not be created before execution for runId={}",
+                        run.runId(), observationFailure);
+                boolean failed = false;
+                try {
+                    failed = store.fail(run.runId(), AgentErrorCode.OBSERVATION_FAILED.getCode());
+                } catch (RuntimeException transitionFailure) {
+                    LOG.warn("AI observation creation failure could not close runId={}", run.runId(), transitionFailure);
+                }
+                emitter.accept(envelopedEvent("run.started", run, execution.eventSequence(),
+                        execution.messageId(), "{}"));
+                if (failed) {
+                    emitter.accept(envelopedEvent("run.failed", run, execution.eventSequence(),
+                            execution.messageId(), "{\"code\":\"AI_OBSERVATION_FAILED\"}"));
+                }
+                return;
+            }
+        }
         execution.setTrustedItemReferences(run.trustedItemReference() == null
                 ? List.of() : List.of(run.trustedItemReference()));
         List<AgentExecutionContext.TrustedKnowledgeReference> trustedKnowledge = store.latestKnowledgeReferences(
@@ -778,15 +838,27 @@ public class AgentConversationService {
             return;
         }
         boolean correctionAttempted = false;
+        AiObservationRecorder.StepHandle modelStep = null;
         for (int attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt++) {
             // Each bounded transport retry starts from an empty untrusted buffer;
             // a half-written JSON response must never be concatenated with the next attempt.
             StringBuilder answer = new StringBuilder();
             long modelStarted = System.nanoTime();
             boolean modelStartedRecorded = false;
+            ModelObservation modelObservation = null;
             try {
-                observations.recordAttempt(run.runId(), "MODEL", "STARTED", attempt, 0,
-                        null, null, null);
+                if (modelStep == null) {
+                    AiObservationRecorder.StepHandle begunStep = observations.beginStep(observationRun,
+                            new AiObservationRecorder.StepMetadata(null, "MODEL", "model-iteration-1", 1,
+                                    null, null, null, null, null, null, null));
+                    modelStep = begunStep == null
+                            ? new AiObservationRecorder.StepHandle(run.runId(), UUID.randomUUID().toString())
+                            : begunStep;
+                }
+                AiObservationRecorder.AttemptHandle begunAttempt = observations.beginAttempt(modelStep, attempt);
+                modelObservation = new ModelObservation(modelStep, begunAttempt == null
+                        ? new AiObservationRecorder.AttemptHandle(run.runId(), modelStep.stepId(),
+                        UUID.randomUUID().toString(), attempt) : begunAttempt);
                 modelStartedRecorded = true;
                 List<AgentStore.MessageRow> memory = store.loadMemory(run.conversationId(), execution.actor().userId(),
                         execution.actor().scopeFingerprint(), run.memorySegmentNo(),
@@ -829,7 +901,7 @@ public class AgentConversationService {
 
                 if (cancelled.get()) {
                     String status = visible(answer, execution) ? AgentStore.PARTIAL : AgentStore.CANCELLED;
-                    finishTerminal(run, execution, emitter, status, null, modelStarted, attempt);
+                    finishTerminal(run, execution, emitter, status, null, modelStarted, attempt, modelObservation);
                     return;
                 }
 
@@ -837,8 +909,11 @@ public class AgentConversationService {
                 // pagination mechanism.  Once it overflows, do not let a model
                 // response turn the truncated view into an apparent success.
                 if (execution.hasOutcomeOverflow()) {
+                    closeModelObservation(modelObservation, new AiObservationRecorder.Terminal(
+                            "FAILED", elapsedMillis(modelStarted), "MODEL",
+                            AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), null, null, "FAILED"));
                     completeGeneratedFailure(run, execution, emitter,
-                            AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), modelStarted, attempt);
+                            AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), modelStarted, attempt, modelObservation);
                     return;
                 }
 
@@ -846,17 +921,21 @@ public class AgentConversationService {
                 // invent a list from the empty citation set returned by LIST_ACTIVE.
                 String catalogMessage = knowledgeCatalogMessage(execution.knowledgeCardJson());
                 if (catalogMessage != null && !hasNonKnowledgeToolOutcome(execution)) {
+                    closeModelObservation(modelObservation, AiObservationRecorder.Terminal.success(
+                            elapsedMillis(modelStarted), "ANSWERED"));
+                    long duration = elapsedMillis(modelStarted);
                     String resultJson = "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\""
                             + jsonEscape(catalogMessage) + "\",\"data\":null}";
+                    if (!prepareSuccessfulTerminal(run, execution, emitter, duration)) return;
                     try {
-                        if (!completeSuccessfulRun(run, execution, catalogMessage, elapsedMillis(modelStarted))) {
+                        if (!completeSuccessfulRun(run, execution, catalogMessage, duration)) {
                             throw new AgentStore.SuccessBoundaryException(AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
                         }
                     } catch (AgentStore.SuccessBoundaryException boundaryFailure) {
                         failAfterSuccessBoundary(run, execution, emitter, boundaryCode(boundaryFailure.failure()));
                         return;
                     }
-                    emitValidatedTerminal(run, execution, emitter, resultJson, AgentStore.COMPLETE, modelStarted, attempt);
+                    emitValidatedTerminal(run, execution, emitter, resultJson, AgentStore.COMPLETE);
                     return;
                 }
 
@@ -865,21 +944,28 @@ public class AgentConversationService {
                 if (execution.hasKnowledgeResult() && !hasNonKnowledgeToolOutcome(execution)
                         && execution.knowledgeResult().status() != com.internaladmin.module.knowledge.api.KnowledgeQueryApi.Status.FOUND) {
                     if (execution.knowledgeResult().status() == com.internaladmin.module.knowledge.api.KnowledgeQueryApi.Status.NO_EVIDENCE) {
+                        closeModelObservation(modelObservation, AiObservationRecorder.Terminal.success(
+                                elapsedMillis(modelStarted), "NO_EVIDENCE"));
+                        long duration = elapsedMillis(modelStarted);
                         String safe = "ACTIVE_DOCUMENT".equals(knowledgeMode(execution.knowledgeCardJson()))
                                 ? "这份资料已更新，请重新查询当前生效版本。"
                                 : "没有找到可引用依据，请换一种说法或补充要查询的制度范围。";
                         String resultJson = "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\""
                                 + jsonEscape(safe) + "\",\"data\":null}";
+                        if (!prepareSuccessfulTerminal(run, execution, emitter, duration)) return;
                         try {
-                            if (!completeSuccessfulRun(run, execution, safe, elapsedMillis(modelStarted))) {
+                            if (!completeSuccessfulRun(run, execution, safe, duration)) {
                                 throw new AgentStore.SuccessBoundaryException(AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
                             }
                         } catch (AgentStore.SuccessBoundaryException boundaryFailure) {
                             failAfterSuccessBoundary(run, execution, emitter, boundaryCode(boundaryFailure.failure()));
                             return;
                         }
-                        emitValidatedTerminal(run, execution, emitter, resultJson, AgentStore.COMPLETE, modelStarted, attempt);
+                        emitValidatedTerminal(run, execution, emitter, resultJson, AgentStore.COMPLETE);
                     } else {
+                        closeModelObservation(modelObservation, new AiObservationRecorder.Terminal(
+                                "FAILED", elapsedMillis(modelStarted), "KNOWLEDGE", AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(),
+                                null, null, "FAILED"));
                         String code = AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode();
                         String safe = AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getMessage();
                         String resultJson = failureResultJson(code, safe);
@@ -901,14 +987,18 @@ public class AgentConversationService {
 
                 ModelResult modelResult;
                 try {
-                    modelResult = validateOrCorrect(answer.toString(), execution, correctionAttempted);
+                    modelResult = validateOrCorrect(answer.toString(), execution, correctionAttempted,
+                            observationRun, modelObservation);
                     correctionAttempted = modelResult.correctionAttempted();
                 } catch (ModelResultException invalid) {
-                    safeRecordModelTerminal(run.runId(), "FAILED", attempt, elapsedMillis(modelStarted), invalid.code());
-                    completeGeneratedFailure(run, execution, emitter, invalid.code(), modelStarted, attempt);
+                    closeModelObservation(modelObservation, new AiObservationRecorder.Terminal(
+                            "FAILED", elapsedMillis(modelStarted), "MODEL", invalid.code(), null, null, "FAILED"));
+                    completeGeneratedFailure(run, execution, emitter, invalid.code(), modelStarted, attempt, modelObservation);
                     return;
                 }
                 if (!modelResult.success()) {
+                    closeModelObservation(modelObservation, new AiObservationRecorder.Terminal(
+                            "FAILED", elapsedMillis(modelStarted), "MODEL", modelResult.code(), null, null, "FAILED"));
                     AgentStore.RetryPlan retryPlan = buildRetryPlan(run, execution,
                             execution.successfulToolCount(), taskIntent(execution));
                     try {
@@ -936,7 +1026,11 @@ public class AgentConversationService {
                     return;
                 }
                 try {
-                    if (!completeSuccessfulRun(run, execution, modelResult.message(), elapsedMillis(modelStarted))) {
+                    closeModelObservation(modelObservation, AiObservationRecorder.Terminal.success(
+                            elapsedMillis(modelStarted), "ANSWERED"));
+                    long duration = elapsedMillis(modelStarted);
+                    if (!prepareSuccessfulTerminal(run, execution, emitter, duration)) return;
+                    if (!completeSuccessfulRun(run, execution, modelResult.message(), duration)) {
                         throw new AgentStore.SuccessBoundaryException(
                                 AgentStore.SuccessBoundaryFailure.TERMINAL_CAS);
                     }
@@ -950,8 +1044,7 @@ public class AgentConversationService {
                 if (!execution.hasClarificationProduced()) {
                     emitPendingMentionCard(run, execution, emitter);
                 }
-                emitValidatedTerminal(run, execution, emitter, modelResult.json(), AgentStore.COMPLETE,
-                        modelStarted, attempt);
+                emitValidatedTerminal(run, execution, emitter, modelResult.json(), AgentStore.COMPLETE);
                 return;
             } catch (Exception ex) {
                 boolean hasVisibleOutput = visible(answer, execution);
@@ -960,7 +1053,7 @@ public class AgentConversationService {
                     // turn a subsequent model/transport failure into a bare
                     // terminal event; persist a safe partial result instead.
                     completeGeneratedFailure(run, execution, emitter,
-                            errorCode(ex), modelStarted, attempt);
+                            errorCode(ex), modelStarted, attempt, modelObservation);
                     return;
                 }
                 if (execution.hasToolFailure()) {
@@ -968,6 +1061,9 @@ public class AgentConversationService {
                     String toolMessage = toolFailureMessage(toolCode);
                     AgentStore.RetryPlan retryPlan = buildRetryPlan(run, execution,
                             execution.successfulToolCount(), taskIntent(execution));
+                    closeModelObservation(modelObservation, new AiObservationRecorder.Terminal(
+                            "FAILED", elapsedMillis(modelStarted), "TOOL", toolCode, null, null,
+                            execution.hasSuccessfulTool() ? "PARTIAL" : "FAILED"));
                     try {
                         if (hasMixedToolOutcome(execution)) {
                             if (!completePartialBoundary(run, execution, toolMessage,
@@ -996,18 +1092,18 @@ public class AgentConversationService {
                 boolean retry = modelStartedRecorded && !hasVisibleOutput && attempt < MAX_MODEL_ATTEMPTS
                         && isRetryable(ex);
                 if (retry) {
-                    safeRecordModelTerminal(run.runId(), "FAILED", attempt, elapsedMillis(modelStarted),
-                            errorCode(ex));
+                    safeRecordModelTerminal(modelObservation, "FAILED", elapsedMillis(modelStarted),
+                            errorCode(ex), false);
                     continue;
                 }
                 String status = hasVisibleOutput ? AgentStore.PARTIAL : AgentStore.FAILED;
                 String code = modelStartedRecorded ? errorCode(ex) : AgentErrorCode.OBSERVATION_FAILED.getCode();
                 if (AgentStore.FAILED.equals(status)
                         && AgentErrorCode.MODEL_UNAVAILABLE.getCode().equals(code)) {
-                    completeGeneratedFailure(run, execution, emitter, code, modelStarted, attempt);
+                    completeGeneratedFailure(run, execution, emitter, code, modelStarted, attempt, modelObservation);
                     return;
                 }
-                finishTerminal(run, execution, emitter, status, code, modelStarted, attempt);
+                finishTerminal(run, execution, emitter, status, code, modelStarted, attempt, modelObservation);
                 return;
             }
         }
@@ -1037,7 +1133,9 @@ public class AgentConversationService {
     }
 
     private ModelResult validateOrCorrect(String raw, AgentExecutionContext execution,
-                                          boolean correctionAttempted) {
+                                          boolean correctionAttempted,
+                                          AiObservationRecorder.RunHandle observationRun,
+                                          ModelObservation parentModel) {
         try {
             return validateModelResult(raw, execution, false);
         } catch (ModelResultException invalid) {
@@ -1051,7 +1149,8 @@ public class AgentConversationService {
                 throw new ModelResultException(AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(),
                         AgentErrorCode.TOOL_EXECUTION_FAILED.getMessage(), true);
             }
-            String corrected = requestCorrection(execution);
+            String corrected = requestCorrectionObserved(execution, observationRun,
+                    parentModel == null ? null : parentModel.step);
             try {
                 return validateModelResult(corrected, execution, true);
             } catch (ModelResultException second) {
@@ -1061,12 +1160,37 @@ public class AgentConversationService {
         }
     }
 
+    private String requestCorrectionObserved(AgentExecutionContext execution,
+                                             AiObservationRecorder.RunHandle observationRun,
+                                             AiObservationRecorder.StepHandle parentStep) {
+        AiObservationRecorder.StepHandle step = observations.beginStep(observationRun,
+                new AiObservationRecorder.StepMetadata(parentStep == null ? null : parentStep.stepId(),
+                        "MODEL", "model-iteration-2", 2, null, null, null, null, null, null, null));
+        AiObservationRecorder.AttemptHandle attempt = observations.beginAttempt(step, 1);
+        long started = System.nanoTime();
+        try {
+            String corrected = requestCorrection(execution);
+            AiObservationRecorder.Terminal terminal = AiObservationRecorder.Terminal.success(
+                    elapsedMillis(started), "ANSWERED");
+            observations.finishAttempt(attempt, terminal);
+            observations.finishStep(step, terminal);
+            return corrected;
+        } catch (RuntimeException failure) {
+            AiObservationRecorder.Terminal terminal = new AiObservationRecorder.Terminal(
+                    "FAILED", elapsedMillis(started), "MODEL",
+                    AgentErrorCode.MODEL_OUTPUT_INVALID.getCode(), null, null, "FAILED");
+            observations.finishAttempt(attempt, terminal);
+            observations.finishStep(step, terminal);
+            throw failure;
+        }
+    }
+
     /** Executes a persisted retry plan without re-entering the model or replaying successful tools. */
     private void executeRetry(AgentStore.StartRun run, AgentExecutionContext execution,
                               Consumer<StreamEvent> emitter, AtomicBoolean cancelled) {
         AgentStore.RetryPlan plan = run.retryPlan();
         if (cancelled.get()) {
-            finishTerminal(run, execution, emitter, AgentStore.CANCELLED, null, System.nanoTime(), 0);
+            finishTerminal(run, execution, emitter, AgentStore.CANCELLED, null, System.nanoTime(), 0, null);
             return;
         }
         Map<String, ToolCallback> callbacks = toolProviders.stream()
@@ -1076,7 +1200,7 @@ public class AgentConversationService {
         long previousOrder = 0;
         for (AgentStore.RetrySubtask subtask : plan.subtasks()) {
             if (cancelled.get()) {
-                finishTerminal(run, execution, emitter, AgentStore.PARTIAL, execution.toolErrorCode(), System.nanoTime(), 0);
+                finishTerminal(run, execution, emitter, AgentStore.PARTIAL, execution.toolErrorCode(), System.nanoTime(), 0, null);
                 return;
             }
             if (subtask.order() <= previousOrder || !callbacks.containsKey(subtask.toolName())) {
@@ -1152,6 +1276,7 @@ public class AgentConversationService {
             return;
         }
         String message = "未完成的查询已完成";
+        if (!prepareSuccessfulTerminal(run, execution, emitter, 0L)) return;
         try {
             boolean closed = execution.hasKnowledgeResult()
                     ? store.completeSuccess(run.conversationId(), run.runId(), execution.messageId(), message,
@@ -1171,7 +1296,7 @@ public class AgentConversationService {
         }
         emitValidatedTerminal(run, execution, emitter,
                 "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"未完成的查询已完成\",\"data\":null}",
-                AgentStore.COMPLETE, System.nanoTime(), 0);
+                AgentStore.COMPLETE);
     }
 
     private KnowledgeRetryArguments retryKnowledgeArguments(String arguments) {
@@ -1546,23 +1671,37 @@ public class AgentConversationService {
         return List.copyOf(messages);
     }
 
+    /**
+     * Records the server-side stream-terminal preparation before the AgentStore
+     * success boundary.  Actual emitter failures are recorded separately by
+     * emitSafely and never turn into a second successful terminal.
+     */
+    private boolean prepareSuccessfulTerminal(AgentStore.StartRun run,
+                                              AgentExecutionContext execution,
+                                              Consumer<StreamEvent> emitter,
+                                              long durationMillis) {
+        try {
+            recordCompletedObservation(run.runId(), "STREAM", "stream-terminal", "SUCCEEDED",
+                    Math.max(0L, durationMillis), null, "ANSWERED");
+            return true;
+        } catch (RuntimeException observationFailure) {
+            LOG.warn("AI stream success observation could not be prepared for runId={}", run.runId(),
+                    observationFailure);
+            failAfterSuccessBoundary(run, execution, emitter, AgentErrorCode.OBSERVATION_FAILED.getCode());
+            return false;
+        }
+    }
+
     /** Send the validated result only after the persistence boundary is closed. */
     private void emitValidatedTerminal(AgentStore.StartRun run, AgentExecutionContext execution,
                                       Consumer<StreamEvent> emitter, String resultJson,
-                                      String status, long started, int attempt) {
+                                      String status) {
         if (!emitSafely(run, execution, emitter, "message.completed", resultJson)) {
             return;
         }
         if (!emitSafely(run, execution, emitter, "run.completed", statusPayload(
                 AgentStore.COMPLETE.equals(status) ? "SUCCESS" : status))) {
             return;
-        }
-        try {
-            observations.recordAttempt(run.runId(), "MODEL", "SUCCEEDED", attempt,
-                    elapsedMillis(started), null, null, null);
-            observations.record(run.runId(), "STREAM", "SUCCEEDED", elapsedMillis(started), null, null, null);
-        } catch (RuntimeException observationFailure) {
-            LOG.warn("AI stream success observation write failed for runId={}", run.runId(), observationFailure);
         }
     }
 
@@ -1594,7 +1733,7 @@ public class AgentConversationService {
     /** Persists a safe backend-generated four-field failure before exposing it to the user. */
     private void completeGeneratedFailure(AgentStore.StartRun run, AgentExecutionContext execution,
                                            Consumer<StreamEvent> emitter, String code,
-                                           long started, int attempt) {
+                                           long started, int attempt, ModelObservation modelObservation) {
         String safeCode = code == null ? AgentErrorCode.MODEL_UNAVAILABLE.getCode() : code;
         boolean knowledgeFound = execution.hasKnowledgeResult()
                 && execution.knowledgeResult().status() == com.internaladmin.module.knowledge.api.KnowledgeQueryApi.Status.FOUND;
@@ -1604,6 +1743,9 @@ public class AgentConversationService {
         String knowledgeFailureCard = knowledgeFailureCard(execution);
         AgentStore.RetryPlan retryPlan = buildRetryPlan(run, execution,
                 execution.successfulToolCount(), taskIntent(execution));
+        closeModelObservation(modelObservation, new AiObservationRecorder.Terminal(
+                "FAILED", elapsedMillis(started), "MODEL", safeCode, null, null,
+                execution.hasSuccessfulTool() ? "PARTIAL" : "FAILED"));
         try {
             boolean closed;
             if (execution.hasSuccessfulTool()) {
@@ -1639,8 +1781,6 @@ public class AgentConversationService {
         if (knowledgeFailureCard != null && knowledgeFound) {
             emitSafely(run, execution, emitter, "card.replace", knowledgeFailureCard);
         }
-        safeRecordModelTerminal(run.runId(), execution.hasSuccessfulTool() ? AgentStore.PARTIAL : "FAILED",
-                attempt, elapsedMillis(started), safeCode);
         if (execution.hasSuccessfulTool()) {
             emitValidatedPartial(run, execution, emitter, failureResultJson(safeCode, safeMessage), safeCode,
                     persistedRetryAvailable(run, execution, retryPlan));
@@ -1665,8 +1805,8 @@ public class AgentConversationService {
 
     private void recordStreamDeliveryFailure(String runId) {
         try {
-            observations.record(runId, "STREAM", "FAILED", 0,
-                    AgentErrorCode.STREAM_DELIVERY_FAILED.getCode(), null, null);
+            recordCompletedObservation(runId, "STREAM", "stream-delivery", "FAILED", 0,
+                    AgentErrorCode.STREAM_DELIVERY_FAILED.getCode(), "DEGRADED");
         } catch (RuntimeException ignored) {
             LOG.warn("AI stream delivery observation failed for runId={}", runId);
         }
@@ -1674,10 +1814,16 @@ public class AgentConversationService {
 
     private void finishTerminal(AgentStore.StartRun run, AgentExecutionContext execution,
                                 Consumer<StreamEvent> emitter, String status, String code,
-                                long started, int attempt) {
-        safeRecordModelTerminal(run.runId(), status, attempt, elapsedMillis(started), code);
+                                long started, int attempt, ModelObservation modelObservation) {
+        closeModelObservation(modelObservation, new AiObservationRecorder.Terminal(
+                "FAILED".equals(status) ? "FAILED" : status, elapsedMillis(started),
+                code == null ? null : "MODEL", code, null, null,
+                AgentStore.PARTIAL.equals(status) ? "PARTIAL" :
+                        AgentStore.CANCELLED.equals(status) ? "CANCELLED" : "FAILED"));
         try {
-            observations.record(run.runId(), "STREAM", status, elapsedMillis(started), code, null, null);
+            recordCompletedObservation(run.runId(), "STREAM", "stream-terminal", status, elapsedMillis(started), code,
+                    AgentStore.PARTIAL.equals(status) ? "PARTIAL" :
+                            AgentStore.CANCELLED.equals(status) ? "CANCELLED" : "FAILED");
         } catch (RuntimeException ignored) {
             // The run terminal fact remains owned by AgentStore; observation failure is not a success fallback.
         }
@@ -1693,7 +1839,10 @@ public class AgentConversationService {
             return;
         }
         try {
-            observations.finishRun(run.runId(), status, code);
+            observations.finishRunChecked(new AiObservationRecorder.RunHandle(run.runId()),
+                    new AiObservationRecorder.Terminal(status, elapsedMillis(started), "AGENT", code,
+                            null, null, AgentStore.PARTIAL.equals(status) ? "PARTIAL" :
+                                    AgentStore.CANCELLED.equals(status) ? "CANCELLED" : "FAILED"));
         } catch (RuntimeException observationFailure) {
             LOG.warn("AI observation terminal write failed for runId={} status={} code={}",
                     run.runId(), status, code, observationFailure);
@@ -1748,12 +1897,54 @@ public class AgentConversationService {
 
     private void recordFailureObservation(String runId, String status, String code) {
         try {
-            observations.record(runId, "HISTORY", status, 0, code, null, null);
-            observations.record(runId, "STREAM", status, 0, code, null, null);
-            observations.finishRun(runId, status, code);
+            recordCompletedObservation(runId, "HISTORY", "history-failure", status, 0, code,
+                    AgentStore.PARTIAL.equals(status) ? "PARTIAL" : "FAILED");
+            recordCompletedObservation(runId, "FINALIZE", "run-finalize", status, 0, code,
+                    AgentStore.PARTIAL.equals(status) ? "PARTIAL" : "FAILED");
+            observations.finishRunChecked(new AiObservationRecorder.RunHandle(runId),
+                    new AiObservationRecorder.Terminal(status, 0, "AGENT", code, null, null,
+                            AgentStore.PARTIAL.equals(status) ? "PARTIAL" : "FAILED"));
         }
         catch (RuntimeException observationFailure) {
             LOG.warn("AI failure observation write failed for runId={} code={}", runId, code, observationFailure);
+        }
+    }
+
+    private void recordCompletedObservation(String runId, String stepType, String name, String status,
+                                             long duration, String errorCode, String businessOutcome) {
+        observations.recordCompletedStep(new AiObservationRecorder.RunHandle(runId),
+                AiObservationRecorder.StepMetadata.of(stepType, name),
+                new AiObservationRecorder.Terminal(
+                        "SUCCEEDED".equals(status) ? "SUCCEEDED" : "FAILED", Math.max(0L, duration),
+                        errorCode == null ? null : stepType, errorCode, null, null, businessOutcome));
+    }
+
+    private void closeModelObservation(ModelObservation observation, AiObservationRecorder.Terminal terminal) {
+        closeModelObservation(observation, terminal, true);
+    }
+
+    private void closeModelObservation(ModelObservation observation, AiObservationRecorder.Terminal terminal,
+                                       boolean closeStep) {
+        if (observation == null) return;
+        if (observation.closedAttempt) return;
+        observations.finishAttempt(observation.attempt, terminal);
+        observation.closedAttempt = true;
+        if (closeStep) {
+            observations.finishStep(observation.step, terminal);
+            observation.closedStep = true;
+        }
+    }
+
+    private static final class ModelObservation {
+        private final AiObservationRecorder.StepHandle step;
+        private final AiObservationRecorder.AttemptHandle attempt;
+        private boolean closedAttempt;
+        private boolean closedStep;
+
+        private ModelObservation(AiObservationRecorder.StepHandle step,
+                                 AiObservationRecorder.AttemptHandle attempt) {
+            this.step = step;
+            this.attempt = attempt;
         }
     }
 
@@ -1782,10 +1973,13 @@ public class AgentConversationService {
         }
     }
 
-    private void safeRecordModelTerminal(String runId, String status, int attempt,
-                                         long duration, String code) {
+    private void safeRecordModelTerminal(ModelObservation observation, String status,
+                                         long duration, String code, boolean closeStep) {
         try {
-            observations.recordAttempt(runId, "MODEL", status, attempt, duration, code, null, null);
+            closeModelObservation(observation, new AiObservationRecorder.Terminal(
+                    "SUCCEEDED".equals(status) ? "SUCCEEDED" : "FAILED", duration,
+                    code == null ? null : "MODEL", code, null, null,
+                    "SUCCEEDED".equals(status) ? "ANSWERED" : "FAILED"), closeStep);
         } catch (RuntimeException ignored) {
             // The caller closes the Agent run with an explicit failure code.
         }

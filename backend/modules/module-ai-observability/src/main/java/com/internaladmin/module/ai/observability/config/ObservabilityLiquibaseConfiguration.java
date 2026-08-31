@@ -4,6 +4,7 @@ import liquibase.integration.spring.SpringLiquibase;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import javax.sql.DataSource;
 
@@ -12,7 +13,7 @@ import javax.sql.DataSource;
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
 public class ObservabilityLiquibaseConfiguration {
     @Bean(name = "aiObservabilityLiquibase")
-    public SpringLiquibase aiObservabilityLiquibase(DataSource dataSource) {
+    public SpringLiquibase aiObservabilityLiquibase(@Qualifier("dataSource") DataSource dataSource) {
         SpringLiquibase liquibase = new SpringLiquibase();
         liquibase.setDataSource(dataSource);
         liquibase.setChangeLog(changeLogFor(dataSource));

@@ -68,6 +68,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ai/feedback/{assistantMessageId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getFeedback"];
+        put: operations["putFeedback"];
+        post?: never;
+        delete: operations["deleteFeedback"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/observability/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["overview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/observability/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["runs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/observability/runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["run_1"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/change-password": {
         parameters: {
             query?: never;
@@ -810,6 +874,12 @@ export interface components {
             message?: string;
             success?: boolean;
         };
+        ApiResponseFeedbackSnapshot: {
+            code?: string;
+            data?: components["schemas"]["FeedbackSnapshot"] | null;
+            message?: string;
+            success?: boolean;
+        };
         ApiResponseHomepageDraftDTO: {
             code?: string;
             data?: components["schemas"]["HomepageDraftDTO"] | null;
@@ -864,9 +934,27 @@ export interface components {
             message?: string;
             success?: boolean;
         };
+        ApiResponseOverview: {
+            code?: string;
+            data?: components["schemas"]["Overview"] | null;
+            message?: string;
+            success?: boolean;
+        };
         ApiResponsePageUserListDTO: {
             code?: string;
             data?: components["schemas"]["PageUserListDTO"] | null;
+            message?: string;
+            success?: boolean;
+        };
+        ApiResponseRunPage: {
+            code?: string;
+            data?: components["schemas"]["RunPage"] | null;
+            message?: string;
+            success?: boolean;
+        };
+        ApiResponseRunTimeline: {
+            code?: string;
+            data?: components["schemas"]["RunTimeline"] | null;
             message?: string;
             success?: boolean;
         };
@@ -887,6 +975,15 @@ export interface components {
             data?: null;
             message?: string;
             success?: boolean;
+        };
+        AttemptTimeline: {
+            attemptId?: string;
+            /** Format: int32 */
+            attemptNo?: number;
+            /** Format: int64 */
+            durationMs?: number;
+            errorCode?: string;
+            status?: string;
         };
         ChangePasswordDTO: {
             newPassword: string;
@@ -992,6 +1089,27 @@ export interface components {
             nodes?: components["schemas"]["DepartmentNodeDTO"][];
             /** Format: int32 */
             version?: number;
+        };
+        FeedbackRequest: {
+            rating: string;
+            reason: string;
+        };
+        FeedbackSnapshot: {
+            /** Format: date-time */
+            createdAt?: string;
+            rating?: string;
+            reason?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        FeedbackSummary: {
+            /** Format: int64 */
+            helpfulCount?: number;
+            /** Format: int64 */
+            notHelpfulCount?: number;
+            reasons?: {
+                [key: string]: number;
+            };
         };
         HomepageDraftDTO: {
             /** @enum {string} */
@@ -1127,12 +1245,21 @@ export interface components {
             content?: string;
             /** Format: date-time */
             createdAt?: string;
+            feedback?: components["schemas"]["MessageFeedbackDTO"];
             knowledgeAnswer?: components["schemas"]["KnowledgeAnswerDTO"];
             messageId?: string;
             retryAvailable?: boolean;
             role?: string;
             runId?: string;
             state?: string;
+        };
+        MessageFeedbackDTO: {
+            /** Format: date-time */
+            createdAt?: string;
+            rating?: string;
+            reason?: string;
+            /** Format: date-time */
+            updatedAt?: string;
         };
         MessagePageDTO: {
             activeClarification?: components["schemas"]["ClarificationTaskDTO"];
@@ -1147,6 +1274,22 @@ export interface components {
         OrderItem: {
             asc?: boolean;
             column?: string;
+        };
+        Overview: {
+            businessOutcomes?: {
+                [key: string]: number;
+            };
+            errorCodes?: {
+                [key: string]: number;
+            };
+            errorSources?: {
+                [key: string]: number;
+            };
+            statuses?: {
+                [key: string]: number;
+            };
+            /** Format: int64 */
+            totalRuns?: number;
         };
         PageUserListDTO: {
             countId?: string;
@@ -1179,11 +1322,78 @@ export interface components {
             name?: string;
             permissionCodes?: string[];
         };
+        RunPage: {
+            /** Format: int64 */
+            page?: number;
+            records?: components["schemas"]["RunSummary"][];
+            /** Format: int64 */
+            size?: number;
+            /** Format: int64 */
+            total?: number;
+        };
         RunRequest: {
             clarificationSelection?: components["schemas"]["ClarificationSelection"];
             clientRequestId: string;
             retryOfRunId?: string;
             text?: string;
+        };
+        RunSummary: {
+            businessOutcome?: string;
+            /** Format: date-time */
+            completedAt?: string;
+            /** Format: int64 */
+            durationMs?: number;
+            errorCode?: string;
+            errorSource?: string;
+            feedback?: components["schemas"]["FeedbackSummary"];
+            model?: string;
+            provider?: string;
+            retry?: boolean;
+            retryOfRunId?: string;
+            runId?: string;
+            /** Format: date-time */
+            startedAt?: string;
+            status?: string;
+        };
+        RunTimeline: {
+            businessOutcome?: string;
+            /** Format: date-time */
+            completedAt?: string;
+            errorCode?: string;
+            errorSource?: string;
+            feedback?: components["schemas"]["FeedbackSummary"];
+            model?: string;
+            provider?: string;
+            runId?: string;
+            /** Format: date-time */
+            startedAt?: string;
+            status?: string;
+            steps?: components["schemas"]["StepTimeline"][];
+        };
+        StepTimeline: {
+            attempts?: components["schemas"]["AttemptTimeline"][];
+            /** Format: int32 */
+            candidateCount?: number;
+            /** Format: int64 */
+            durationMs?: number;
+            errorCode?: string;
+            errorSource?: string;
+            indexVersion?: string;
+            /** Format: int32 */
+            iterationNo?: number;
+            name?: string;
+            parentStepId?: string;
+            /** Format: int32 */
+            referenceChunkNo?: number;
+            referenceDocumentCode?: string;
+            referenceVersionCode?: string;
+            retrievalStage?: string;
+            /** Format: int32 */
+            sequenceNo?: number;
+            status?: string;
+            stepId?: string;
+            stepType?: string;
+            toolName?: string;
         };
         StockPageDTO: {
             /** Format: int64 */
@@ -1391,6 +1601,162 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["AgentSseEventDTO"];
+                };
+            };
+        };
+    };
+    getFeedback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistantMessageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseFeedbackSnapshot"];
+                };
+            };
+        };
+    };
+    putFeedback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistantMessageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseFeedbackSnapshot"];
+                };
+            };
+        };
+    };
+    deleteFeedback: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistantMessageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseVoid"];
+                };
+            };
+        };
+    };
+    overview: {
+        parameters: {
+            query?: {
+                from?: string;
+                to?: string;
+                status?: string[];
+                businessOutcome?: string[];
+                errorSource?: string;
+                errorCode?: string;
+                provider?: string;
+                model?: string;
+                toolName?: string;
+                retrievalStage?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseOverview"];
+                };
+            };
+        };
+    };
+    runs: {
+        parameters: {
+            query?: {
+                page?: number;
+                size?: number;
+                from?: string;
+                to?: string;
+                status?: string[];
+                businessOutcome?: string[];
+                errorSource?: string;
+                errorCode?: string;
+                provider?: string;
+                model?: string;
+                toolName?: string;
+                retrievalStage?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseRunPage"];
+                };
+            };
+        };
+    };
+    run_1: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseRunTimeline"];
                 };
             };
         };

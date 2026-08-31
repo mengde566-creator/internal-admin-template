@@ -1,0 +1,6 @@
+interface:
+  display_name: "Project Map"
+  short_description: "Route repository tasks to authoritative project sources"
+  default_prompt: "Use $project-map to identify the minimum authoritative files and synchronization points for this task."
+policy:
+  allow_implicit_invocation: true

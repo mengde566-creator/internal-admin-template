@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-08-31-0001-structured-observation-contract" author="研发工程师">
+        <addColumn tableName="ai_observation_run">
+            <column name="task_id" type="VARCHAR(128)"/>
+            <column name="conversation_id" type="VARCHAR(128)"/>
+            <column name="memory_segment_no" type="BIGINT"/>
+            <column name="client_request_id" type="VARCHAR(128)"/>
+            <column name="retry_of_run_id" type="VARCHAR(128)"/>
+            <column name="user_message_id" type="VARCHAR(128)"/>
+            <column name="assistant_message_id" type="VARCHAR(128)"/>
+            <column name="user_id" type="BIGINT"/>
+            <column name="scope_fingerprint" type="VARCHAR(128)"/>
+            <column name="business_outcome" type="VARCHAR(64)"/>
+            <column name="provider" type="VARCHAR(64)"/>
+            <column name="model" type="VARCHAR(128)"/>
+            <column name="error_source" type="VARCHAR(64)"/>
+            <column name="first_event_at" type="TIMESTAMP"/>
+            <column name="next_sequence" type="INT" defaultValueNumeric="0"/>
+        </addColumn>
+        <addColumn tableName="ai_observation_step">
+            <column name="name" type="VARCHAR(128)"/>
+            <column name="iteration_no" type="INT"/>
+            <column name="tool_name" type="VARCHAR(128)"/>
+            <column name="retrieval_stage" type="VARCHAR(64)"/>
+            <column name="candidate_count" type="INT"/>
+            <column name="index_version" type="VARCHAR(64)"/>
+            <column name="reference_document_code" type="VARCHAR(128)"/>
+            <column name="reference_version_code" type="VARCHAR(128)"/>
+            <column name="reference_chunk_no" type="INT"/>
+            <column name="error_source" type="VARCHAR(64)"/>
+        </addColumn>
+        <addColumn tableName="ai_observation_attempt">
+            <column name="started_at" type="TIMESTAMP"/>
+            <column name="completed_at" type="TIMESTAMP"/>
+        </addColumn>
+        <createIndex tableName="ai_observation_attempt" indexName="uk_ai_observation_step_attempt" unique="true">
+            <column name="step_id"/>
+            <column name="attempt_no"/>
+        </createIndex>
+        <createIndex tableName="ai_observation_run" indexName="idx_ai_observation_run_completed_at">
+            <column name="completed_at"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>

@@ -3,6 +3,7 @@ package com.internaladmin.module.agent.store;
 import com.internaladmin.platform.kernel.error.BusinessException;
 import com.internaladmin.platform.kernel.error.ErrorCode;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
+import com.internaladmin.module.ai.observability.api.FeedbackEligibilityApi;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -29,7 +30,7 @@ import java.util.UUID;
 /** Narrow persistence boundary for Conversation, Message and Run owned by module-agent. */
 @Component
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
-public class AgentStore {
+public class AgentStore implements FeedbackEligibilityApi {
     public static final String RUNNING = "RUNNING";
     public static final String COMPLETE = "COMPLETE";
     public static final String FAILED = "FAILED";
@@ -324,6 +325,29 @@ public class AgentStore {
     }
 
     /**
+     * Narrow public fact used by the observability feedback service.  The
+     * ownership, role and completion checks stay next to Agent's business
+     * tables; observability never performs a cross-module SQL join.
+     */
+    @Override
+    public java.util.Optional<FeedbackEligibilityApi.EligibleMessage> findEligibleAssistantMessage(
+            String messageId, Long userId) {
+        if (messageId == null || messageId.isBlank() || userId == null) return java.util.Optional.empty();
+        List<FeedbackEligibilityApi.EligibleMessage> rows = jdbc.query(
+                "SELECT m.message_id, m.run_id, m.conversation_id, c.user_id, m.state, m.role, m.created_at "
+                        + "FROM ai_message m JOIN ai_conversation c ON c.id = m.conversation_id "
+                        + "JOIN ai_run r ON r.run_id = m.run_id "
+                        + "WHERE m.message_id = ? AND c.user_id = ? AND m.role = 'ASSISTANT' "
+                        + "AND m.state = 'COMPLETE' AND r.status = 'COMPLETE' AND r.conversation_id = m.conversation_id "
+                        + "AND r.user_id = c.user_id",
+                (rs, row) -> new FeedbackEligibilityApi.EligibleMessage(rs.getString("message_id"),
+                        rs.getString("run_id"), rs.getString("conversation_id"), rs.getLong("user_id"),
+                        rs.getString("state"), rs.getString("role"), readInstant(rs, "created_at")),
+                messageId, userId);
+        return rows.stream().findFirst();
+    }
+
+    /**
      * 为模型读取当前用户、当前 Conversation 的短期有效 History；失败/取消消息不会进入结果。
      * 数据库负责归属和状态过滤，服务层再施加字符上限，避免把页面展示 History 当成模型上下文。
      */
@@ -450,8 +474,12 @@ public class AgentStore {
             throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_WRITE, failure);
         }
         try {
-            observations.record(runId, "HISTORY", "SUCCEEDED", durationMillis, null, null, null);
-            if (!observations.finishRunChecked(runId, "SUCCESS", null)) {
+            recordObservationStep(observations, runId, "HISTORY", "history-write", "SUCCEEDED", durationMillis, null,
+                    "ANSWERED");
+            recordObservationStep(observations, runId, "FINALIZE", "run-finalize", "SUCCEEDED", 0L, null,
+                    "ANSWERED");
+            if (!observations.finishRunChecked(new AiObservationRecorder.RunHandle(runId),
+                    new AiObservationRecorder.Terminal("SUCCESS", durationMillis, null, null, null, null, "ANSWERED"))) {
                 throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_CLOSE);
             }
         }
@@ -515,8 +543,12 @@ public class AgentStore {
             throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_WRITE, failure);
         }
         try {
-            observations.record(runId, "HISTORY", PARTIAL, durationMillis, errorCode, null, null);
-            if (!observations.finishRunChecked(runId, PARTIAL, errorCode)) {
+            recordObservationStep(observations, runId, "HISTORY", "history-write", PARTIAL, durationMillis, errorCode,
+                    "PARTIAL");
+            recordObservationStep(observations, runId, "FINALIZE", "run-finalize", PARTIAL, 0L, errorCode,
+                    "PARTIAL");
+            if (!observations.finishRunChecked(new AiObservationRecorder.RunHandle(runId),
+                    new AiObservationRecorder.Terminal(PARTIAL, durationMillis, "AGENT", errorCode, null, null, "PARTIAL"))) {
                 throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_CLOSE);
             }
         }
@@ -531,6 +563,17 @@ public class AgentStore {
             throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS);
         }
         return true;
+    }
+
+    /** Records one already-completed persistence/finalize boundary without any implicit lookup. */
+    private void recordObservationStep(AiObservationRecorder observations, String runId, String stepType,
+                                       String name, String status, long durationMillis, String errorCode,
+                                       String businessOutcome) {
+        if (observations == null) return;
+        observations.recordCompletedStep(new AiObservationRecorder.RunHandle(runId),
+                AiObservationRecorder.StepMetadata.of(stepType, name),
+                new AiObservationRecorder.Terminal(status, Math.max(0L, durationMillis),
+                        errorCode == null ? null : "AGENT", errorCode, null, null, businessOutcome));
     }
 
     private void completeTaskInBoundary(String taskId, long taskRevision,
@@ -647,8 +690,12 @@ public class AgentStore {
             throw new SuccessBoundaryException(SuccessBoundaryFailure.HISTORY_WRITE, failure);
         }
         try {
-            observations.record(runId, "HISTORY", "FAILED", durationMillis, errorCode, null, null);
-            if (!observations.finishRunChecked(runId, FAILED, errorCode)) {
+            recordObservationStep(observations, runId, "HISTORY", "history-write", "FAILED", durationMillis, errorCode,
+                    "FAILED");
+            recordObservationStep(observations, runId, "FINALIZE", "run-finalize", "FAILED", 0L, errorCode,
+                    "FAILED");
+            if (!observations.finishRunChecked(new AiObservationRecorder.RunHandle(runId),
+                    new AiObservationRecorder.Terminal(FAILED, durationMillis, "AGENT", errorCode, null, null, "FAILED"))) {
                 throw new SuccessBoundaryException(SuccessBoundaryFailure.OBSERVATION_CLOSE);
             }
         }

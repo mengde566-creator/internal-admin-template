@@ -24,6 +24,7 @@ import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.isNull;
 import static org.mockito.Mockito.times;
@@ -191,6 +192,7 @@ class KnowledgeToolProviderTest {
     @Test
     void recordsRetrievalLifecycleOnlyAfterAuthorizationAndParameterValidation() {
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        stubObservationHandles(observations, "run-knowledge");
         KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
         when(knowledge.query("制度", 1)).thenReturn(KnowledgeQueryApi.Result.found(List.of(), NOW, false));
         KnowledgeToolProvider provider = new KnowledgeToolProvider(knowledge, observations);
@@ -198,26 +200,36 @@ class KnowledgeToolProviderTest {
 
         provider.getToolCallbacks()[0].call("{\"queryText\":\"制度\",\"operation\":\"SEARCH\"}", context(found));
 
-        verify(observations).record(eq("run-knowledge"), eq("RETRIEVAL"), eq("STARTED"),
-                anyLong(), isNull(), isNull(), isNull());
-        verify(observations).record(eq("run-knowledge"), eq("RETRIEVAL"), eq("SUCCEEDED"),
-                anyLong(), isNull(), isNull(), isNull());
+        verify(observations).beginStep(eq(new AiObservationRecorder.RunHandle("run-knowledge")),
+                argThat(metadata -> "RETRIEVAL".equals(metadata.stepType()) && "SEARCH".equals(metadata.retrievalStage())));
+        verify(observations).finishAttempt(any(AiObservationRecorder.AttemptHandle.class),
+                argThat(terminal -> "SUCCEEDED".equals(terminal.status())));
+        verify(observations).finishStep(any(AiObservationRecorder.StepHandle.class),
+                argThat(terminal -> "SUCCEEDED".equals(terminal.status())));
 
         KnowledgeQueryApi unavailable = mock(KnowledgeQueryApi.class);
         when(unavailable.query("制度", 1)).thenReturn(KnowledgeQueryApi.Result.unavailable(NOW));
         AiObservationRecorder unavailableObservations = mock(AiObservationRecorder.class);
+        stubObservationHandles(unavailableObservations, "run-knowledge-unavailable");
         new KnowledgeToolProvider(unavailable, unavailableObservations).getToolCallbacks()[0]
                 .call("{\"queryText\":\"制度\",\"operation\":\"SEARCH\"}", context(execution(true, "制度")));
-        verify(unavailableObservations).record(any(), eq("RETRIEVAL"), eq("FAILED"),
-                anyLong(), eq("AI_KNOWLEDGE_UNAVAILABLE"), isNull(), isNull());
+        verify(unavailableObservations).beginStep(any(AiObservationRecorder.RunHandle.class),
+                argThat(metadata -> "RETRIEVAL".equals(metadata.stepType())));
+        verify(unavailableObservations).finishAttempt(any(AiObservationRecorder.AttemptHandle.class),
+                argThat(terminal -> "FAILED".equals(terminal.status())
+                        && "AI_KNOWLEDGE_UNAVAILABLE".equals(terminal.errorCode())));
 
         KnowledgeQueryApi broken = mock(KnowledgeQueryApi.class);
         when(broken.query("制度", 1)).thenThrow(new IllegalStateException("database unavailable"));
         AiObservationRecorder brokenObservations = mock(AiObservationRecorder.class);
+        stubObservationHandles(brokenObservations, "run-knowledge-broken");
         new KnowledgeToolProvider(broken, brokenObservations).getToolCallbacks()[0]
                 .call("{\"queryText\":\"制度\",\"operation\":\"SEARCH\"}", context(execution(true, "制度")));
-        verify(brokenObservations).record(any(), eq("RETRIEVAL"), eq("FAILED"),
-                anyLong(), eq("AI_KNOWLEDGE_UNAVAILABLE"), isNull(), isNull());
+        verify(brokenObservations).beginStep(any(AiObservationRecorder.RunHandle.class),
+                argThat(metadata -> "RETRIEVAL".equals(metadata.stepType())));
+        verify(brokenObservations).finishAttempt(any(AiObservationRecorder.AttemptHandle.class),
+                argThat(terminal -> "FAILED".equals(terminal.status())
+                        && "AI_KNOWLEDGE_UNAVAILABLE".equals(terminal.errorCode())));
 
         AiObservationRecorder deniedObservations = mock(AiObservationRecorder.class);
         new KnowledgeToolProvider(knowledge, deniedObservations).getToolCallbacks()[0]
@@ -228,6 +240,19 @@ class KnowledgeToolProviderTest {
         new KnowledgeToolProvider(knowledge, mismatchedObservations).getToolCallbacks()[0]
                 .call("{\"queryText\":\"制度\",\"operation\":\"SEARCH\"}", context(execution(true, "制度 问题")));
         verifyNoInteractions(mismatchedObservations);
+    }
+
+    private static void stubObservationHandles(AiObservationRecorder observations, String runId) {
+        AiObservationRecorder.StepHandle step = new AiObservationRecorder.StepHandle(runId, "step-1");
+        AiObservationRecorder.AttemptHandle attempt = new AiObservationRecorder.AttemptHandle(
+                runId, step.stepId(), "attempt-1", 1);
+        when(observations.beginStep(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.StepMetadata.class))).thenReturn(step);
+        when(observations.beginAttempt(any(AiObservationRecorder.StepHandle.class), anyInt())).thenReturn(attempt);
+        when(observations.finishAttempt(any(AiObservationRecorder.AttemptHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
+        when(observations.finishStep(any(AiObservationRecorder.StepHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
     }
 
     @Test

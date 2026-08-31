@@ -92,7 +92,6 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                     return failure(execution, AgentErrorCode.BUSINESS_REJECTED);
                 }
                 retrievalStartedAt = System.nanoTime();
-                observe(execution, "STARTED", retrievalStartedAt, null);
                 retrievalInProgress = true;
                 if ("LIST_ACTIVE".equals(operation)) {
                     KnowledgeQueryApi.CatalogResult catalog = knowledge.listActiveDocuments();
@@ -104,7 +103,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                             ? KnowledgeQueryApi.Result.noEvidence(catalog.queriedAt())
                             : KnowledgeQueryApi.Result.found(List.of(), catalog.queriedAt(), catalog.truncated());
                     execution.recordKnowledgeResult(result);
-                    observe(execution, "SUCCEEDED", retrievalStartedAt, null);
+                    observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                     String output = catalogSuccessJson(catalog);
                     execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
                     execution.markToolOutputProduced();
@@ -118,7 +117,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                     String selectedVersionCode = selectedReference == null ? null : selectedReference.versionCode();
                     if (references.size() > 1) {
                         retrievalInProgress = false;
-                        observe(execution, "SUCCEEDED", retrievalStartedAt, null);
+                        observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                         emitDocumentChoice(execution, references);
                         KnowledgeQueryApi.Result choice = KnowledgeQueryApi.Result.found(List.of(), Instant.now(), false);
                         execution.recordKnowledgeResult(choice);
@@ -138,7 +137,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                         if (locatedReferences.size() > 1) {
                             retrievalInProgress = false;
                             execution.recordKnowledgeResult(located);
-                            observe(execution, "SUCCEEDED", retrievalStartedAt, null);
+                            observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                             emitLocatedDocumentChoice(execution, locatedReferences);
                             String output = successJson(located, "SECTION_SEARCH", List.of());
                             execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
@@ -147,7 +146,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                         if (locatedReferences.isEmpty()) {
                             retrievalInProgress = false;
                             execution.recordKnowledgeResult(KnowledgeQueryApi.Result.noEvidence(located.queriedAt()));
-                            observe(execution, "SUCCEEDED", retrievalStartedAt, null);
+                            observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                             String output = successJson(execution.knowledgeResult(), "ACTIVE_DOCUMENT", List.of());
                             execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
                             execution.markToolOutputProduced();
@@ -167,7 +166,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                             && !selectedVersionCode.equals(document.document().versionCode())) {
                         KnowledgeQueryApi.Result stale = KnowledgeQueryApi.Result.noEvidence(document.queriedAt());
                         execution.recordKnowledgeResult(stale);
-                        observe(execution, "SUCCEEDED", retrievalStartedAt, null);
+                        observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                         String output = successJson(stale, "ACTIVE_DOCUMENT", List.of());
                         execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
                         execution.markToolOutputProduced();
@@ -178,7 +177,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                             ? KnowledgeQueryApi.Result.noEvidence(document.queriedAt())
                             : KnowledgeQueryApi.Result.found(document.citations(), document.queriedAt(), document.truncated());
                     execution.recordKnowledgeResult(result);
-                    observe(execution, "SUCCEEDED", retrievalStartedAt, null);
+                    observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                     String output = successJson(result, "ACTIVE_DOCUMENT", List.of());
                     execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
                     execution.markToolOutputProduced();
@@ -190,7 +189,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                 retrievalInProgress = false;
                 execution.recordKnowledgeResult(result);
                 if (result.status() == KnowledgeQueryApi.Status.UNAVAILABLE) {
-                    observe(execution, "FAILED", retrievalStartedAt,
+                    observe(execution, operation, "FAILED", retrievalStartedAt,
                             AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode());
                     String output = failureJson(AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(),
                             AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getMessage());
@@ -199,7 +198,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                     emitCard(execution, result, "DEGRADED");
                     return output;
                 }
-                observe(execution, "SUCCEEDED", retrievalStartedAt, null);
+                observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                 String output = successJson(result);
                 execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
                 execution.markToolOutputProduced();
@@ -212,7 +211,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                 return output;
             } catch (RuntimeException unavailable) {
                 if (retrievalInProgress) {
-                    observe(execution, "FAILED", retrievalStartedAt,
+                    observe(execution, operation, "FAILED", retrievalStartedAt,
                             AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode());
                 }
                 String output = failureJson(AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(),
@@ -224,11 +223,27 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
             }
         }
 
-        private void observe(AgentExecutionContext execution, String status, long startedAt, String errorCode) {
+        private void observe(AgentExecutionContext execution, String operation, String status,
+                             long startedAt, String errorCode) {
             if (observations == null) return;
             long duration = startedAt == 0L ? 0L : (System.nanoTime() - startedAt) / 1_000_000;
             try {
-                observations.record(execution.runId(), "RETRIEVAL", status, duration, errorCode, null, null);
+                String stage = operation == null ? "SEARCH" : operation;
+                String normalizedStatus = "SUCCEEDED".equals(status) ? "SUCCEEDED" : status;
+                AiObservationRecorder.RunHandle run = new AiObservationRecorder.RunHandle(execution.runId());
+                AiObservationRecorder.StepMetadata metadata = new AiObservationRecorder.StepMetadata(
+                        null, "RETRIEVAL", stage, null, null, stage,
+                        null, null, null, null, null);
+                AiObservationRecorder.StepHandle step = observations.beginStep(run, metadata);
+                if (step == null) return;
+                AiObservationRecorder.AttemptHandle attempt = observations.beginAttempt(step, 1);
+                if (attempt == null) throw new IllegalStateException("观测Attempt创建失败");
+                AiObservationRecorder.Terminal terminal = new AiObservationRecorder.Terminal(normalizedStatus,
+                        Math.max(0L, duration), "FAILED".equals(normalizedStatus) ? "KNOWLEDGE" : null,
+                        errorCode, null, null, "SUCCEEDED".equals(normalizedStatus) ? "ANSWERED" : null);
+                if (!observations.finishAttempt(attempt, terminal) || !observations.finishStep(step, terminal)) {
+                    throw new IllegalStateException("观测检索步骤闭合失败");
+                }
             } catch (RuntimeException ignored) {
                 // Observation failure must not change the already determined retrieval result.
             }
@@ -493,7 +508,8 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
         }
 
         private String unavailable(AgentExecutionContext execution, long startedAt, String normalized, String operation) {
-            observe(execution, "FAILED", startedAt, AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode());
+            observe(execution, operation == null ? "SEARCH" : operation, "FAILED", startedAt,
+                    AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode());
             String output = failureJson(AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(), AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getMessage());
             execution.recordKnowledgeResult(KnowledgeQueryApi.Result.unavailable(Instant.now()));
             execution.recordToolFailure(TOOL_NAME, retryArguments(operation, normalized), AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(), output);

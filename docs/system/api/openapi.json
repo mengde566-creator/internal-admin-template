@@ -196,6 +196,30 @@
         },
         "type": "object"
       },
+      "ApiResponseFeedbackSnapshot": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FeedbackSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ApiResponseHomepageDraftDTO": {
         "properties": {
           "code": {
@@ -414,6 +438,30 @@
         },
         "type": "object"
       },
+      "ApiResponseOverview": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Overview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ApiResponsePageUserListDTO": {
         "properties": {
           "code": {
@@ -423,6 +471,54 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PageUserListDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ApiResponseRunPage": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunPage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ApiResponseRunTimeline": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunTimeline"
               },
               {
                 "type": "null"
@@ -499,6 +595,28 @@
           },
           "success": {
             "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "AttemptTimeline": {
+        "properties": {
+          "attemptId": {
+            "type": "string"
+          },
+          "attemptNo": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "durationMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
           }
         },
         "type": "object"
@@ -840,6 +958,64 @@
           "version": {
             "format": "int32",
             "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "FeedbackRequest": {
+        "properties": {
+          "rating": {
+            "maxLength": 24,
+            "minLength": 0,
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 48,
+            "minLength": 0,
+            "type": "string"
+          }
+        },
+        "required": [
+          "rating",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "FeedbackSnapshot": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "rating": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "FeedbackSummary": {
+        "properties": {
+          "helpfulCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "notHelpfulCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reasons": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "object"
           }
         },
         "type": "object"
@@ -1307,6 +1483,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "feedback": {
+            "$ref": "#/components/schemas/MessageFeedbackDTO"
+          },
           "knowledgeAnswer": {
             "$ref": "#/components/schemas/KnowledgeAnswerDTO"
           },
@@ -1323,6 +1502,25 @@
             "type": "string"
           },
           "state": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "MessageFeedbackDTO": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "rating": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
             "type": "string"
           }
         },
@@ -1361,6 +1559,43 @@
           },
           "column": {
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Overview": {
+        "properties": {
+          "businessOutcomes": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "errorCodes": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "errorSources": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "statuses": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "totalRuns": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -1452,6 +1687,29 @@
         },
         "type": "object"
       },
+      "RunPage": {
+        "properties": {
+          "page": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "type": "array"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "RunRequest": {
         "properties": {
           "clarificationSelection": {
@@ -1476,6 +1734,163 @@
         "required": [
           "clientRequestId"
         ],
+        "type": "object"
+      },
+      "RunSummary": {
+        "properties": {
+          "businessOutcome": {
+            "type": "string"
+          },
+          "completedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "durationMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "errorSource": {
+            "type": "string"
+          },
+          "feedback": {
+            "$ref": "#/components/schemas/FeedbackSummary"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "retry": {
+            "type": "boolean"
+          },
+          "retryOfRunId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "startedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "RunTimeline": {
+        "properties": {
+          "businessOutcome": {
+            "type": "string"
+          },
+          "completedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "errorSource": {
+            "type": "string"
+          },
+          "feedback": {
+            "$ref": "#/components/schemas/FeedbackSummary"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "startedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/StepTimeline"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "StepTimeline": {
+        "properties": {
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/AttemptTimeline"
+            },
+            "type": "array"
+          },
+          "candidateCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "durationMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "errorSource": {
+            "type": "string"
+          },
+          "indexVersion": {
+            "type": "string"
+          },
+          "iterationNo": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parentStepId": {
+            "type": "string"
+          },
+          "referenceChunkNo": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "referenceDocumentCode": {
+            "type": "string"
+          },
+          "referenceVersionCode": {
+            "type": "string"
+          },
+          "retrievalStage": {
+            "type": "string"
+          },
+          "sequenceNo": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "stepId": {
+            "type": "string"
+          },
+          "stepType": {
+            "type": "string"
+          },
+          "toolName": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "StockPageDTO": {
@@ -1928,6 +2343,372 @@
         },
         "tags": [
           "agent-conversation-controller"
+        ]
+      }
+    },
+    "/api/ai/feedback/{assistantMessageId}": {
+      "delete": {
+        "operationId": "deleteFeedback",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistantMessageId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseVoid"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-feedback-controller"
+        ]
+      },
+      "get": {
+        "operationId": "getFeedback",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistantMessageId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseFeedbackSnapshot"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-feedback-controller"
+        ]
+      },
+      "put": {
+        "operationId": "putFeedback",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistantMessageId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseFeedbackSnapshot"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-feedback-controller"
+        ]
+      }
+    },
+    "/api/ai/observability/overview": {
+      "get": {
+        "operationId": "overview",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "businessOutcome",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "errorSource",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "errorCode",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "toolName",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "retrievalStage",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseOverview"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-feedback-controller"
+        ]
+      }
+    },
+    "/api/ai/observability/runs": {
+      "get": {
+        "operationId": "runs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "businessOutcome",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "errorSource",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "errorCode",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "toolName",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "retrievalStage",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseRunPage"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-feedback-controller"
+        ]
+      }
+    },
+    "/api/ai/observability/runs/{runId}": {
+      "get": {
+        "operationId": "run_1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseRunTimeline"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-feedback-controller"
         ]
       }
     },

@@ -68,4 +68,10 @@ describe('应用路由守卫', () => {
     expect(stock?.path).toBe('stock')
     expect(stock?.meta?.permission).toBe('warehouse:read')
   })
+
+  it('AI观测入口使用专用观测权限', () => {
+    const observation = router.getRoutes().find((route) => route.name === 'ai-observability')
+    expect(observation?.path).toBe('/ai-observability')
+    expect(observation?.meta?.permission).toBe('ai:observability:view')
+  })
 })

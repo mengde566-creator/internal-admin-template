@@ -52,7 +52,7 @@ public final class WarehouseSemanticSearchService {
             }
             long started = System.nanoTime();
             List<WarehouseSearchIndexStore.SearchHit> hits = store.trigram(query, 3);
-            observe(runId, "TRGM", hits.size(), null, started);
+            observe(runId, "TRGM", hits.size(), null, started, firstIndexVersion(hits));
             if (hits.isEmpty()) {
                 started = System.nanoTime();
                 List<float[]> vectors = infrastructure.embeddingModel().embed(List.of(query));
@@ -61,7 +61,7 @@ public final class WarehouseSemanticSearchService {
                     throw new IllegalStateException("查询向量维度校验失败");
                 }
                 hits = store.vector(vectors.getFirst(), 3);
-                observe(runId, "VECTOR", hits.size(), null, started);
+                observe(runId, "VECTOR", hits.size(), null, started, firstIndexVersion(hits));
             }
             if (hits.isEmpty()) return RetrievalResult.noMatch("VECTOR");
             Map<String, WarehouseSearchIndexStore.SearchHit> unique = new LinkedHashMap<>();
@@ -106,10 +106,31 @@ public final class WarehouseSemanticSearchService {
     }
 
     private void observe(String runId, String stage, int count, String error, long started) {
+        observe(runId, stage, count, error, started, null);
+    }
+
+    private void observe(String runId, String stage, int count, String error, long started, String indexVersion) {
         if (observations != null && runId != null) {
-            observations.record(runId, stage, error == null ? "SUCCEEDED" : "FAILED",
-                    Math.max(0L, (System.nanoTime() - started) / 1_000_000), error, null, null);
+            AiObservationRecorder.RunHandle run = new AiObservationRecorder.RunHandle(runId);
+            AiObservationRecorder.StepMetadata metadata = new AiObservationRecorder.StepMetadata(
+                    null, "RETRIEVAL", stage, null, null, stage, count, indexVersion, null, null, null);
+            String status = error == null ? "SUCCEEDED" : "FAILED";
+            AiObservationRecorder.StepHandle step = observations.beginStep(run, metadata);
+            if (step == null) return;
+            AiObservationRecorder.AttemptHandle attempt = observations.beginAttempt(step, 1);
+            if (attempt == null) throw new IllegalStateException("观测Attempt创建失败");
+            AiObservationRecorder.Terminal terminal = new AiObservationRecorder.Terminal(
+                    status, Math.max(0L, (System.nanoTime() - started) / 1_000_000),
+                    error == null ? null : "RETRIEVAL", error, null, null,
+                    error == null ? null : "DEGRADED");
+            if (!observations.finishAttempt(attempt, terminal) || !observations.finishStep(step, terminal)) {
+                throw new IllegalStateException("观测检索步骤闭合失败");
+            }
         }
+    }
+
+    private String firstIndexVersion(List<WarehouseSearchIndexStore.SearchHit> hits) {
+        return hits == null || hits.isEmpty() ? null : Integer.toString(hits.getFirst().indexVersion());
     }
 
     public record RetrievalResult(String status, List<WarehouseSearchIndexStore.SearchHit> hits,

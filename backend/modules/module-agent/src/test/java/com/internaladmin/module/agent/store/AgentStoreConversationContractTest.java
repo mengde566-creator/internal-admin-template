@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
@@ -331,7 +332,8 @@ class AgentStoreConversationContractTest {
         AgentStore.StartRun run = store.startRun(conversationId, "success-boundary", "库存", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
         doThrow(new IllegalStateException("observation unavailable")).when(observations)
-                .record(eq(run.runId()), eq("HISTORY"), eq("SUCCEEDED"), anyLong(), isNull(), isNull(), isNull());
+                .recordCompletedStep(any(AiObservationRecorder.RunHandle.class),
+                        any(AiObservationRecorder.StepMetadata.class), any(AiObservationRecorder.Terminal.class));
 
         TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
         AgentStore.SuccessBoundaryException failure = assertThrows(AgentStore.SuccessBoundaryException.class,
@@ -352,8 +354,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, "partial-boundary", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(run.runId()), eq(AgentStore.PARTIAL),
-                eq("AI_TOOL_DATABASE_UNAVAILABLE"))).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
 
         assertTrue(store.completePartial(conversationId, run.runId(), run.assistantMessageId(),
                 "库存已查到，变化暂不可用", "scope-7", 2L,
@@ -375,7 +377,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, "knowledge-card-run", "制度问题", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
         String card = "{\"cardId\":\"knowledge-card-run\",\"revision\":0,\"cardType\":\"knowledge-answer\",\"outcome\":\"NO_EVIDENCE\",\"queriedAt\":\"2026-08-30T00:00:00Z\",\"resultCount\":0,\"truncated\":false,\"citations\":[]}";
 
         assertTrue(store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(),
@@ -395,7 +398,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, "knowledge-reference-valid", "制度追问", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
 
         assertTrue(store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(),
                 "依据", "scope-7", 1L, null, 0L, null, false, observations,
@@ -452,8 +456,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun source = store.startRun(conversationId, "retry-source", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(source.runId()), eq(AgentStore.PARTIAL),
-                eq("AI_TOOL_DATABASE_UNAVAILABLE"))).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
         AgentStore.RetryPlan plan = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 1,
                 List.of(new AgentStore.RetrySubtask(2, "warehouse_recent_movements",
                         "{\"recentDays\":7}", "AI_TOOL_DATABASE_UNAVAILABLE")));
@@ -508,8 +512,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun source = store.startRun(conversationId, "retry-concurrent-source", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(source.runId()), eq(AgentStore.PARTIAL),
-                eq("AI_TOOL_TIMEOUT"))).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
         AgentStore.RetryPlan plan = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 1,
                 List.of(new AgentStore.RetrySubtask(2, "warehouse_recent_movements",
                         "{\"recentDays\":7}", "AI_TOOL_TIMEOUT")));
@@ -539,8 +543,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun source = store.startRun(conversationId, "retry-budget-source", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(source.runId()), eq(AgentStore.FAILED),
-                eq("AI_TOOL_EXECUTION_FAILED"))).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
         String largeArguments = largeArguments(7_900);
         AgentStore.RetryPlan oversized = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 0,
                 List.of(
@@ -563,8 +567,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun source = store.startRun(conversationId, "retry-invalidation-source", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(source.runId()), eq(AgentStore.PARTIAL),
-                eq("AI_TOOL_TIMEOUT"))).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
         AgentStore.RetryPlan plan = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 1,
                 List.of(new AgentStore.RetrySubtask(2, "warehouse_recent_movements",
                         "{\"recentDays\":7}", "AI_TOOL_TIMEOUT")));
@@ -603,7 +607,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
         store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(), "依据", "scope-7", 1L,
                 null, 0L, null, false, observations, answeredKnowledgeCard(outcome, mode, 0));
         assertTrue(store.latestKnowledgeReferences(conversationId, 7L, "scope-7", Duration.ofHours(1)).isEmpty());
@@ -615,7 +620,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(run.runId()), eq(AgentStore.PARTIAL), eq("AI_MODEL_UNAVAILABLE"))).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
         store.completePartial(conversationId, run.runId(), run.assistantMessageId(), "依据暂时无法总结", "scope-7", 1L,
                 "AI_MODEL_UNAVAILABLE", observations, null, answeredKnowledgeCard("DEGRADED", "SECTION_SEARCH", 1));
         assertTrue(store.latestKnowledgeReferences(conversationId, 7L, "scope-7", Duration.ofHours(1)).isEmpty());
@@ -627,7 +633,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(run.runId()), eq(AgentStore.FAILED), eq("AI_MODEL_UNAVAILABLE"))).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
         store.completeFailure(conversationId, run.runId(), run.assistantMessageId(), "暂时无法完成", "scope-7", 1L,
                 "AI_MODEL_UNAVAILABLE", observations, null, answeredKnowledgeCard("DEGRADED", "SECTION_SEARCH", 1));
         assertTrue(store.latestKnowledgeReferences(conversationId, 7L, "scope-7", Duration.ofHours(1)).isEmpty());
@@ -639,7 +646,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
         String citation = "{\"documentCode\":\"rules\",\"title\":\"规则\",\"versionCode\":\"v1\",\"section\":\"章节\",\"chunkNo\":1,\"excerpt\":\"依据\",\"synthetic\":true,\"sourceRef\":\"knowledge://rules/v1/1\",\"versionUpdatedAt\":\"2026-08-30T00:00:00Z\",\"indexedAt\":\"2026-08-30T00:00:00Z\"}";
         String citations = "[" + citation.replace("\"documentCode\":\"rules\"", "\"documentCode\":\"rules-a\"")
                 + "," + citation.replace("\"documentCode\":\"rules\"", "\"documentCode\":\"rules-b\"")
@@ -676,7 +684,8 @@ class AgentStoreConversationContractTest {
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, "multi-tool-boundary", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
 
         assertTrue(store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(),
                 "已完成两项查询", "scope-7", 3L, run.taskId(), run.taskRevision(),
@@ -701,7 +710,8 @@ class AgentStoreConversationContractTest {
                 "[{\"optionToken\":\"token\",\"code\":\"ITEM-A\",\"name\":\"轴承A\",\"baseUnit\":\"件\"}]",
                 "CURRENT_STOCK");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
-        when(observations.finishRunChecked(eq(run.runId()), eq("SUCCESS"), isNull())).thenReturn(true);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
 
         assertTrue(store.completeSuccess(conversationId, run.runId(), run.assistantMessageId(),
                 "请从下面选择", "scope-7", 1L, run.taskId(), run.taskRevision(),

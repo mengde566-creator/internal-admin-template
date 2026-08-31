@@ -124,8 +124,24 @@ public class WarehouseInventoryToolProvider implements AgentToolProvider {
         }
 
         void record(AgentExecutionContext execution, String status, long started, String code) {
-            observations.record(execution.runId(), "TOOL", status,
-                    (System.nanoTime() - started) / 1_000_000, code, null, null);
+            AiObservationRecorder.RunHandle run = new AiObservationRecorder.RunHandle(execution.runId());
+            AiObservationRecorder.StepMetadata metadata = new AiObservationRecorder.StepMetadata(
+                    null, "TOOL", toolName(), null, toolName(), null, null, null, null, null, null);
+            String terminalStatus = "SUCCEEDED".equals(status) ? "SUCCEEDED" : status;
+            AiObservationRecorder.StepHandle step = observations.beginStep(run, metadata);
+            // Mockito-backed narrow tests do not persist observations and therefore
+            // return no handle; production recorders must return one before a Tool
+            // callback is considered observable.
+            if (step == null) return;
+            AiObservationRecorder.AttemptHandle attempt = observations.beginAttempt(step, 1);
+            if (attempt == null) throw new IllegalStateException("观测Attempt创建失败");
+            AiObservationRecorder.Terminal terminal = new AiObservationRecorder.Terminal(
+                    terminalStatus, Math.max(0L, (System.nanoTime() - started) / 1_000_000),
+                    "FAILED".equals(terminalStatus) ? "TOOL" : null, code, null, null,
+                    "SUCCEEDED".equals(terminalStatus) ? "ANSWERED" : null);
+            if (!observations.finishAttempt(attempt, terminal) || !observations.finishStep(step, terminal)) {
+                throw new IllegalStateException("观测Tool步骤闭合失败");
+            }
         }
 
         String value(JsonNode root, String name) {

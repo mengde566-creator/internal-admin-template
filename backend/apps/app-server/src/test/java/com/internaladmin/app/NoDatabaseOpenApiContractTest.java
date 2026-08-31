@@ -2,6 +2,7 @@ package com.internaladmin.app;
 
 import com.internaladmin.app.config.OpenApiContractConfig;
 import com.internaladmin.app.config.AgentOpenApiCustomizer;
+import com.internaladmin.app.controller.AiFeedbackController;
 import com.internaladmin.module.agent.controller.AiCapabilitiesController;
 import com.internaladmin.module.agent.controller.AgentConversationController;
 import com.internaladmin.module.agent.service.AgentActorResolver;
@@ -27,6 +28,8 @@ import com.internaladmin.module.warehouse.controller.WarehouseQueryController;
 import com.internaladmin.module.warehouse.service.WarehouseService;
 import com.internaladmin.module.iam.api.IamActorApi;
 import com.internaladmin.module.knowledge.api.AiProperties;
+import com.internaladmin.module.ai.observability.api.AiFeedbackApi;
+import com.internaladmin.module.ai.observability.api.AiObservabilityQueryApi;
 import com.internaladmin.platform.security.config.SecurityConfig;
 import com.internaladmin.platform.security.exception.SecurityExceptionHandler;
 import com.internaladmin.platform.web.exception.GlobalExceptionHandler;
@@ -144,6 +147,9 @@ class NoDatabaseOpenApiContractTest {
         assertTrue(specification.path("paths").has("/api/ai/conversations"));
         assertTrue(specification.path("paths").has("/api/ai/conversations/{conversationId}/messages"));
         assertTrue(specification.path("paths").has("/api/ai/conversations/{conversationId}/runs"));
+        assertTrue(specification.path("paths").has("/api/ai/feedback/{assistantMessageId}"));
+        assertTrue(specification.path("paths").has("/api/ai/observability/overview"));
+        assertTrue(specification.path("paths").has("/api/ai/observability/runs"));
 
         writeRawSpecification(json);
     }
@@ -223,6 +229,13 @@ class NoDatabaseOpenApiContractTest {
         assertTrue(response.path("data").path("availableAdapters").isEmpty());
         assertTrue(response.path("data").path("uiModes").isEmpty());
         assertTrue(response.path("data").path("features").isEmpty());
+    }
+
+    @Test
+    @DisplayName("AI 观测管理入口没有观测权限时返回403")
+    void observabilityEndpointRequiresDedicatedPermission() throws Exception {
+        mockMvc.perform(get("/api/ai/observability/overview").with(user("without-observability")))
+                .andExpect(status().isForbidden());
     }
 
     @Test
@@ -410,6 +423,22 @@ class NoDatabaseOpenApiContractTest {
         @Bean
         AgentConversationService agentConversationService() {
             return new AgentConversationService(null, null, null, new AiProperties());
+        }
+
+        @Bean
+        AiFeedbackApi aiFeedbackApi() {
+            return mock(AiFeedbackApi.class);
+        }
+
+        @Bean
+        AiObservabilityQueryApi aiObservabilityQueryApi() {
+            return mock(AiObservabilityQueryApi.class);
+        }
+
+        @Bean
+        AiFeedbackController aiFeedbackController(AiFeedbackApi feedback,
+                                                   AiObservabilityQueryApi observability) {
+            return new AiFeedbackController(feedback, observability);
         }
 
         /** Expose the real handler mappings for springdoc while leaving the production flag disabled. */

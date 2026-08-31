@@ -23,10 +23,12 @@ import {
   type Conversation,
   type ClarificationTask,
   type Message,
+  type MessageFeedback,
   type KnowledgeAnswer,
   type KnowledgeCitation,
   type KnowledgeDocument
 } from '../ai/agentApi'
+import { deleteMessageFeedback, putMessageFeedback, type FeedbackRating, type FeedbackReason } from '../ai/feedbackApi'
 import { formatDateTime } from '../../../shared/utils/dateTime'
 
 type UiMessage = {
@@ -39,6 +41,7 @@ type UiMessage = {
   pending?: boolean
   retryAvailable?: boolean
   knowledgeAnswer?: KnowledgeAnswer | null
+  feedback?: MessageFeedback | null
 }
 
 type StockRow = {
@@ -145,6 +148,8 @@ const conversationsPage = ref(1)
 const historyPickerOpen = ref(false)
 const CONVERSATION_PAGE_SIZE = 10
 const conversationPageCount = computed(() => Math.max(1, Math.ceil(conversationsTotal.value / CONVERSATION_PAGE_SIZE)))
+const feedbackDrafts = ref<Record<string, { rating: FeedbackRating; reason: FeedbackReason }>>({})
+const feedbackNotices = ref<Record<string, string>>({})
 
 const DEFAULT_WIDTH = 420
 const MIN_WIDTH = 420
@@ -537,7 +542,42 @@ function toUiMessage(message: Message): UiMessage {
     createdAt: message.createdAt,
     state: typeof message.state === 'string' ? message.state.toUpperCase() : undefined,
     retryAvailable: (message as Message & { retryAvailable?: boolean }).retryAvailable === true,
-    knowledgeAnswer: message.knowledgeAnswer ?? null
+    knowledgeAnswer: message.knowledgeAnswer ?? null,
+    feedback: message.feedback ?? null
+  }
+}
+
+function chooseFeedback(message: UiMessage, rating: FeedbackRating) {
+  if (!message.messageId) return
+  const existing = feedbackDrafts.value[message.messageId]
+  const defaultReason: FeedbackReason = rating === 'HELPFUL' ? 'ACCURATE' : 'INCORRECT'
+  feedbackDrafts.value[message.messageId] = {
+    rating,
+    reason: existing?.rating === rating ? existing.reason : defaultReason
+  }
+}
+
+async function submitFeedback(message: UiMessage) {
+  if (!message.messageId || message.state !== 'COMPLETE') return
+  const draft = feedbackDrafts.value[message.messageId]
+  if (!draft) return
+  try {
+    message.feedback = await putMessageFeedback(message.messageId, draft.rating, draft.reason)
+    feedbackNotices.value[message.messageId] = '反馈已保存'
+  } catch {
+    feedbackNotices.value[message.messageId] = '反馈保存失败，请稍后重试'
+  }
+}
+
+async function revokeFeedback(message: UiMessage) {
+  if (!message.messageId) return
+  try {
+    await deleteMessageFeedback(message.messageId)
+    message.feedback = null
+    delete feedbackDrafts.value[message.messageId]
+    feedbackNotices.value[message.messageId] = '已撤销反馈'
+  } catch {
+    feedbackNotices.value[message.messageId] = '撤销失败，请稍后重试'
   }
 }
 
@@ -1641,6 +1681,43 @@ onBeforeUnmount(() => {
               >
                 重试未完成查询
               </button>
+              <div
+                v-if="item.message.role === 'ASSISTANT' && item.message.state === 'COMPLETE' && item.message.messageId"
+                class="feedback-controls"
+                :data-testid="`feedback-${item.message.messageId}`"
+              >
+                <span class="feedback-label">这份回答有帮助吗？</span>
+                <button
+                  type="button"
+                  class="text-button"
+                  :class="{ 'feedback-selected': item.message.feedback?.rating === 'HELPFUL' || feedbackDrafts[item.message.messageId]?.rating === 'HELPFUL' }"
+                  @click="chooseFeedback(item.message, 'HELPFUL')"
+                >
+                  有帮助
+                </button>
+                <button
+                  type="button"
+                  class="text-button"
+                  :class="{ 'feedback-selected': item.message.feedback?.rating === 'NOT_HELPFUL' || feedbackDrafts[item.message.messageId]?.rating === 'NOT_HELPFUL' }"
+                  @click="chooseFeedback(item.message, 'NOT_HELPFUL')"
+                >
+                  没帮助
+                </button>
+                <template v-if="feedbackDrafts[item.message.messageId]">
+                  <select v-model="feedbackDrafts[item.message.messageId].reason" aria-label="反馈原因">
+                    <option v-if="feedbackDrafts[item.message.messageId].rating === 'HELPFUL'" value="ACCURATE">准确</option>
+                    <option v-if="feedbackDrafts[item.message.messageId].rating === 'HELPFUL'" value="CLEAR">清晰</option>
+                    <option v-if="feedbackDrafts[item.message.messageId].rating === 'HELPFUL'" value="ACTIONABLE">有可操作性</option>
+                    <option v-if="feedbackDrafts[item.message.messageId].rating === 'NOT_HELPFUL'" value="INCORRECT">不正确</option>
+                    <option v-if="feedbackDrafts[item.message.messageId].rating === 'NOT_HELPFUL'" value="NOT_RELEVANT">不相关</option>
+                    <option v-if="feedbackDrafts[item.message.messageId].rating === 'NOT_HELPFUL'" value="UNCLEAR">不清晰</option>
+                    <option v-if="feedbackDrafts[item.message.messageId].rating === 'NOT_HELPFUL'" value="MISSING_INFORMATION">缺少信息</option>
+                  </select>
+                  <button type="button" class="text-button" @click="submitFeedback(item.message)">保存</button>
+                </template>
+                <button v-if="item.message.feedback" type="button" class="text-button" @click="revokeFeedback(item.message)">撤销</button>
+                <small v-if="feedbackNotices[item.message.messageId]" class="feedback-notice">{{ feedbackNotices[item.message.messageId] }}</small>
+              </div>
             </div>
           </article>
           <article v-else class="stock-card" data-testid="stock-summary-card" :data-message-id="item.card.messageId || undefined">
@@ -2025,6 +2102,31 @@ onBeforeUnmount(() => {
   font-size: 0.85rem;
   max-width: 100%;
   box-sizing: border-box;
+}
+.feedback-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ui-border);
+  font-size: .75rem;
+}
+.feedback-label,
+.feedback-notice {
+  color: var(--ui-text-muted);
+}
+.feedback-controls select {
+  max-width: 130px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  font: inherit;
+}
+.feedback-selected {
+  font-weight: 700;
 }
 .agent-table-wrapper {
   overflow-x: auto;

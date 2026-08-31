@@ -22,12 +22,12 @@
 
 ## 当前阶段
 
-`0.1.0` 工程闭环已经完成并合并到 `main`。
+`0.1.0` 工程闭环已经完成；当前推进 `0.2` 仓储参考业务与可选 AI 助手。
 
 - **模板底座**：Java 25 + Spring Boot 模块化单体、Vue 3 管理端、SQLite 零配置启动、Liquibase、Session/CSRF、用户/角色/权限、文件、审计、OpenAPI 和本地/CI 统一质量入口；
 - **参考实现**：`module-site` 与前端 `modules/site` 提供主页草稿、预览、发布、撤回和匿名读取，用来证明一个业务模块可以贯通数据库、后端、API、前端、权限与测试；
-- **当前边界**：0.1 已证明参考应用可运行，不等于已经证明任意派生、模块裁剪和上游升级全部成熟；
-- **下一优先级**：先补齐模板派生、命名替换、可选模块裁剪和第二业务模块复用验证，再评估参考主页的新功能。
+- **当前边界**：仓储人工业务、自然语言只读查询、异常与失败子任务重试、合成知识问答、受信引用、知识与实时仓储混合查询及知识资料浏览已经实现；完整运行观测、用户反馈、统一离线评测、文件导入、周期分析和模块复用证明仍待完成；
+- **下一优先级**：按 [0.2 Agent 设计索引](docs/planning/V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md) 先完成 `SLICE-05`，随后先确认并按复杂度拆分 `SLICE-06`，完成后再复核和拆分 `SLICE-07`，不跳过待确认分片，也不把尚未明确的目标直接交给研发补猜。
 
 ## 快速开始
 
@@ -84,13 +84,14 @@ cd backend
 
 ## 文档入口
 
-按使用顺序阅读：
+按任务选择对应入口，不把下列材料作为每次任务的完整必读清单：
 
 1. **开始使用模板**：[快速开始](#快速开始)、[运行手册](docs/development/RUNBOOK.md)、[质量入口](scripts/quality.sh)；
 2. **理解模板边界**：[项目愿景](docs/PROJECT_VISION.md)、[模板成熟度审计](docs/TEMPLATE_MATURITY_AUDIT.md)、[后端模块架构](docs/architecture/BACKEND_MODULES.md)、[前端物理结构](docs/architecture/FRONTEND_STRUCTURE.md)、[认证架构](docs/architecture/AUTHENTICATION.md)；
 3. **基于模板开发**：[开发规范](AGENTS.md)、[需求索引与轻量漏斗](requirements/README.md)、[工程实现约定](docs/development/ENGINEERING_CONVENTIONS.md)、[能力包通用规则](docs/development/CAPABILITY_COMMON.md)、[模板派生与可选模块裁剪指南](docs/development/TEMPLATE_DERIVATION_GUIDE.md)；
-4. **查看参考实现**：[公开主页已确认需求](docs/system/requirements/PUBLIC_SITE_REDESIGN.md)、[OpenAPI 契约](docs/system/api/OPENAPI_CONTRACT.md)、[IAM 能力包](backend/modules/module-iam/capability/CAPABILITY.md)、[文件能力包](backend/modules/module-file/capability/CAPABILITY.md)、[Site 能力包](backend/modules/module-site/capability/CAPABILITY.md)、[审计能力包](backend/modules/module-audit/capability/CAPABILITY.md)；
-5. **查看 0.1 历史**：[已确认业务范围](requirements/V0_1_SCOPE.md)、[统一发布档案](docs/team/tasks/evidence/V0_1_RELEASE_ARCHIVE.md)、[成本复盘](docs/team/tasks/evidence/V0_1_COST_RETROSPECTIVE.md)、[独立项目评审](docs/team/tasks/evidence/V0_1_INDEPENDENT_PROJECT_REVIEW.md)。历史材料不定义新任务流程。
+4. **推进当前 0.2 工作**：[已确认仓储 AI 需求](requirements/V0_2_AI_WAREHOUSE.md)、[Agent 设计索引与当前状态](docs/planning/V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md)；只按索引读取当前分片直接关联的场景、功能、模块和代码；
+5. **按需查看参考实现**：[公开主页已确认需求](docs/system/requirements/PUBLIC_SITE_REDESIGN.md)、[OpenAPI 契约](docs/system/api/OPENAPI_CONTRACT.md)、[IAM 能力包](backend/modules/module-iam/capability/CAPABILITY.md)、[文件能力包](backend/modules/module-file/capability/CAPABILITY.md)、[Site 能力包](backend/modules/module-site/capability/CAPABILITY.md)、[审计能力包](backend/modules/module-audit/capability/CAPABILITY.md)；
+6. **按需追溯 0.1 历史**：[已确认业务范围](requirements/V0_1_SCOPE.md)、[统一发布档案](docs/team/tasks/evidence/V0_1_RELEASE_ARCHIVE.md)、[成本复盘](docs/team/tasks/evidence/V0_1_COST_RETROSPECTIVE.md)、[独立项目评审](docs/team/tasks/evidence/V0_1_INDEPENDENT_PROJECT_REVIEW.md)。历史材料不定义新任务流程，也不进入日常研发上下文。
 
 项目治理入口为[版本交付协议](docs/team/VERSION_DELIVERY_PROTOCOL.md)和[团队角色目录](docs/team/ROLE_CATALOG.md)。`docs/planning/WORKING_MODEL.md` 保留项目哲学形成过程与草稿探索，按需查阅，不属于日常开发必读材料；已确认哲学以[项目愿景](docs/PROJECT_VISION.md)为准。
 

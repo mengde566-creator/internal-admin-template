@@ -1,5 +1,7 @@
 import { API_BASE_URL, http, type ApiResponse } from '../../../shared/api/http'
 import type { components } from '../../../generated/api-schema'
+import { isFeedbackReason, isFeedbackRating, type MessageFeedback } from './feedbackApi'
+export type { MessageFeedback } from './feedbackApi'
 
 type AiCapabilitiesSchema = components['schemas']['AiCapabilitiesDTO']
 type ConversationSchema = components['schemas']['ConversationDTO']
@@ -47,8 +49,9 @@ export type KnowledgeDocument = {
   indexedAt: string
   synthetic: boolean
 }
-export type Message = Omit<Required<NonNullable<NonNullable<MessagePageSchema['records']>[number]>>, 'knowledgeAnswer'> & {
+export type Message = Omit<Required<NonNullable<NonNullable<MessagePageSchema['records']>[number]>>, 'knowledgeAnswer' | 'feedback'> & {
   knowledgeAnswer?: KnowledgeAnswer | null
+  feedback?: MessageFeedback | null
 }
 type ClarificationTaskSchema = NonNullable<MessagePageSchema['activeClarification']>
 type ClarificationOptionSchema = NonNullable<ClarificationTaskSchema['options']>[number]
@@ -215,8 +218,25 @@ export async function fetchConversationMessages(conversationId: string, page = 1
       content: message.content ?? '',
       createdAt: message.createdAt ?? '',
       retryAvailable: message.retryAvailable === true,
-      knowledgeAnswer: normaliseKnowledgeAnswer((message as typeof message & { knowledgeAnswer?: unknown }).knowledgeAnswer)
+      knowledgeAnswer: normaliseKnowledgeAnswer((message as typeof message & { knowledgeAnswer?: unknown }).knowledgeAnswer),
+      feedback: normaliseFeedback((message as typeof message & { feedback?: unknown }).feedback)
     }))
+  }
+}
+
+function normaliseFeedback(value: unknown): MessageFeedback | null {
+  if (value == null) return null
+  if (typeof value !== 'object') throw new Error('反馈响应不符合契约')
+  const raw = value as Record<string, unknown>
+  if (!isFeedbackRating(raw.rating) || !isFeedbackReason(raw.reason)
+    || typeof raw.createdAt !== 'string' || typeof raw.updatedAt !== 'string') {
+    throw new Error('反馈响应不符合契约')
+  }
+  return {
+    rating: raw.rating,
+    reason: raw.reason,
+    createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt
   }
 }
 

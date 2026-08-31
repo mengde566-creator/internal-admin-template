@@ -18,7 +18,7 @@ export_schema() {
   local normalized_target="$2"
   (
     cd "$ROOT/backend"
-    ./mvnw -Djava.version=17 -pl apps/app-server -am \
+    ./mvnw -pl apps/app-server -am \
       -Dtest=NoDatabaseOpenApiContractTest \
       -Dsurefire.failIfNoSpecifiedTests=false \
       -Dopenapi.contract.output="$raw_target" \

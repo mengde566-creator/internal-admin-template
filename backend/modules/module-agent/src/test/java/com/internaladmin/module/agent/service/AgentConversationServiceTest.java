@@ -4,6 +4,7 @@ import com.internaladmin.module.agent.api.AgentRunContext;
 import com.internaladmin.module.agent.api.AgentToolProvider;
 import com.internaladmin.module.agent.store.AgentStore;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
+import com.internaladmin.module.ai.observability.api.AiFeedbackApi;
 import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
@@ -80,6 +81,29 @@ class AgentConversationServiceTest {
         assertEquals("CURRENT_STOCK", page.activeClarification().candidateIntent());
         assertEquals("ITEM-A", page.activeClarification().options().get(0).code());
         assertEquals("opaque", page.activeClarification().options().get(0).optionToken());
+    }
+
+    @Test
+    void historyLoadsAssistantFeedbackInOneBoundedBatch() {
+        AgentStore store = mock(AgentStore.class);
+        AiFeedbackApi feedback = mock(AiFeedbackApi.class);
+        when(store.pageMessages("conversation-1", 7L, 1, 50)).thenReturn(new AgentStore.MessagePage(List.of(
+                new AgentStore.MessageRow("user-1", "run-1", "USER", "COMPLETE", "问题", null),
+                new AgentStore.MessageRow("assistant-1", "run-1", "ASSISTANT", "COMPLETE", "回答一", null),
+                new AgentStore.MessageRow("assistant-2", "run-2", "ASSISTANT", "COMPLETE", "回答二", null)), 3, 1, 50));
+        when(feedback.findForAssistantMessages(eq(List.of("assistant-1", "assistant-2")), eq(7L)))
+                .thenReturn(Map.of(
+                        "assistant-1", new AiFeedbackApi.FeedbackSnapshot("HELPFUL", "ACCURATE", null, null),
+                        "assistant-2", new AiFeedbackApi.FeedbackSnapshot("NOT_HELPFUL", "UNCLEAR", null, null)));
+        AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
+                mock(AiObservationRecorder.class), new AiProperties(), List.of(), feedback);
+
+        var page = service.pageMessages("conversation-1", 7L, null, 1, 50);
+
+        assertEquals("HELPFUL", page.records().get(1).feedback().rating());
+        assertEquals("NOT_HELPFUL", page.records().get(2).feedback().rating());
+        verify(feedback).findForAssistantMessages(eq(List.of("assistant-1", "assistant-2")), eq(7L));
+        verify(feedback, never()).findForAssistantMessage(anyString(), anyLong());
     }
 
     @Test
@@ -236,9 +260,20 @@ class AgentConversationServiceTest {
         assertEquals(org.springframework.ai.deepseek.api.ResponseFormat.Type.JSON_OBJECT,
                 requestOptions.getResponseFormat().getType());
         InOrder observationOrder = inOrder(observations);
-        observationOrder.verify(observations).recordAttempt("run-1", "MODEL", "STARTED", 1, 0, null, null, null);
-        observationOrder.verify(observations).recordAttempt(eq("run-1"), eq("MODEL"), eq("SUCCEEDED"), eq(1), anyLong(), isNull(), isNull(), isNull());
-        observationOrder.verify(observations).record(eq("run-1"), eq("STREAM"), eq("SUCCEEDED"), anyLong(), isNull(), isNull(), isNull());
+        observationOrder.verify(observations).beginStep(any(AiObservationRecorder.RunHandle.class),
+                argThat(metadata -> "MODEL".equals(metadata.stepType()) && metadata.iterationNo() == 1));
+        observationOrder.verify(observations).beginAttempt(any(AiObservationRecorder.StepHandle.class), eq(1));
+        observationOrder.verify(observations).finishAttempt(any(AiObservationRecorder.AttemptHandle.class),
+                argThat(terminal -> "SUCCEEDED".equals(terminal.status())));
+        observationOrder.verify(observations).finishStep(any(AiObservationRecorder.StepHandle.class),
+                argThat(terminal -> "SUCCEEDED".equals(terminal.status())));
+        observationOrder.verify(observations).recordCompletedStep(any(AiObservationRecorder.RunHandle.class),
+                argThat(metadata -> "STREAM".equals(metadata.stepType())), any(AiObservationRecorder.Terminal.class));
+        InOrder boundaryOrder = inOrder(observations, store);
+        boundaryOrder.verify(observations).recordCompletedStep(any(AiObservationRecorder.RunHandle.class),
+                argThat(metadata -> "STREAM".equals(metadata.stepType())), any(AiObservationRecorder.Terminal.class));
+        boundaryOrder.verify(store).completeSuccess(anyString(), eq("run-1"), anyString(), eq("库存 1.2500"),
+                anyString(), anyLong(), eq(observations));
     }
 
     @Test
@@ -914,10 +949,9 @@ class AgentConversationServiceTest {
         verify(store).completeSuccess(anyString(), eq("run-stream"), anyString(), eq("已完成"),
                 anyString(), anyLong(), eq(observations));
         assertEquals(List.of("run.started"), events.stream().map(AgentConversationService.StreamEvent::name).toList());
-        verify(observations).record(eq("run-stream"), eq("STREAM"), eq("FAILED"), anyLong(),
-                eq("AI_STREAM_DELIVERY_FAILED"), isNull(), isNull());
-        verify(observations, never()).record(eq("run-stream"), eq("STREAM"), eq("SUCCEEDED"), anyLong(),
-                any(), any(), any());
+        verify(observations).recordCompletedStep(any(AiObservationRecorder.RunHandle.class),
+                argThat(metadata -> "STREAM".equals(metadata.stepType())),
+                argThat(terminal -> "AI_STREAM_DELIVERY_FAILED".equals(terminal.errorCode())));
     }
 
     @Test
@@ -1185,7 +1219,7 @@ class AgentConversationServiceTest {
         ChatClient client = mock(ChatClient.class);
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
         doThrow(new IllegalStateException("recorder unavailable")).when(observations)
-                .recordAttempt("run-1", "MODEL", "STARTED", 1, 0, null, null, null);
+                .beginStep(any(AiObservationRecorder.RunHandle.class), any(AiObservationRecorder.StepMetadata.class));
         when(store.fail("run-1", "AI_OBSERVATION_FAILED")).thenReturn(true);
         AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
@@ -1199,6 +1233,99 @@ class AgentConversationServiceTest {
         assertEquals(List.of("run.started", "run.failed"), events.stream()
                 .map(AgentConversationService.StreamEvent::name).toList());
         assertTrue(events.get(events.size() - 1).data().contains("AI_OBSERVATION_FAILED"));
+    }
+
+    @Test
+    void observationRunCreationFailurePreventsModelOrToolExecution() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        doThrow(new IllegalStateException("run observation unavailable")).when(observations)
+                .beginRun(any(AiObservationRecorder.RunMetadata.class));
+        when(store.fail("run-1", "AI_OBSERVATION_FAILED")).thenReturn(true);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+
+        service.execute(new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING),
+                new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ)), "run-1", "查询库存", ignored -> { }),
+                events::add, new AtomicBoolean());
+
+        verify(store).fail("run-1", "AI_OBSERVATION_FAILED");
+        verifyNoInteractions(client);
+        assertEquals(List.of("run.started", "run.failed"), events.stream()
+                .map(AgentConversationService.StreamEvent::name).toList());
+    }
+
+    @Test
+    void modelStepCloseFailurePreventsSuccessfulStoreBoundaryAndTerminal() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"不应成功\",\"data\":null}"));
+        doThrow(new IllegalStateException("model step close failed")).when(observations)
+                .finishStep(any(AiObservationRecorder.StepHandle.class),
+                        argThat(terminal -> "SUCCEEDED".equals(terminal.status())));
+        when(store.completeFailure(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                anyString(), eq(observations))).thenReturn(true);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+
+        service.execute(new AgentStore.StartRun("c-1", "run-model-close-failure", true, AgentStore.RUNNING),
+                new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ)), "run-model-close-failure", "查询库存", ignored -> { }),
+                events::add, new AtomicBoolean());
+
+        verify(store, never()).completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                any());
+        assertTrue(events.stream().filter(event -> "message.completed".equals(event.name()))
+                .noneMatch(event -> event.data().contains("\"code\":\"SUCCESS\"")));
+        assertEquals(0, events.stream().filter(event -> "run.completed".equals(event.name())).count());
+        assertTrue(events.stream().anyMatch(event -> "run.failed".equals(event.name())));
+    }
+
+    @Test
+    void streamPreparationFailurePreventsSuccessfulTerminal() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"不应发送\",\"data\":null}"));
+        doThrow(new IllegalStateException("stream observation unavailable")).when(observations)
+                .recordCompletedStep(any(AiObservationRecorder.RunHandle.class),
+                        argThat(metadata -> "STREAM".equals(metadata.stepType())), any(AiObservationRecorder.Terminal.class));
+        when(store.fail("run-stream-observation-failure", "AI_OBSERVATION_FAILED")).thenReturn(true);
+        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+
+        service.execute(new AgentStore.StartRun("c-1", "run-stream-observation-failure", true, AgentStore.RUNNING),
+                new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ)), "run-stream-observation-failure", "查询库存", ignored -> { }),
+                events::add, new AtomicBoolean());
+
+        verify(store, never()).completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                any());
+        verify(store).fail("run-stream-observation-failure", "AI_OBSERVATION_FAILED");
+        assertTrue(events.stream().filter(event -> "message.completed".equals(event.name()))
+                .noneMatch(event -> event.data().contains("\"code\":\"SUCCESS\"")));
+        assertEquals(0, events.stream().filter(event -> "run.completed".equals(event.name())).count());
+        assertTrue(events.stream().anyMatch(event -> "run.failed".equals(event.name())
+                && event.data().contains("AI_OBSERVATION_FAILED")));
     }
 
     @Test
@@ -1227,9 +1354,11 @@ class AgentConversationServiceTest {
                 events::add, new AtomicBoolean());
 
         verify(store).fail("run-1", "AI_OBSERVATION_FAILED");
-        verify(observations).record(eq("run-1"), eq("HISTORY"), eq("FAILED"), anyLong(), eq("AI_OBSERVATION_FAILED"), isNull(), isNull());
-        verify(observations).record(eq("run-1"), eq("STREAM"), eq("FAILED"), anyLong(), eq("AI_OBSERVATION_FAILED"), isNull(), isNull());
-        verify(observations).finishRun("run-1", "FAILED", "AI_OBSERVATION_FAILED");
+        verify(observations, atLeastOnce()).recordCompletedStep(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.StepMetadata.class),
+                argThat(terminal -> "AI_OBSERVATION_FAILED".equals(terminal.errorCode())));
+        verify(observations).finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                argThat(terminal -> "AI_OBSERVATION_FAILED".equals(terminal.errorCode())));
         assertEquals(0, events.stream().filter(e -> e.name().equals("run.completed")).count());
         assertEquals(1, events.stream().filter(e -> e.name().equals("run.failed")).count());
     }
@@ -1358,7 +1487,9 @@ class AgentConversationServiceTest {
         verify(store, never()).complete(anyString());
         verify(store, never()).appendAssistant(anyString(), anyString(), anyString(),
                 anyString(), eq("COMPLETE"));
-        verify(observations).record(eq("run-1"), eq("STREAM"), eq("PARTIAL"), anyLong(), eq("AI_MODEL_UNAVAILABLE"), isNull(), isNull());
+        verify(observations).recordCompletedStep(any(AiObservationRecorder.RunHandle.class),
+                argThat(metadata -> "STREAM".equals(metadata.stepType())),
+                argThat(terminal -> "AI_MODEL_UNAVAILABLE".equals(terminal.errorCode())));
     }
 
     @Test
@@ -1500,9 +1631,11 @@ class AgentConversationServiceTest {
                         List.of(PermissionCodes.WAREHOUSE_READ)), "run-1", "查询库存", ignored -> { }),
                 events::add, new AtomicBoolean());
 
-        verify(observations).recordAttempt("run-1", "MODEL", "STARTED", 1, 0, null, null, null);
-        verify(observations).recordAttempt("run-1", "MODEL", "STARTED", 2, 0, null, null, null);
-        verify(observations, never()).recordAttempt("run-1", "MODEL", "STARTED", 3, 0, null, null, null);
+        verify(observations).beginStep(any(AiObservationRecorder.RunHandle.class),
+                argThat(metadata -> "MODEL".equals(metadata.stepType()) && metadata.iterationNo() == 1));
+        verify(observations).beginAttempt(any(AiObservationRecorder.StepHandle.class), eq(1));
+        verify(observations).beginAttempt(any(AiObservationRecorder.StepHandle.class), eq(2));
+        verify(observations, never()).beginAttempt(any(AiObservationRecorder.StepHandle.class), eq(3));
         verify(store).completeSuccess(anyString(), eq("run-1"), anyString(), eq("完成"), anyString(), anyLong(),
                 eq(observations));
         assertEquals(1, events.stream().filter(e -> e.name().equals("run.completed")).count());
@@ -1565,8 +1698,9 @@ class AgentConversationServiceTest {
                         List.of(PermissionCodes.WAREHOUSE_READ)), "run-1", "查询库存", ignored -> { }),
                 events::add, new AtomicBoolean());
 
-        verify(observations, times(2)).recordAttempt(eq("run-1"), eq("MODEL"), eq("STARTED"),
-                anyInt(), anyLong(), isNull(), isNull(), isNull());
+        verify(observations, times(1)).beginStep(any(AiObservationRecorder.RunHandle.class),
+                argThat(metadata -> "MODEL".equals(metadata.stepType()) && metadata.iterationNo() == 1));
+        verify(observations, times(2)).beginAttempt(any(AiObservationRecorder.StepHandle.class), anyInt());
         verify(store).completeFailure(anyString(), eq("run-1"), anyString(), anyString(), anyString(), anyLong(),
                 eq("AI_MODEL_UNAVAILABLE"), eq(observations));
         assertEquals(1, events.stream().filter(e -> e.name().equals("run.failed")).count());

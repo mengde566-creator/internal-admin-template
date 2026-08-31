@@ -1214,6 +1214,7 @@ class WarehouseInventoryToolProviderTest {
         AgentExecutionContext sourceExecution = new AgentExecutionContext(
                 new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
                 source.runId(), source.effectiveUserMessage(), ignored -> { });
+        observations.beginRun(AiObservationRecorder.RunMetadata.minimal(source.runId()));
         provider.getToolCallbacks()[1].call(recentInput(7),
                 new ToolContext(Map.of("agent.execution", sourceExecution)));
 

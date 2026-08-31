@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { HomeFilled, User, Avatar, Picture, Setting, SwitchButton, OfficeBuilding, Box } from '@element-plus/icons-vue'
 import AdminShell from './AdminShell.vue'
 import AppTopbar from './AppTopbar.vue'
 import type { NavigationItem } from './types'
 import { useAuthStore } from '../modules/auth/store/auth'
+import { fetchAgentCapabilities } from '../modules/warehouse/ai/agentApi'
 
 const route = useRoute()
 const router = useRouter()
@@ -13,6 +14,15 @@ const auth = useAuthStore()
 
 const collapsed = ref(false)
 const mobileOpen = ref(false)
+const aiEnabled = ref(false)
+
+onMounted(async () => {
+  try {
+    aiEnabled.value = (await fetchAgentCapabilities()).enabled
+  } catch {
+    aiEnabled.value = false
+  }
+})
 
 /** 侧边栏导航（按当前用户权限过滤；内容管理随 module-site 实现追加） */
 const navigation = computed<NavigationItem[]>(() => [
@@ -22,7 +32,8 @@ const navigation = computed<NavigationItem[]>(() => [
   ...(auth.hasPermission('iam:department:manage') ? [{ key: 'departments', label: '部门管理', icon: OfficeBuilding }] : []),
   ...(auth.hasPermission('warehouse:read') ? [{ key: 'warehouse', label: '仓储', icon: Box }] : []),
   ...(auth.hasPermission('iam:role:manage') ? [{ key: 'roles', label: '角色管理', icon: Avatar }] : []),
-  ...(auth.hasPermission('system:config:manage') ? [{ key: 'system-config', label: '登录安全', icon: Setting }] : [])
+  ...(auth.hasPermission('system:config:manage') ? [{ key: 'system-config', label: '登录安全', icon: Setting }] : []),
+  ...(aiEnabled.value && auth.hasPermission('ai:observability:view') ? [{ key: 'ai-observability', label: 'AI 观测', icon: Setting }] : [])
 ])
 
 /** 当前激活的导航项 key（按路由名匹配） */
