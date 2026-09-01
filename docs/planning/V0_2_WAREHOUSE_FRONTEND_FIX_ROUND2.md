@@ -1,9 +1,10 @@
 # 0.2 仓储前端专项修复（第二轮）
 
-> 状态：已确认，待实施
+> 状态：已实施（历史专项，仅在排查对应前端回归时按需查阅）
 > 前置：第一轮页面外壳、独立滚动与基础 Agent 展示已由项目负责人验收
 > 范围：仅仓储前端布局、表格信息可达性与助手尺寸交互
 > 禁止扩大：不修改后端、数据库、OpenAPI、AI Tool、Prompt、模型、SSE 或业务规则
+> 后续统一治理：以 [V0_2_FRONTEND_INFORMATION_READABILITY.md](V0_2_FRONTEND_INFORMATION_READABILITY.md) 为当前执行入口
 
 ## 1. 本轮目标
 
