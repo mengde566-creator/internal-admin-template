@@ -364,6 +364,30 @@
         },
         "type": "object"
       },
+      "ApiResponseImportLimitsDTO": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportLimitsDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ApiResponseListDatasetRegistration": {
         "properties": {
           "code": {
@@ -1150,6 +1174,36 @@
         },
         "type": "object"
       },
+      "Definition": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "hardMaximum": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "key": {
+            "type": "string"
+          },
+          "maximum": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "minimum": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "value": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "DepartmentEnabledDTO": {
         "properties": {
           "enabled": {
@@ -1537,6 +1591,41 @@
         "properties": {
           "id": {
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ImportLimitsDTO": {
+        "properties": {
+          "definitions": {
+            "items": {
+              "$ref": "#/components/schemas/Definition"
+            },
+            "type": "array"
+          },
+          "maxDocumentCharacters": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxDocumentChunks": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxFileBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "maxSpreadsheetRows": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "resultRetentionDays": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "unconfirmedRetentionDays": {
+            "format": "int32",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -2439,6 +2528,43 @@
           "parentId",
           "sortOrder",
           "version"
+        ],
+        "type": "object"
+      },
+      "UpdateImportLimitsDTO": {
+        "properties": {
+          "maxDocumentCharacters": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxDocumentChunks": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxFileBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "maxSpreadsheetRows": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "resultRetentionDays": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "unconfirmedRetentionDays": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxDocumentCharacters",
+          "maxDocumentChunks",
+          "maxFileBytes",
+          "maxSpreadsheetRows",
+          "resultRetentionDays",
+          "unconfirmedRetentionDays"
         ],
         "type": "object"
       },
@@ -3918,6 +4044,54 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponseListSystemConfigDTO"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "system-config-controller"
+        ]
+      }
+    },
+    "/api/system/configs/import-limits": {
+      "get": {
+        "operationId": "importLimits",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseImportLimitsDTO"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "system-config-controller"
+        ]
+      },
+      "put": {
+        "operationId": "updateImportLimits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateImportLimitsDTO"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseImportLimitsDTO"
                 }
               }
             },

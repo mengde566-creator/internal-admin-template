@@ -32,7 +32,7 @@ const navigation = computed<NavigationItem[]>(() => [
   ...(auth.hasPermission('iam:department:manage') ? [{ key: 'departments', label: '部门管理', icon: OfficeBuilding }] : []),
   ...(auth.hasPermission('warehouse:read') ? [{ key: 'warehouse', label: '仓储', icon: Box }] : []),
   ...(auth.hasPermission('iam:role:manage') ? [{ key: 'roles', label: '角色管理', icon: Avatar }] : []),
-  ...(auth.hasPermission('system:config:manage') ? [{ key: 'system-config', label: '登录安全', icon: Setting }] : []),
+  ...(auth.hasPermission('system:config:manage') ? [{ key: 'system-config', label: '系统配置', icon: Setting }] : []),
   ...(aiEnabled.value && auth.hasPermission('ai:observability:view') ? [{ key: 'ai-observability', label: 'AI 观测', icon: Setting }] : [])
 ])
 

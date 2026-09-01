@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- 06A：固定、类型化的文档导入限制；不扩展为任意 key/value 配置。 -->
+    <changeSet id="2026-09-01-0001-add-file-import-limits" author="template">
+        <insert tableName="system_config">
+            <column name="id" valueNumeric="2"/>
+            <column name="name" value="单文件最大字节数"/>
+            <column name="param_key" value="file_import.max_file_bytes"/>
+            <column name="param_value" valueNumeric="10485760"/>
+        </insert>
+        <insert tableName="system_config">
+            <column name="id" valueNumeric="3"/>
+            <column name="name" value="电子表格最大数据行数"/>
+            <column name="param_key" value="file_import.max_spreadsheet_rows"/>
+            <column name="param_value" valueNumeric="50000"/>
+        </insert>
+        <insert tableName="system_config">
+            <column name="id" valueNumeric="4"/>
+            <column name="name" value="文档最大字符数"/>
+            <column name="param_key" value="file_import.max_document_characters"/>
+            <column name="param_value" valueNumeric="200000"/>
+        </insert>
+        <insert tableName="system_config">
+            <column name="id" valueNumeric="5"/>
+            <column name="name" value="文档最大分片数"/>
+            <column name="param_key" value="file_import.max_document_chunks"/>
+            <column name="param_value" valueNumeric="500"/>
+        </insert>
+        <insert tableName="system_config">
+            <column name="id" valueNumeric="6"/>
+            <column name="name" value="未确认文件保留天数"/>
+            <column name="param_key" value="file_import.unconfirmed_retention_days"/>
+            <column name="param_value" valueNumeric="7"/>
+        </insert>
+        <insert tableName="system_config">
+            <column name="id" valueNumeric="7"/>
+            <column name="name" value="导入结果文件保留天数"/>
+            <column name="param_key" value="file_import.result_retention_days"/>
+            <column name="param_value" valueNumeric="30"/>
+        </insert>
+    </changeSet>
+</databaseChangeLog>

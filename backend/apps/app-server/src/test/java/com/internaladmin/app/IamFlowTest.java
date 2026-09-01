@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.internaladmin.module.audit.mapper.AuditOperationMapper;
 import com.internaladmin.module.audit.model.entity.AuditOperationDO;
 import com.internaladmin.module.iam.api.PermissionCodes;
+import com.internaladmin.module.iam.api.ImportLimitConfig;
 import com.internaladmin.module.iam.api.IamActorApi;
 import com.internaladmin.module.iam.api.ScopeMode;
 import com.internaladmin.module.iam.mapper.DepartmentMapper;
@@ -179,6 +180,8 @@ class IamFlowTest {
 
         mockMvc.perform(get("/api/users").session(unprivilegedSession))
                 .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/system/configs/import-limits").session(unprivilegedSession))
+                .andExpect(status().isForbidden());
         mockMvc.perform(post("/api/site/publish").session(unprivilegedSession).with(csrf()))
                 .andExpect(status().isForbidden());
         mockMvc.perform(multipart("/api/files")
@@ -326,6 +329,41 @@ class IamFlowTest {
                         .with(csrf())
                         .content("{\"value\":\"true\"}"))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("管理员可读取并通过类型化接口保存受控文件导入限制")
+    void controlledImportLimitsEndpointUsesTypedContract() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        MvcResult current = mockMvc.perform(get("/api/system/configs/import-limits").session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.definitions").isArray())
+                .andExpect(jsonPath("$.data.definitions.length()").value(6))
+                .andReturn();
+        JsonNode values = objectMapper.readTree(current.getResponse().getContentAsString()).path("data");
+        String update = objectMapper.createObjectNode()
+                .put("maxFileBytes", values.path("maxFileBytes").asLong())
+                .put("maxSpreadsheetRows", values.path("maxSpreadsheetRows").asInt())
+                .put("maxDocumentCharacters", values.path("maxDocumentCharacters").asInt())
+                .put("maxDocumentChunks", values.path("maxDocumentChunks").asInt())
+                .put("unconfirmedRetentionDays", values.path("unconfirmedRetentionDays").asInt())
+                .put("resultRetentionDays", values.path("resultRetentionDays").asInt())
+                .toString();
+        mockMvc.perform(put("/api/system/configs/import-limits")
+                        .session(session)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content(update))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.maxFileBytes").value(values.path("maxFileBytes").asLong()))
+                .andExpect(jsonPath("$.data.definitions.length()").value(6));
+        mockMvc.perform(put("/api/system/configs/" + ImportLimitConfig.MAX_FILE_BYTES)
+                        .session(session)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"value\":\"1\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("导入限制必须通过专用类型化入口修改"));
     }
 
     @Test

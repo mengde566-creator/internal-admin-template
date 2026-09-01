@@ -516,6 +516,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/system/configs/import-limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["importLimits"];
+        put: operations["updateImportLimits"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system/configs/{paramKey}": {
         parameters: {
             query?: never;
@@ -980,6 +996,12 @@ export interface components {
             message?: string;
             success?: boolean;
         };
+        ApiResponseImportLimitsDTO: {
+            code?: string;
+            data?: components["schemas"]["ImportLimitsDTO"] | null;
+            message?: string;
+            success?: boolean;
+        };
         ApiResponseListDatasetRegistration: {
             code?: string;
             data?: components["schemas"]["DatasetRegistration"][] | null;
@@ -1210,6 +1232,19 @@ export interface components {
             manifestSha256?: string;
             referencedResources?: string[];
         };
+        Definition: {
+            description?: string;
+            /** Format: int64 */
+            hardMaximum?: number;
+            key?: string;
+            /** Format: int64 */
+            maximum?: number;
+            /** Format: int64 */
+            minimum?: number;
+            unit?: string;
+            /** Format: int64 */
+            value?: number;
+        };
         DepartmentEnabledDTO: {
             enabled: boolean;
             /** Format: int32 */
@@ -1340,6 +1375,21 @@ export interface components {
         };
         IdResultDTO: {
             id?: string;
+        };
+        ImportLimitsDTO: {
+            definitions?: components["schemas"]["Definition"][];
+            /** Format: int32 */
+            maxDocumentCharacters?: number;
+            /** Format: int32 */
+            maxDocumentChunks?: number;
+            /** Format: int64 */
+            maxFileBytes?: number;
+            /** Format: int32 */
+            maxSpreadsheetRows?: number;
+            /** Format: int32 */
+            resultRetentionDays?: number;
+            /** Format: int32 */
+            unconfirmedRetentionDays?: number;
         };
         InventoryLineDTO: {
             /** Format: int32 */
@@ -1643,6 +1693,20 @@ export interface components {
             sortOrder: number;
             /** Format: int32 */
             version: number;
+        };
+        UpdateImportLimitsDTO: {
+            /** Format: int32 */
+            maxDocumentCharacters: number;
+            /** Format: int32 */
+            maxDocumentChunks: number;
+            /** Format: int64 */
+            maxFileBytes: number;
+            /** Format: int32 */
+            maxSpreadsheetRows: number;
+            /** Format: int32 */
+            resultRetentionDays: number;
+            /** Format: int32 */
+            unconfirmedRetentionDays: number;
         };
         UpdateRoleDTO: {
             id: string;
@@ -2608,6 +2672,50 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseListSystemConfigDTO"];
+                };
+            };
+        };
+    };
+    importLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseImportLimitsDTO"];
+                };
+            };
+        };
+    };
+    updateImportLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateImportLimitsDTO"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseImportLimitsDTO"];
                 };
             };
         };

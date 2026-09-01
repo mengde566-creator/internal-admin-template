@@ -1,9 +1,13 @@
 package com.internaladmin.module.iam.controller;
 
 import com.internaladmin.module.iam.api.PermissionCodes;
+import com.internaladmin.module.iam.api.ImportLimitsApi;
+import com.internaladmin.module.iam.model.dto.ImportLimitsDTO;
 import com.internaladmin.module.iam.model.dto.SystemConfigDTO;
+import com.internaladmin.module.iam.model.dto.UpdateImportLimitsDTO;
 import com.internaladmin.module.iam.service.SystemConfigService;
 import com.internaladmin.platform.web.response.ApiResponse;
+import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -63,5 +67,41 @@ public class SystemConfigController {
                                          @RequestBody Map<String, String> body) {
         systemConfigService.updateValue(paramKey, body.get("value"));
         return ApiResponse.ok(null);
+    }
+
+    /**
+     * 查询受控文件导入限制。
+     *
+     * <p>方法：{@code importLimits}</p>
+     *
+     * <p>执行链路（共 2 步）：</p>
+     * 1. 由 {@link PreAuthorize} 校验系统配置权限；
+     * 2. 调用 {@link SystemConfigService#importLimitsView()} 返回固定配置定义和值。</p>
+     *
+     * @return 导入限制和单位、范围、影响说明
+     */
+    @GetMapping("/import-limits")
+    public ApiResponse<ImportLimitsDTO> importLimits() {
+        return ApiResponse.ok(systemConfigService.importLimitsView());
+    }
+
+    /**
+     * 更新受控文件导入限制。
+     *
+     * <p>方法：{@code updateImportLimits}</p>
+     *
+     * <p>执行链路（共 2 步）：</p>
+     * 1. 校验六项数值均存在，再由 {@link SystemConfigService#update(ImportLimitsApi.ImportLimitsUpdate)} 检查范围和硬上限；
+     * 2. 在同一配置事务中更新白名单键并返回新值。</p>
+     *
+     * @param request 管理员提交的导入限制
+     * @return 更新后的限制和定义
+     */
+    @PutMapping("/import-limits")
+    public ApiResponse<ImportLimitsDTO> updateImportLimits(@Valid @RequestBody UpdateImportLimitsDTO request) {
+        systemConfigService.update(new ImportLimitsApi.ImportLimitsUpdate(
+                request.maxFileBytes(), request.maxSpreadsheetRows(), request.maxDocumentCharacters(),
+                request.maxDocumentChunks(), request.unconfirmedRetentionDays(), request.resultRetentionDays()));
+        return ApiResponse.ok(systemConfigService.importLimitsView());
     }
 }

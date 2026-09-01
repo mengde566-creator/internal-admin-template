@@ -130,6 +130,7 @@ const expectedPaths = [
   '/api/roles/{id}',
   '/api/roles/permission-options',
   '/api/system/configs',
+  '/api/system/configs/import-limits',
   '/api/system/configs/{paramKey}',
   '/api/files',
   '/api/files/{fileId}',
@@ -185,6 +186,14 @@ deepStrictEqual(methods('/api/ai/conversations/{conversationId}/messages'), ['ge
   'History 路径必须仅暴露 GET')
 deepStrictEqual(methods('/api/ai/conversations/{conversationId}/runs'), ['post'],
   'Run 路径必须仅暴露 POST')
+
+deepStrictEqual(methods('/api/system/configs/import-limits'), ['get', 'put'],
+  '导入限制路径必须同时暴露 GET 与 PUT')
+const importLimitsRequest = requestSchema('/api/system/configs/import-limits', 'put')
+deepStrictEqual(Object.keys(importLimitsRequest.properties ?? {}).sort(), [
+  'maxDocumentCharacters', 'maxDocumentChunks', 'maxFileBytes', 'maxSpreadsheetRows',
+  'resultRetentionDays', 'unconfirmedRetentionDays'
+].sort(), '导入限制请求只能包含六项受控数值')
 
 const runRequest = requestSchema('/api/ai/conversations/{conversationId}/runs', 'post')
 deepStrictEqual(Object.keys(runRequest.properties ?? {}).sort(), ['clarificationSelection', 'clientRequestId', 'retryOfRunId', 'text'],

@@ -1,12 +1,9 @@
 import { http, type ApiResponse } from '../../../shared/api/http'
+import type { components } from '../../../generated/api-schema'
 
-/** 系统参数项（与后端 SystemConfigDTO 契约一致） */
-export interface SystemConfigItem {
-  id: string
-  name: string
-  paramKey: string
-  paramValue: string
-}
+export type SystemConfigItem = components['schemas']['SystemConfigDTO']
+export type ImportLimitsView = components['schemas']['ImportLimitsDTO']
+export type UpdateImportLimits = components['schemas']['UpdateImportLimitsDTO']
 
 /**
  * 查询全部系统参数。
@@ -23,4 +20,14 @@ export function fetchSystemConfigsApi() {
  */
 export function updateSystemConfigApi(paramKey: string, value: string) {
   return http.put<ApiResponse<null>>(`/api/system/configs/${paramKey}`, { value })
+}
+
+/** 查询受控文件导入限制及其范围说明。 */
+export function fetchImportLimitsApi() {
+  return http.get<ApiResponse<ImportLimitsView>>('/api/system/configs/import-limits')
+}
+
+/** 以六项类型化数值更新受控文件导入限制。 */
+export function updateImportLimitsApi(value: UpdateImportLimits) {
+  return http.put<ApiResponse<ImportLimitsView>>('/api/system/configs/import-limits', value)
 }

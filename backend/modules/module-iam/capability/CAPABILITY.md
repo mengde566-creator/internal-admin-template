@@ -9,6 +9,7 @@
 ## 2. 特有约束
 
 - 实体包使用 `model.entity`；`do` 是 Java 关键字。DO 用 `DO` 后缀，DTO 按场景拆分。
+- 受控文件导入限制是固定的类型化配置组（六项数值、单位、编辑范围和硬上限），通过专用 API/页面维护；不得使用通用字符串写入口绕过校验。
 - 权限编码集中在 `PermissionCodes`；新权限同时加入注册选项与系统管理员默认权限。
 - `file:manage` 与 `site:homepage:edit` 独立；既有自定义角色由管理员手工补选“文件管理”，不自动迁移或增加双权限兼容。
 - 登录必须先确认用户所属部门存在且启用，再使用标准 `SessionAuthenticationStrategy` 轮换预登录 Session，并由 `SecurityContextRepository` 保存上下文；CSRF Cookie 只有一个写入源。`/me` 与 `IamActorApi` 同样拒绝停用部门。
@@ -21,7 +22,9 @@
 
 ## 3. 公开与跨模块契约
 
-主要 HTTP 能力包括 `/api/auth/*`、`/api/users`、`/api/roles`、`/api/departments/*`、`/api/system/configs`；精确字段、HTTP 响应和当前错误文案以 DTO、Controller、生成的 OpenAPI 和相关测试为准，不在本文件复制。
+主要 HTTP 能力包括 `/api/auth/*`、`/api/users`、`/api/roles`、`/api/departments/*`、`/api/system/configs` 及其受控 `/api/system/configs/import-limits` 子资源；精确字段、HTTP 响应和当前错误文案以 DTO、Controller、生成的 OpenAPI 和相关测试为准，不在本文件复制。
+
+`ImportLimitsApi` 是供受信业务模块读取/保存六项类型化限制快照的窄 API；文件模块不直接读取 `system_config`。
 
 `PermissionCodes` 是跨模块权限编码契约。登录通过 `SystemConfigService` 读取强制改密开关；权限按用户→角色→权限批量组装，避免 N+1。业务模块通过 SecurityContext 与权限编码判定，禁止访问 IAM 内部 Mapper/DO/表。
 

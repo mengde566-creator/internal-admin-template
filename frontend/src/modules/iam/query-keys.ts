@@ -10,5 +10,6 @@ export const iamQueryKeys = {
   permissionOptions: (): QueryKey => ['iam', 'roles', 'permission-options'],
   departments: (): QueryKey => ['iam', 'departments'],
   departmentOptions: (): QueryKey => ['iam', 'departments', 'options'],
-  systemConfigs: (): QueryKey => ['iam', 'system-configs']
+  systemConfigs: (): QueryKey => ['iam', 'system-configs'],
+  importLimits: (): QueryKey => ['iam', 'system-configs', 'import-limits']
 }
