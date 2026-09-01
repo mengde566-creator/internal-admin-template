@@ -10,6 +10,7 @@ import com.internaladmin.module.iam.mapper.DepartmentMapper;
 import com.internaladmin.module.iam.mapper.RoleMapper;
 import com.internaladmin.module.iam.mapper.RolePermissionMapper;
 import com.internaladmin.module.iam.model.entity.RolePermissionDO;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -664,5 +665,34 @@ class IamFlowTest {
                         .andExpect(status().isOk()).andReturn().getResponse().getContentAsString())
                 .path("data").path("userId").asText());
         assertEquals(ScopeMode.ALL_DEPARTMENTS, iamActorApi.resolve(adminId).getScopeMode());
+    }
+
+    @Test
+    @DisplayName("用户列表分页返回正确的 total 和 records")
+    void userPageReturnsCorrectTotal() throws Exception {
+        MockHttpSession adminSession = loginAsAdmin();
+        String username = unique("pagetest");
+        mockMvc.perform(post("/api/users")
+                        .session(adminSession)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .with(csrf())
+                        .content("{\"username\":\"" + username + "\",\"displayName\":\"分页测试用户\",\"departmentId\":\"1\",\"password\":\"PagePass123\",\"roleIds\":[]}"))
+                .andExpect(status().isOk());
+
+        MvcResult result = mockMvc.perform(get("/api/users").param("keyword", username).session(adminSession))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode json = objectMapper.readTree(result.getResponse().getContentAsString());
+        long total = json.path("data").path("total").asLong();
+        int recordCount = json.path("data").path("records").size();
+        assertEquals(1, total);
+        assertEquals(1, recordCount);
+
+        MvcResult emptyResult = mockMvc.perform(get("/api/users").param("keyword", "nonexistent_" + UUID.randomUUID()).session(adminSession))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode emptyJson = objectMapper.readTree(emptyResult.getResponse().getContentAsString());
+        assertEquals(0, emptyJson.path("data").path("total").asLong());
+        assertEquals(0, emptyJson.path("data").path("records").size());
     }
 }

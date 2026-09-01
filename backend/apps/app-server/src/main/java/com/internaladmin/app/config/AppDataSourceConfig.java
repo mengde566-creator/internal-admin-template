@@ -68,6 +68,16 @@ public class AppDataSourceConfig {
     }
 
     /**
+     * 配置 MyBatis-Plus 分页插件，使 selectPage 自动执行 COUNT 并填充 total。
+     */
+    @Bean
+    public com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor mybatisPlusInterceptor() {
+        com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor interceptor = new com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor();
+        interceptor.addInnerInterceptor(new com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor());
+        return interceptor;
+    }
+
+    /**
      * 确保 SQLite 数据文件的父目录存在。
      *
      * <p>方法：{@code ensureDataDirectory}</p>
