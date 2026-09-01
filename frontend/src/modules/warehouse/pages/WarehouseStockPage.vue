@@ -32,10 +32,16 @@ const size = ref(20)
 const hasQueried = ref(false)
 const filtersOpen = ref(false)
 const routeItemApplied = ref(false)
-const canFixAction = ref(true)
+const tableWrapperRef = ref<HTMLElement | null>(null)
+const canFixAction = ref(false)
+let resizeObserver: ResizeObserver | null = null
 
 function checkFixAction() {
-  canFixAction.value = typeof window !== 'undefined' ? window.innerWidth >= 1200 : true
+  if (tableWrapperRef.value) {
+    canFixAction.value = tableWrapperRef.value.clientWidth >= 820
+  } else if (typeof window !== 'undefined') {
+    canFixAction.value = window.innerWidth >= 1200
+  }
 }
 
 const selectedLocations = computed(() => locations.value.filter((location) => !selectedWarehouse.value || location.warehouseId === selectedWarehouse.value))
@@ -148,11 +154,19 @@ function viewItem(itemId: string) {
 
 onMounted(() => {
   checkFixAction()
+  if (typeof ResizeObserver !== 'undefined' && tableWrapperRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      checkFixAction()
+    })
+    resizeObserver.observe(tableWrapperRef.value)
+  }
   window.addEventListener('resize', checkFixAction)
   void load()
 })
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
   window.removeEventListener('resize', checkFixAction)
 })
 
@@ -267,53 +281,36 @@ watch(() => [route?.query?.item, route?.query?.keyword, route?.query?.warehouse,
         </div>
         <el-tag type="info">数量按业务精度展示</el-tag>
       </div>
-      <div class="stock-table-wrapper">
+      <div ref="tableWrapperRef" class="stock-table-wrapper">
         <el-table class="desktop-stock-table" :data="filteredStocks" stripe>
           <el-table-column label="物品" min-width="210">
             <template #default="scope">
-              <el-tooltip
-                :content="`${scope.row.itemCode} / ${itemName(scope.row.itemId, scope.row.itemName)}`"
-                placement="top"
-                :enterable="true"
-                :show-after="200"
-              >
-                <span class="stock-item-cell" tabindex="0" :aria-label="`物品：${scope.row.itemCode} / ${itemName(scope.row.itemId, scope.row.itemName)}`">
-                  <strong class="stock-item-code">{{ scope.row.itemCode }}</strong>
-                  <span class="stock-item-sep">/</span>
-                  <span class="stock-item-name">{{ itemName(scope.row.itemId, scope.row.itemName) }}</span>
-                </span>
-              </el-tooltip>
+              <div class="cell-entity-group">
+                <strong class="cell-entity-title">{{ itemName(scope.row.itemId, scope.row.itemName) }}</strong>
+                <small class="cell-entity-sub">{{ scope.row.itemCode }}</small>
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="所在仓库" min-width="150">
             <template #default="scope">
-              <el-tooltip
-                :content="warehouseName(scope.row.warehouseId, scope.row.warehouseName)"
-                placement="top"
-                :enterable="true"
-                :show-after="200"
-              >
-                <span class="table-text-cell" tabindex="0">
-                  {{ warehouseName(scope.row.warehouseId, scope.row.warehouseName) }}
-                </span>
-              </el-tooltip>
+              <span class="cell-warehouse-text">
+                {{ warehouseName(scope.row.warehouseId, scope.row.warehouseName) }}
+              </span>
             </template>
           </el-table-column>
           <el-table-column label="库位" min-width="170">
             <template #default="scope">
-              <el-tooltip
-                :content="`${scope.row.locationCode} / ${locationName(scope.row.locationId, scope.row.locationName)}`"
-                placement="top"
-                :enterable="true"
-                :show-after="200"
-              >
-                <span class="table-text-cell" tabindex="0">
-                  {{ scope.row.locationCode }} / {{ locationName(scope.row.locationId, scope.row.locationName) }}
-                </span>
-              </el-tooltip>
+              <div class="cell-entity-group">
+                <strong class="cell-entity-title">{{ locationName(scope.row.locationId, scope.row.locationName) }}</strong>
+                <small class="cell-entity-sub">{{ scope.row.locationCode }}</small>
+              </div>
             </template>
           </el-table-column>
-          <el-table-column prop="quantity" label="现有数量" min-width="120" />
+          <el-table-column prop="quantity" label="现有数量" min-width="120">
+            <template #default="scope">
+              <strong class="cell-quantity-text">{{ scope.row.quantity }}</strong>
+            </template>
+          </el-table-column>
           <el-table-column label="单位" min-width="80">
             <template #default="scope">{{ scope.row.baseUnit }}</template>
           </el-table-column>

@@ -15,10 +15,17 @@ const focusItemId = computed(() => String(route?.query?.item ?? ''))
 const drawerOpen = ref(false)
 const editing = ref(false)
 const form = ref({ id: '', code: '', name: '', baseUnit: '', enabled: true, version: 0 })
-const canFixAction = ref(true)
+
+const tableWrapperRef = ref<HTMLElement | null>(null)
+const canFixAction = ref(false)
+let resizeObserver: ResizeObserver | null = null
 
 function checkFixAction() {
-  canFixAction.value = typeof window !== 'undefined' ? window.innerWidth >= 1200 : true
+  if (tableWrapperRef.value) {
+    canFixAction.value = tableWrapperRef.value.clientWidth >= 760
+  } else if (typeof window !== 'undefined') {
+    canFixAction.value = window.innerWidth >= 1200
+  }
 }
 
 const filteredItems = computed(() => {
@@ -58,6 +65,12 @@ async function toggle(item: Item) {
 }
 onMounted(async () => {
   checkFixAction()
+  if (typeof ResizeObserver !== 'undefined' && tableWrapperRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      checkFixAction()
+    })
+    resizeObserver.observe(tableWrapperRef.value)
+  }
   window.addEventListener('resize', checkFixAction)
   await load()
   if (focusItemId.value && !keyword.value) {
@@ -67,6 +80,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
   window.removeEventListener('resize', checkFixAction)
 })
 </script>
@@ -75,7 +90,7 @@ onBeforeUnmount(() => {
   <section class="warehouse-view master-view">
     <header class="view-heading">
       <div>
-        <p class="view-kicker">物品资料</p>
+        <p class="view-kicker">物品档案</p>
         <h2>物品</h2>
         <p>物品编码创建后不可修改；停用后不能用于新的库存操作，历史记录仍会保留。</p>
       </div>
@@ -100,24 +115,20 @@ onBeforeUnmount(() => {
         <p>请更换搜索条件。</p>
         <el-button @click="keyword = ''; load()">清除搜索</el-button>
       </div>
-      <div v-else class="items-table-wrapper">
+      <div v-else ref="tableWrapperRef" class="items-table-wrapper">
         <el-table class="desktop-items-table" :data="filteredItems" stripe>
           <el-table-column label="编码" min-width="150">
             <template #default="scope">
-              <el-tooltip :content="scope.row.code" placement="top" :enterable="true" :show-after="200">
-                <span class="table-text-cell" tabindex="0" :aria-label="`物品编码：${scope.row.code}`">{{ scope.row.code }}</span>
-              </el-tooltip>
+              <span class="item-code-cell" tabindex="0" :aria-label="`物品编码：${scope.row.code}`">{{ scope.row.code }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="名称" min-width="180">
+          <el-table-column label="名称" min-width="200">
             <template #default="scope">
-              <el-tooltip :content="scope.row.name" placement="top" :enterable="true" :show-after="200">
-                <span class="table-text-cell" tabindex="0" :aria-label="`物品名称：${scope.row.name}`">{{ scope.row.name }}</span>
-              </el-tooltip>
+              <strong class="item-name-cell" tabindex="0" :aria-label="`物品名称：${scope.row.name}`">{{ scope.row.name }}</strong>
             </template>
           </el-table-column>
-          <el-table-column prop="baseUnit" label="基本单位" min-width="120" />
-          <el-table-column label="状态" min-width="100">
+          <el-table-column prop="baseUnit" label="基本单位" min-width="100" />
+          <el-table-column label="状态" min-width="90">
             <template #default="scope">
               <el-tag :type="scope.row.enabled ? 'success' : 'info'">{{ scope.row.enabled ? '启用' : '停用' }}</el-tag>
             </template>
@@ -183,6 +194,20 @@ onBeforeUnmount(() => {
 .desktop-items-table {
   min-width: 720px;
   width: 100%;
+}
+.item-code-cell {
+  display: inline-block;
+  font-family: var(--ui-font-mono, monospace);
+  font-weight: 600;
+  color: var(--ui-text-strong);
+  word-break: break-all;
+  user-select: all;
+}
+.item-name-cell {
+  display: inline-block;
+  color: var(--ui-text-strong);
+  word-break: break-word;
+  line-height: 1.35;
 }
 .table-text-cell {
   display: inline-block;

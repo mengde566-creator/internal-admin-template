@@ -28,10 +28,16 @@ const drawerKind = ref<'warehouse' | 'location'>('warehouse')
 const editing = ref(false)
 const warehouseForm = ref({ id: '', code: '', name: '', departmentId: '', enabled: true, version: 0 })
 const locationForm = ref({ id: '', warehouseId: '', code: '', name: '', enabled: true, version: 0 })
-const canFixAction = ref(true)
+const tableWrapperRef = ref<HTMLElement | null>(null)
+const canFixAction = ref(false)
+let resizeObserver: ResizeObserver | null = null
 
 function checkFixAction() {
-  canFixAction.value = typeof window !== 'undefined' ? window.innerWidth >= 1200 : true
+  if (tableWrapperRef.value) {
+    canFixAction.value = tableWrapperRef.value.clientWidth >= 600
+  } else if (typeof window !== 'undefined') {
+    canFixAction.value = window.innerWidth >= 1200
+  }
 }
 
 const selectedWarehouse = computed(() => warehouses.value.find((warehouse) => warehouse.id === selectedWarehouseId.value) ?? null)
@@ -108,11 +114,19 @@ async function toggleLocation(row: Location) { try { await updateLocation(row.id
 
 onMounted(() => {
   checkFixAction()
+  if (typeof ResizeObserver !== 'undefined' && tableWrapperRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      checkFixAction()
+    })
+    resizeObserver.observe(tableWrapperRef.value)
+  }
   window.addEventListener('resize', checkFixAction)
   void load()
 })
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
   window.removeEventListener('resize', checkFixAction)
 })
 </script>
@@ -168,28 +182,24 @@ onBeforeUnmount(() => {
             添加库位
           </el-button>
         </div>
-        <div v-if="selectedWarehouse && selectedLocations.length" class="locations-table-wrapper">
+        <div v-if="selectedWarehouse && selectedLocations.length" ref="tableWrapperRef" class="locations-table-wrapper">
           <el-table :data="selectedLocations" stripe class="desktop-locations-table">
             <el-table-column label="编码" min-width="140">
               <template #default="scope">
-                <el-tooltip :content="scope.row.code" placement="top" :enterable="true" :show-after="200">
-                  <span class="table-text-cell" tabindex="0" :aria-label="`库位编码：${scope.row.code}`">{{ scope.row.code }}</span>
-                </el-tooltip>
+                <span class="location-code-cell" tabindex="0" :aria-label="`库位编码：${scope.row.code}`">{{ scope.row.code }}</span>
               </template>
             </el-table-column>
             <el-table-column label="名称" min-width="180">
               <template #default="scope">
-                <el-tooltip :content="scope.row.name" placement="top" :enterable="true" :show-after="200">
-                  <span class="table-text-cell" tabindex="0" :aria-label="`库位名称：${scope.row.name}`">{{ scope.row.name }}</span>
-                </el-tooltip>
+                <strong class="location-name-cell" tabindex="0" :aria-label="`库位名称：${scope.row.name}`">{{ scope.row.name }}</strong>
               </template>
             </el-table-column>
-            <el-table-column label="状态" min-width="100">
+            <el-table-column label="状态" min-width="90">
               <template #default="scope">
                 <el-tag :type="scope.row.enabled ? 'success' : 'info'">{{ scope.row.enabled ? '启用' : '停用' }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" min-width="180" :fixed="canFixAction ? 'right' : false">
+            <el-table-column label="操作" min-width="160" :fixed="canFixAction ? 'right' : false">
               <template #default="scope">
                 <el-button link type="primary" :icon="Edit" @click="openEditLocation(scope.row)">编辑</el-button>
                 <el-button link :type="scope.row.enabled ? 'danger' : 'success'" :icon="SwitchButton" @click="toggleLocation(scope.row)">
@@ -289,6 +299,20 @@ onBeforeUnmount(() => {
 .desktop-locations-table {
   min-width: 560px;
   width: 100%;
+}
+.location-code-cell {
+  display: inline-block;
+  font-family: var(--ui-font-mono, monospace);
+  font-weight: 600;
+  color: var(--ui-text-strong);
+  word-break: break-all;
+  user-select: all;
+}
+.location-name-cell {
+  display: inline-block;
+  color: var(--ui-text-strong);
+  word-break: break-word;
+  line-height: 1.35;
 }
 .table-text-cell {
   display: inline-block;

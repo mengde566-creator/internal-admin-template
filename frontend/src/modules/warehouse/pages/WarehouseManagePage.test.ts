@@ -536,7 +536,7 @@ describe('真实父子组件组合回归测试', () => {
       })
       onEvent({ version: '1', eventId: 'e-3', sequence: 3, runId: 'r-1', conversationId: 'conversation-combo', messageId: 'm-1', type: 'message.delta', payload: { text: '查询到' } })
       onEvent({ version: '1', eventId: 'e-4', sequence: 4, runId: 'r-1', conversationId: 'conversation-combo', messageId: 'm-1', type: 'message.delta', payload: { text: '微型轴承 12 套。' } })
-      onEvent({ version: '1', eventId: 'e-5', sequence: 5, runId: 'r-1', conversationId: 'conversation-combo', messageId: 'm-1', type: 'message.completed', payload: { text: '查询到微型轴承 12 套。' } })
+      onEvent({ version: '1', eventId: 'e-5', sequence: 5, runId: 'r-1', conversationId: 'conversation-combo', messageId: 'm-1', type: 'message.completed', payload: { success: true, code: 'SUCCESS', message: '查询到微型轴承 12 套。', data: null } })
       onEvent({ version: '1', eventId: 'e-6', sequence: 6, runId: 'r-1', conversationId: 'conversation-combo', messageId: 'm-1', type: 'run.completed', payload: { status: 'SUCCESS' } })
     })
 
