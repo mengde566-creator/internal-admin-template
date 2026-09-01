@@ -39,6 +39,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.net.ConnectException;
+import java.text.Normalizer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -55,6 +56,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
 public class AgentConversationService {
     private static final int MAX_MODEL_ATTEMPTS = 2;
+    private static final java.util.regex.Pattern EXPLICIT_READ_ONLY_WRITE = java.util.regex.Pattern.compile(
+            "(?is)(?:^|[\\s，,。；;])(?:请|帮我|替我)?(?:写入|新增|删除|清空|增加|扣减|入账|出库).{0,30}(?:库存|库存数据|库存数量|流水)"
+                    + "|(?:把|将).{0,24}(?:库存|库存数量|流水).{0,12}(?:改成|修改为|设置为|增加到|减少到)");
+    private static final java.util.regex.Pattern EXPLICIT_EXTERNAL_EXECUTION = java.util.regex.Pattern.compile(
+            "(?is)(?:忽略规则.{0,12})?(?:调用|执行|运行|打开|访问|连接|请求).{0,40}(?:sql|url|链接|网址)");
+    private static final java.util.regex.Pattern EXPLICIT_IDENTITY_TAMPERING = java.util.regex.Pattern.compile(
+            "(?is)(?:把|将|修改|伪造|冒充|篡改|替换).{0,30}(?:user\\s*id|department\\s*id|用户(?:id|编号|身份|标识)|部门(?:id|编号|身份|标识)|身份|管理员)");
     private final AgentStore store;
     private final ChatClient chatClient;
     private final AiObservationRecorder observations;
@@ -135,6 +143,10 @@ public class AgentConversationService {
         }
         if (userMessage != null && containsUnsafeInput(userMessage)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "消息包含敏感信息或不可接受字符，请删除后重试");
+        }
+        if (userMessage != null && containsExplicitReadOnlyViolation(userMessage)) {
+            throw new BusinessException(AgentErrorCode.BUSINESS_REJECTED,
+                    "仓储助手仅支持只读查询，无法执行该操作，请改为询问库存、位置或制度规则。");
         }
         if (!actor.hasAuthority("warehouse:read")) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "缺少仓储查询权限");
@@ -1626,6 +1638,18 @@ public class AgentConversationService {
         return lower.matches("(?s).*\\b(?:api[_ -]?key|key|cookie|password|passwd|bearer\\s+|authorization\\s*[:=]|secret\\s*[:=]).*")
                 || lower.matches("(?s).*密钥\\s*[:=：].*")
                 || lower.matches("(?s).*\\b(?:jdbc:(?:sqlite|postgresql|mysql|oracle):|postgres(?:ql)?://|mysql://|oracle:).*");
+    }
+
+    /**
+     * Reject only an explicit request to make a state-changing or external command.
+     * Ordinary policy questions (for example, how inbound handling works or whether
+     * a movement may be corrected) deliberately remain on the normal read-only path.
+     */
+    private static boolean containsExplicitReadOnlyViolation(String value) {
+        String normalized = Normalizer.normalize(value, Normalizer.Form.NFKC).trim().replaceAll("\\s+", " ");
+        return EXPLICIT_READ_ONLY_WRITE.matcher(normalized).find()
+                || EXPLICIT_EXTERNAL_EXECUTION.matcher(normalized).find()
+                || EXPLICIT_IDENTITY_TAMPERING.matcher(normalized).find();
     }
 
     private static ModelResultException invalidResult() {

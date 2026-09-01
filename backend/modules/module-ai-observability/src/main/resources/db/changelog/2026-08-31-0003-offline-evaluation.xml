@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-08-31-0003-offline-evaluation" author="研发工程师">
+        <createTable tableName="ai_evaluation_run">
+            <column name="evaluation_run_id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="dataset_version" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <column name="dataset_sha256" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="config_version" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <column name="config_sha256" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="client_request_id" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <column name="status" type="VARCHAR(24)"><constraints nullable="false"/></column>
+            <column name="gate_outcome" type="VARCHAR(24)"/>
+            <column name="rule_version" type="VARCHAR(128)"/>
+            <column name="knowledge_version" type="VARCHAR(128)"/>
+            <column name="index_version" type="VARCHAR(128)"/>
+            <column name="model_version" type="VARCHAR(128)"/>
+            <column name="started_at" type="TIMESTAMP"/>
+            <column name="completed_at" type="TIMESTAMP"/>
+            <column name="total_cases" type="INT" defaultValueNumeric="0"/>
+            <column name="passed_cases" type="INT" defaultValueNumeric="0"/>
+            <column name="failed_cases" type="INT" defaultValueNumeric="0"/>
+            <column name="hard_assertion_failures" type="INT" defaultValueNumeric="0"/>
+            <column name="error_code" type="VARCHAR(64)"/>
+            <column name="created_at" type="TIMESTAMP"/>
+        </createTable>
+        <createIndex tableName="ai_evaluation_run" indexName="uk_ai_evaluation_request" unique="true">
+            <column name="dataset_version"/><column name="config_version"/><column name="client_request_id"/>
+        </createIndex>
+        <createIndex tableName="ai_evaluation_run" indexName="idx_ai_evaluation_created_at"><column name="created_at"/></createIndex>
+        <createTable tableName="ai_evaluation_case_result">
+            <column name="id" type="VARCHAR(36)"><constraints primaryKey="true" nullable="false"/></column>
+            <column name="evaluation_run_id" type="VARCHAR(36)"><constraints nullable="false"/></column>
+            <column name="case_id" type="VARCHAR(128)"><constraints nullable="false"/></column>
+            <column name="category" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="split" type="VARCHAR(24)"><constraints nullable="false"/></column>
+            <column name="status" type="VARCHAR(24)"/><column name="expected_outcome" type="VARCHAR(64)"/>
+            <column name="actual_outcome" type="VARCHAR(64)"/><column name="expected_run_status" type="VARCHAR(24)"/>
+            <column name="actual_run_status" type="VARCHAR(24)"/><column name="expected_stable_code" type="VARCHAR(64)"/>
+            <column name="actual_stable_code" type="VARCHAR(64)"/><column name="failure_stage" type="VARCHAR(64)"/>
+            <column name="duration_ms" type="BIGINT"/><column name="model_attempts" type="INT"/>
+            <column name="tool_calls" type="INT"/><column name="embedding_calls" type="INT"/>
+            <column name="document_code" type="VARCHAR(128)"/><column name="version_code" type="VARCHAR(128)"/>
+            <column name="created_at" type="TIMESTAMP"/>
+        </createTable>
+        <createIndex tableName="ai_evaluation_case_result" indexName="uk_ai_evaluation_case"><column name="evaluation_run_id"/><column name="case_id"/></createIndex>
+    </changeSet>
+</databaseChangeLog>

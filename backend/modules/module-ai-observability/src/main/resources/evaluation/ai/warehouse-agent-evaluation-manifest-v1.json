@@ -1,0 +1,15 @@
+{
+  "datasetVersion": "warehouse-agent-evaluation-v1",
+  "datasetSha256": "0bff9ea55e6abd38b136c977190161362ba43ff0a94cbb62d7f48151fb67714a",
+  "manifestVersion": "1",
+  "resources": [
+    {"path":"module-warehouse/src/test/resources/ai/warehouse-recall-evaluation-v1.json","sha256":"f9ada0a004b47d0e480665833188e47779340bfea6eb66a53ba7d149637c18df","responsibility":"warehouse recall"},
+    {"path":"module-warehouse/src/test/resources/evaluation/ai/warehouse-embedding-recall-baseline-v1.json","sha256":"7457fde126d089781b582b1cd6efcb511b4a4235a48d891ace47a8a5980aab8c","responsibility":"warehouse embedding baseline"},
+    {"path":"module-knowledge/src/test/resources/ai/knowledge-query-evaluation-v1.json","sha256":"70295274478d59198c606f9820707ea8bbdb2f9b26a507b8baa2f26c33d007ef","responsibility":"knowledge recall"},
+    {"path":"module-knowledge/src/test/resources/evaluation/ai/knowledge-dashscope-densesparse-baseline-v1.json","sha256":"543c22012cf7159644a0babdb9b42b1600c2221e41ce91205bc964311d5ee903","responsibility":"knowledge embedding baseline"},
+    {"path":"evaluation/ai/agent-behavior-exception-evaluation-v1.json","sha256":"0bff9ea55e6abd38b136c977190161362ba43ff0a94cbb62d7f48151fb67714a","responsibility":"agent behavior and exception fixtures"}
+  ],
+  "categories":["OUTER_LANGUAGE","MULTI_TURN_REPAIR","BUSINESS_KNOWLEDGE","USER_ANOMALY","AUTH_ATTACK","INFRA_MODEL"],
+  "caseCount":24,
+  "splits":{"calibration":12,"holdout":12}
+}

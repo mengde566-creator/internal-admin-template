@@ -1,0 +1,9 @@
+{
+  "configVersion":"agent-evaluation-config-v1",
+  "executionMode":"DETERMINISTIC_FIXTURE",
+  "ruleVersion":"03A-04D",
+  "knowledgeVersion":"04A",
+  "indexVersion":"current-active",
+  "modelVersion":"NOT_RUN",
+  "configSha256":"dfb06e09b42e785dc9011969474b5cfb711c59f651f5361c65aeddbba7848569"
+}

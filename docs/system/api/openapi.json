@@ -196,6 +196,78 @@
         },
         "type": "object"
       },
+      "ApiResponseEvaluationDetail": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ApiResponseEvaluationPage": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationPage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ApiResponseEvaluationRun": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ApiResponseFeedbackSnapshot": {
         "properties": {
           "code": {
@@ -292,6 +364,33 @@
         },
         "type": "object"
       },
+      "ApiResponseListDatasetRegistration": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DatasetRegistration"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ApiResponseListPermissionOptionDTO": {
         "properties": {
           "code": {
@@ -329,6 +428,33 @@
               {
                 "items": {
                   "$ref": "#/components/schemas/RoleListDTO"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ApiResponseListRunConfiguration": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RunConfiguration"
                 },
                 "type": "array"
               },
@@ -621,6 +747,107 @@
         },
         "type": "object"
       },
+      "CaseSummary": {
+        "properties": {
+          "actualOutcome": {
+            "type": "string"
+          },
+          "actualRunStatus": {
+            "type": "string"
+          },
+          "actualStableCode": {
+            "type": "string"
+          },
+          "caseId": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "documentCode": {
+            "type": "string"
+          },
+          "durationMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "embeddingCalls": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "evidenceLevel": {
+            "type": "string"
+          },
+          "expectedOutcome": {
+            "type": "string"
+          },
+          "expectedRunStatus": {
+            "type": "string"
+          },
+          "expectedStableCode": {
+            "type": "string"
+          },
+          "failureStage": {
+            "type": "string"
+          },
+          "modelAttempts": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "split": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "toolCalls": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "versionCode": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CategorySummary": {
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "evaluated": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "evidenceLevel": {
+            "type": "string"
+          },
+          "failed": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "notEvaluated": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "passRate": {
+            "format": "double",
+            "type": "number"
+          },
+          "passed": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "split": {
+            "type": "string"
+          },
+          "total": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "ChangePasswordDTO": {
         "properties": {
           "newPassword": {
@@ -896,6 +1123,33 @@
         },
         "type": "object"
       },
+      "DatasetRegistration": {
+        "properties": {
+          "caseCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "datasetVersion": {
+            "type": "string"
+          },
+          "manifestSha256": {
+            "type": "string"
+          },
+          "referencedResources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "DepartmentEnabledDTO": {
         "properties": {
           "enabled": {
@@ -956,6 +1210,137 @@
             "type": "array"
           },
           "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "EvaluationDetail": {
+        "properties": {
+          "categories": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/CategorySummary"
+            },
+            "type": "object"
+          },
+          "evidenceGates": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/CaseSummary"
+            },
+            "type": "array"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "run": {
+            "$ref": "#/components/schemas/EvaluationRun"
+          }
+        },
+        "type": "object"
+      },
+      "EvaluationPage": {
+        "properties": {
+          "page": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationRun"
+            },
+            "type": "array"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "EvaluationRun": {
+        "properties": {
+          "completedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "configSha256": {
+            "type": "string"
+          },
+          "configVersion": {
+            "type": "string"
+          },
+          "datasetSha256": {
+            "type": "string"
+          },
+          "datasetVersion": {
+            "type": "string"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "evaluationRunId": {
+            "type": "string"
+          },
+          "evidenceLevel": {
+            "type": "string"
+          },
+          "executionMode": {
+            "type": "string"
+          },
+          "failedCases": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "gateOutcome": {
+            "type": "string"
+          },
+          "hardAssertionFailures": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "indexVersion": {
+            "type": "string"
+          },
+          "knowledgeVersion": {
+            "type": "string"
+          },
+          "modelVersion": {
+            "type": "string"
+          },
+          "notEvaluatedCases": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "passedCases": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "ruleVersion": {
+            "type": "string"
+          },
+          "startedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "totalCases": {
             "format": "int32",
             "type": "integer"
           }
@@ -1687,6 +2072,32 @@
         },
         "type": "object"
       },
+      "RunConfiguration": {
+        "properties": {
+          "configSha256": {
+            "type": "string"
+          },
+          "configVersion": {
+            "type": "string"
+          },
+          "executionMode": {
+            "type": "string"
+          },
+          "indexVersion": {
+            "type": "string"
+          },
+          "knowledgeVersion": {
+            "type": "string"
+          },
+          "modelVersion": {
+            "type": "string"
+          },
+          "ruleVersion": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "RunPage": {
         "properties": {
           "page": {
@@ -1824,6 +2235,31 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "StartRequest": {
+        "properties": {
+          "clientRequestId": {
+            "maxLength": 128,
+            "minLength": 0,
+            "type": "string"
+          },
+          "configVersion": {
+            "maxLength": 128,
+            "minLength": 0,
+            "type": "string"
+          },
+          "datasetVersion": {
+            "maxLength": 128,
+            "minLength": 0,
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientRequestId",
+          "configVersion",
+          "datasetVersion"
+        ],
         "type": "object"
       },
       "StepTimeline": {
@@ -2442,6 +2878,146 @@
         ]
       }
     },
+    "/api/ai/observability/evaluations/configs": {
+      "get": {
+        "operationId": "configurations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListRunConfiguration"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-evaluation-controller"
+        ]
+      }
+    },
+    "/api/ai/observability/evaluations/datasets": {
+      "get": {
+        "operationId": "datasets",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListDatasetRegistration"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-evaluation-controller"
+        ]
+      }
+    },
+    "/api/ai/observability/evaluations/runs": {
+      "get": {
+        "operationId": "runs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEvaluationPage"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-evaluation-controller"
+        ]
+      },
+      "post": {
+        "operationId": "start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEvaluationRun"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-evaluation-controller"
+        ]
+      }
+    },
+    "/api/ai/observability/evaluations/runs/{evaluationRunId}": {
+      "get": {
+        "operationId": "run_2",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "evaluationRunId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseEvaluationDetail"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "ai-evaluation-controller"
+        ]
+      }
+    },
     "/api/ai/observability/overview": {
       "get": {
         "operationId": "overview",
@@ -2554,7 +3130,7 @@
     },
     "/api/ai/observability/runs": {
       "get": {
-        "operationId": "runs",
+        "operationId": "runs_1",
         "parameters": [
           {
             "in": "query",

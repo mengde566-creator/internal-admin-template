@@ -3,6 +3,7 @@ package com.internaladmin.app;
 import com.internaladmin.app.config.OpenApiContractConfig;
 import com.internaladmin.app.config.AgentOpenApiCustomizer;
 import com.internaladmin.app.controller.AiFeedbackController;
+import com.internaladmin.app.controller.AiEvaluationController;
 import com.internaladmin.module.agent.controller.AiCapabilitiesController;
 import com.internaladmin.module.agent.controller.AgentConversationController;
 import com.internaladmin.module.agent.service.AgentActorResolver;
@@ -29,6 +30,7 @@ import com.internaladmin.module.warehouse.service.WarehouseService;
 import com.internaladmin.module.iam.api.IamActorApi;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.ai.observability.api.AiFeedbackApi;
+import com.internaladmin.module.ai.observability.api.AiEvaluationApi;
 import com.internaladmin.module.ai.observability.api.AiObservabilityQueryApi;
 import com.internaladmin.platform.security.config.SecurityConfig;
 import com.internaladmin.platform.security.exception.SecurityExceptionHandler;
@@ -150,6 +152,10 @@ class NoDatabaseOpenApiContractTest {
         assertTrue(specification.path("paths").has("/api/ai/feedback/{assistantMessageId}"));
         assertTrue(specification.path("paths").has("/api/ai/observability/overview"));
         assertTrue(specification.path("paths").has("/api/ai/observability/runs"));
+        assertTrue(specification.path("paths").has("/api/ai/observability/evaluations/datasets"));
+        assertTrue(specification.path("paths").has("/api/ai/observability/evaluations/configs"));
+        assertTrue(specification.path("paths").has("/api/ai/observability/evaluations/runs"));
+        assertTrue(specification.path("paths").has("/api/ai/observability/evaluations/runs/{evaluationRunId}"));
 
         writeRawSpecification(json);
     }
@@ -235,6 +241,8 @@ class NoDatabaseOpenApiContractTest {
     @DisplayName("AI 观测管理入口没有观测权限时返回403")
     void observabilityEndpointRequiresDedicatedPermission() throws Exception {
         mockMvc.perform(get("/api/ai/observability/overview").with(user("without-observability")))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/ai/observability/evaluations/datasets").with(user("without-observability")))
                 .andExpect(status().isForbidden());
     }
 
@@ -436,9 +444,19 @@ class NoDatabaseOpenApiContractTest {
         }
 
         @Bean
+        AiEvaluationApi aiEvaluationApi() {
+            return mock(AiEvaluationApi.class);
+        }
+
+        @Bean
         AiFeedbackController aiFeedbackController(AiFeedbackApi feedback,
                                                    AiObservabilityQueryApi observability) {
             return new AiFeedbackController(feedback, observability);
+        }
+
+        @Bean
+        AiEvaluationController aiEvaluationController(AiEvaluationApi evaluations) {
+            return new AiEvaluationController(evaluations);
         }
 
         /** Expose the real handler mappings for springdoc while leaving the production flag disabled. */

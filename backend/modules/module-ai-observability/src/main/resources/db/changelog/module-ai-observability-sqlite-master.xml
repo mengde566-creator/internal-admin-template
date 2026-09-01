@@ -6,4 +6,6 @@
     <include file="db/changelog/2026-08-24-0001-ai-observation-run-step-attempt-sqlite.xml"/>
     <include file="db/changelog/2026-08-31-0001-structured-observation-contract.xml"/>
     <include file="db/changelog/2026-08-31-0002-online-feedback.xml"/>
+    <include file="db/changelog/2026-08-31-0003-offline-evaluation.xml"/>
+    <include file="db/changelog/2026-08-31-0004-offline-evaluation-evidence.xml"/>
 </databaseChangeLog>

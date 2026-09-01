@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-08-31-0004-offline-evaluation-evidence" author="研发工程师">
+        <addColumn tableName="ai_evaluation_run">
+            <column name="execution_mode" type="VARCHAR(64)"/>
+            <column name="evidence_level" type="VARCHAR(64)"/>
+            <column name="not_evaluated_cases" type="INT" defaultValueNumeric="0"/>
+        </addColumn>
+        <addColumn tableName="ai_evaluation_case_result">
+            <column name="evidence_level" type="VARCHAR(64)"/>
+        </addColumn>
+    </changeSet>
+</databaseChangeLog>

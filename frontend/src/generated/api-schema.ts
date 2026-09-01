@@ -84,6 +84,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ai/observability/evaluations/configs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["configurations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/observability/evaluations/datasets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["datasets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/observability/evaluations/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["runs"];
+        put?: never;
+        post: operations["start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/observability/evaluations/runs/{evaluationRunId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["run_2"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ai/observability/overview": {
         parameters: {
             query?: never;
@@ -107,7 +171,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["runs"];
+        get: operations["runs_1"];
         put?: never;
         post?: never;
         delete?: never;
@@ -874,6 +938,24 @@ export interface components {
             message?: string;
             success?: boolean;
         };
+        ApiResponseEvaluationDetail: {
+            code?: string;
+            data?: components["schemas"]["EvaluationDetail"] | null;
+            message?: string;
+            success?: boolean;
+        };
+        ApiResponseEvaluationPage: {
+            code?: string;
+            data?: components["schemas"]["EvaluationPage"] | null;
+            message?: string;
+            success?: boolean;
+        };
+        ApiResponseEvaluationRun: {
+            code?: string;
+            data?: components["schemas"]["EvaluationRun"] | null;
+            message?: string;
+            success?: boolean;
+        };
         ApiResponseFeedbackSnapshot: {
             code?: string;
             data?: components["schemas"]["FeedbackSnapshot"] | null;
@@ -898,6 +980,12 @@ export interface components {
             message?: string;
             success?: boolean;
         };
+        ApiResponseListDatasetRegistration: {
+            code?: string;
+            data?: components["schemas"]["DatasetRegistration"][] | null;
+            message?: string;
+            success?: boolean;
+        };
         ApiResponseListPermissionOptionDTO: {
             code?: string;
             data?: components["schemas"]["PermissionOptionDTO"][] | null;
@@ -907,6 +995,12 @@ export interface components {
         ApiResponseListRoleListDTO: {
             code?: string;
             data?: components["schemas"]["RoleListDTO"][] | null;
+            message?: string;
+            success?: boolean;
+        };
+        ApiResponseListRunConfiguration: {
+            code?: string;
+            data?: components["schemas"]["RunConfiguration"][] | null;
             message?: string;
             success?: boolean;
         };
@@ -984,6 +1078,47 @@ export interface components {
             durationMs?: number;
             errorCode?: string;
             status?: string;
+        };
+        CaseSummary: {
+            actualOutcome?: string;
+            actualRunStatus?: string;
+            actualStableCode?: string;
+            caseId?: string;
+            category?: string;
+            documentCode?: string;
+            /** Format: int64 */
+            durationMs?: number;
+            /** Format: int32 */
+            embeddingCalls?: number;
+            evidenceLevel?: string;
+            expectedOutcome?: string;
+            expectedRunStatus?: string;
+            expectedStableCode?: string;
+            failureStage?: string;
+            /** Format: int32 */
+            modelAttempts?: number;
+            split?: string;
+            status?: string;
+            /** Format: int32 */
+            toolCalls?: number;
+            versionCode?: string;
+        };
+        CategorySummary: {
+            category?: string;
+            /** Format: int32 */
+            evaluated?: number;
+            evidenceLevel?: string;
+            /** Format: int32 */
+            failed?: number;
+            /** Format: int32 */
+            notEvaluated?: number;
+            /** Format: double */
+            passRate?: number;
+            /** Format: int32 */
+            passed?: number;
+            split?: string;
+            /** Format: int32 */
+            total?: number;
         };
         ChangePasswordDTO: {
             newPassword: string;
@@ -1067,6 +1202,14 @@ export interface components {
             userId?: string;
             username?: string;
         };
+        DatasetRegistration: {
+            /** Format: int32 */
+            caseCount?: number;
+            categories?: string[];
+            datasetVersion?: string;
+            manifestSha256?: string;
+            referencedResources?: string[];
+        };
         DepartmentEnabledDTO: {
             enabled: boolean;
             /** Format: int32 */
@@ -1089,6 +1232,58 @@ export interface components {
             nodes?: components["schemas"]["DepartmentNodeDTO"][];
             /** Format: int32 */
             version?: number;
+        };
+        EvaluationDetail: {
+            categories?: {
+                [key: string]: components["schemas"]["CategorySummary"];
+            };
+            evidenceGates?: {
+                [key: string]: string;
+            };
+            failures?: components["schemas"]["CaseSummary"][];
+            metrics?: {
+                [key: string]: number;
+            };
+            run?: components["schemas"]["EvaluationRun"];
+        };
+        EvaluationPage: {
+            /** Format: int64 */
+            page?: number;
+            records?: components["schemas"]["EvaluationRun"][];
+            /** Format: int64 */
+            size?: number;
+            /** Format: int64 */
+            total?: number;
+        };
+        EvaluationRun: {
+            /** Format: date-time */
+            completedAt?: string;
+            configSha256?: string;
+            configVersion?: string;
+            datasetSha256?: string;
+            datasetVersion?: string;
+            errorCode?: string;
+            evaluationRunId?: string;
+            evidenceLevel?: string;
+            executionMode?: string;
+            /** Format: int32 */
+            failedCases?: number;
+            gateOutcome?: string;
+            /** Format: int32 */
+            hardAssertionFailures?: number;
+            indexVersion?: string;
+            knowledgeVersion?: string;
+            modelVersion?: string;
+            /** Format: int32 */
+            notEvaluatedCases?: number;
+            /** Format: int32 */
+            passedCases?: number;
+            ruleVersion?: string;
+            /** Format: date-time */
+            startedAt?: string;
+            status?: string;
+            /** Format: int32 */
+            totalCases?: number;
         };
         FeedbackRequest: {
             rating: string;
@@ -1322,6 +1517,15 @@ export interface components {
             name?: string;
             permissionCodes?: string[];
         };
+        RunConfiguration: {
+            configSha256?: string;
+            configVersion?: string;
+            executionMode?: string;
+            indexVersion?: string;
+            knowledgeVersion?: string;
+            modelVersion?: string;
+            ruleVersion?: string;
+        };
         RunPage: {
             /** Format: int64 */
             page?: number;
@@ -1369,6 +1573,11 @@ export interface components {
             startedAt?: string;
             status?: string;
             steps?: components["schemas"]["StepTimeline"][];
+        };
+        StartRequest: {
+            clientRequestId: string;
+            configVersion: string;
+            datasetVersion: string;
         };
         StepTimeline: {
             attempts?: components["schemas"]["AttemptTimeline"][];
@@ -1675,6 +1884,115 @@ export interface operations {
             };
         };
     };
+    configurations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseListRunConfiguration"];
+                };
+            };
+        };
+    };
+    datasets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseListDatasetRegistration"];
+                };
+            };
+        };
+    };
+    runs: {
+        parameters: {
+            query?: {
+                page?: number;
+                size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEvaluationPage"];
+                };
+            };
+        };
+    };
+    start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEvaluationRun"];
+                };
+            };
+        };
+    };
+    run_2: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                evaluationRunId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEvaluationDetail"];
+                };
+            };
+        };
+    };
     overview: {
         parameters: {
             query?: {
@@ -1706,7 +2024,7 @@ export interface operations {
             };
         };
     };
-    runs: {
+    runs_1: {
         parameters: {
             query?: {
                 page?: number;

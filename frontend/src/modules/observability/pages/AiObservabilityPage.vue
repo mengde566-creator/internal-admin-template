@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { isAxiosError } from 'axios'
 import { useQuery } from '@tanstack/vue-query'
-import { fetchObservationOverview, fetchObservationRun, fetchObservationRuns, type ObservationFilter } from '../api'
+import { fetchEvaluationConfigs, fetchEvaluationDatasets, fetchEvaluationRun, fetchEvaluationRuns, startEvaluation, fetchObservationOverview, fetchObservationRun, fetchObservationRuns, type ObservationFilter } from '../api'
 
 const page = ref(1)
 const size = 20
@@ -30,6 +30,25 @@ const filter = computed<ObservationFilter>(() => ({
 const overviewQuery = useQuery({ queryKey: computed(() => ['ai-observability', 'overview', filter.value]), queryFn: () => fetchObservationOverview(filter.value), retry: false })
 const runsQuery = useQuery({ queryKey: computed(() => ['ai-observability', 'runs', filter.value, page.value]), queryFn: () => fetchObservationRuns(filter.value, page.value, size), retry: false })
 const detailQuery = useQuery({ queryKey: computed(() => ['ai-observability', 'run', selectedRunId.value]), queryFn: () => fetchObservationRun(selectedRunId.value), enabled: computed(() => Boolean(selectedRunId.value)), retry: false })
+const evaluationDatasetsQuery = useQuery({ queryKey: ['ai-observability', 'evaluation-datasets'], queryFn: fetchEvaluationDatasets, retry: false })
+const evaluationConfigsQuery = useQuery({ queryKey: ['ai-observability', 'evaluation-configs'], queryFn: fetchEvaluationConfigs, retry: false })
+const evaluationRunsQuery = useQuery({ queryKey: ['ai-observability', 'evaluation-runs'], queryFn: () => fetchEvaluationRuns(), retry: false })
+const selectedEvaluationRunId = ref('')
+const evaluationDetailQuery = useQuery({ queryKey: computed(() => ['ai-observability', 'evaluation-run', selectedEvaluationRunId.value]), queryFn: () => fetchEvaluationRun(selectedEvaluationRunId.value), enabled: computed(() => Boolean(selectedEvaluationRunId.value)), retry: false })
+const selectedDatasetVersion = computed(() => evaluationDatasetsQuery.data.value?.[0]?.datasetVersion ?? '')
+const selectedConfigVersion = computed(() => evaluationConfigsQuery.data.value?.[0]?.configVersion ?? '')
+const evaluationStarting = ref(false)
+
+async function startOfflineEvaluation() {
+  if (!selectedDatasetVersion.value || !selectedConfigVersion.value || evaluationStarting.value) return
+  evaluationStarting.value = true
+  try {
+    await startEvaluation({ datasetVersion: selectedDatasetVersion.value, configVersion: selectedConfigVersion.value, clientRequestId: `ui-${Date.now()}` })
+    await evaluationRunsQuery.refetch()
+  } finally {
+    evaluationStarting.value = false
+  }
+}
 
 const loadError = computed(() => {
   const error = overviewQuery.error.value || runsQuery.error.value || detailQuery.error.value
@@ -43,12 +62,20 @@ function statusLabel(value: string | undefined) {
   return ({ SUCCESS: '成功', PARTIAL: '部分成功', FAILED: '失败', CANCELLED: '已取消', RUNNING: '运行中' } as Record<string, string>)[value ?? ''] ?? value ?? '—'
 }
 
+function evidenceLabel(value: string | undefined) {
+  return ({ STATIC_VALIDATION: '结构校验', CALLBACK_ORCHESTRATION: '编排回调链', PUBLIC_SERVICE_DETERMINISTIC: '公开服务确定性链', POST_ROUTING_DETERMINISTIC: '旧路由后确定性链', END_TO_END_PROVIDER: '端到端 Provider', MIXED: '分层证据' } as Record<string, string>)[value ?? ''] ?? '证据未标记'
+}
+
 function openRun(runId: string) {
   selectedRunId.value = runId
 }
 
 function onRunRowClick(row: { runId: string }) {
   openRun(row.runId)
+}
+
+function openEvaluationRun(evaluationRunId: string) {
+  selectedEvaluationRunId.value = evaluationRunId
 }
 </script>
 
@@ -153,6 +180,35 @@ function onRunRowClick(row: { runId: string }) {
           </template>
         </section>
       </div>
+
+      <section class="panel-section evaluation-section" aria-label="离线评测" data-testid="offline-evaluation">
+        <div class="evaluation-header">
+          <div><h2>离线评测</h2><p class="muted">仅运行服务器登记的固定数据集与配置，不展示输入或回答正文。</p></div>
+          <el-button type="primary" :loading="evaluationStarting" :disabled="!selectedDatasetVersion || !selectedConfigVersion" @click="startOfflineEvaluation">发起评测</el-button>
+        </div>
+        <p v-if="evaluationDatasetsQuery.isError.value || evaluationConfigsQuery.isError.value || evaluationRunsQuery.isError.value" class="page-error">离线评测暂时无法加载，请稍后重试。</p>
+        <p v-else-if="!evaluationRunsQuery.data.value?.records?.length" class="muted">暂无历史评测结果。</p>
+        <ul v-else class="evaluation-list">
+          <li v-for="run in evaluationRunsQuery.data.value.records" :key="run.evaluationRunId" role="button" tabindex="0" @click="openEvaluationRun(run.evaluationRunId ?? '')" @keydown.enter="openEvaluationRun(run.evaluationRunId ?? '')">
+            <strong>{{ run.datasetVersion }}</strong><span>{{ run.status }} · {{ run.executionMode ?? '—' }} · {{ evidenceLabel(run.evidenceLevel) }} · Gate {{ run.gateOutcome }} · {{ run.gateOutcome === 'NOT_EVALUATED' ? '未评估' : `${run.passedCases ?? 0}/${run.totalCases ?? 0} 通过` }}</span>
+          </li>
+        </ul>
+        <section v-if="selectedEvaluationRunId" class="evaluation-detail" aria-label="离线评测详情" data-testid="offline-evaluation-detail">
+          <h3>评测详情</h3>
+          <p v-if="evaluationDetailQuery.isError.value" class="page-error">评测详情暂时无法加载，请稍后重试。</p>
+          <template v-else-if="evaluationDetailQuery.data.value?.run">
+            <p class="detail-summary">{{ evaluationDetailQuery.data.value.run.status ?? '—' }} · {{ evaluationDetailQuery.data.value.run.executionMode ?? '—' }} · {{ evidenceLabel(evaluationDetailQuery.data.value.run.evidenceLevel) }} · Gate {{ evaluationDetailQuery.data.value.run.gateOutcome ?? '—' }} · {{ evaluationDetailQuery.data.value.run.gateOutcome === 'NOT_EVALUATED' ? '未评估' : `${evaluationDetailQuery.data.value.run.passedCases ?? 0}/${evaluationDetailQuery.data.value.run.totalCases ?? 0} 通过` }}</p>
+            <p class="detail-summary" data-testid="evaluation-evidence-gates">编排回调：{{ evaluationDetailQuery.data.value.evidenceGates?.CALLBACK_ORCHESTRATION ?? '未评估' }} · 公开服务：{{ evaluationDetailQuery.data.value.evidenceGates?.PUBLIC_SERVICE_DETERMINISTIC ?? '未评估' }} · 端到端 Provider：{{ evaluationDetailQuery.data.value.evidenceGates?.END_TO_END_PROVIDER ?? '未评估' }}</p>
+            <div class="evaluation-categories">
+              <span v-for="summary in Object.values(evaluationDetailQuery.data.value.categories ?? {})" :key="`${summary.category ?? ''}-${summary.split ?? ''}-${summary.evidenceLevel ?? ''}`">{{ summary.category ?? '—' }}（{{ summary.split ?? '—' }} · {{ evidenceLabel(summary.evidenceLevel) }}）：评估 {{ summary.evaluated ?? 0 }}，通过 {{ summary.passed ?? 0 }}，失败 {{ summary.failed ?? 0 }}，未评估 {{ summary.notEvaluated ?? 0 }}</span>
+            </div>
+            <ul v-if="evaluationDetailQuery.data.value.failures?.length" class="evaluation-failures">
+              <li v-for="failure in evaluationDetailQuery.data.value.failures" :key="failure.caseId">{{ failure.caseId ?? '—' }} · {{ failure.category ?? '—' }} · {{ failure.actualStableCode ?? '—' }}</li>
+            </ul>
+            <p v-else class="muted">没有失败样例。</p>
+          </template>
+        </section>
+      </section>
     </template>
   </section>
 </template>
@@ -179,6 +235,17 @@ function onRunRowClick(row: { runId: string }) {
 .observation-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr); gap: 16px; }
 .panel-section { min-width: 0; padding: 16px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface); }
 .panel-section h2 { margin: 0 0 12px; font-size: 1rem; color: var(--ui-text-strong); }
+.evaluation-section { margin-top: 16px; }
+.evaluation-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.evaluation-header h2 { margin-bottom: 4px; }
+.evaluation-header p { margin: 0; }
+.evaluation-list { margin: 0; padding-left: 20px; }
+.evaluation-list li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; color: var(--ui-text); cursor: pointer; }
+.evaluation-list span { color: var(--ui-text-muted); font-size: .8rem; }
+.evaluation-detail { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--ui-border); }
+.evaluation-detail h3 { margin: 0 0 8px; font-size: .9rem; color: var(--ui-text-strong); }
+.evaluation-categories { display: flex; flex-wrap: wrap; gap: 8px; color: var(--ui-text-muted); font-size: .78rem; }
+.evaluation-failures { margin: 8px 0 0; padding-left: 20px; color: var(--ui-danger); font-size: .78rem; }
 .pagination-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 12px; color: var(--ui-text-muted); font-size: .8rem; }
 .timeline-list { margin: 0; padding-left: 20px; }
 .timeline-list li { display: grid; gap: 3px; margin-bottom: 14px; color: var(--ui-text); }
