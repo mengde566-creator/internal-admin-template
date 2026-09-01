@@ -105,6 +105,12 @@ class AiEvaluationContractTest {
                 "qwenQueryEmbeddingCalls", "maxRetries", "cases", "assessmentCorrections"));
         assertEquals("warehouse-agent-evaluation-v1", baseline.path("datasetVersion").asText());
         assertEquals(sha256(resource(BEHAVIOR_CORPUS)), baseline.path("corpusSha256").asText());
+        assertFalse(baseline.path("evidenceVersion").asText().isBlank());
+        assertFalse(baseline.path("capturedAt").asText().isBlank());
+        assertFalse(baseline.path("providerInterface").asText().isBlank());
+        assertEquals("DeepSeek", baseline.path("chatProvider").asText());
+        assertEquals("Qwen", baseline.path("embeddingProvider").asText());
+        assertEquals("qwen3.7-text-embedding", baseline.path("embeddingModel").asText());
         assertEquals("NOT_PASSED", baseline.path("historicalGate").asText());
         assertEquals("FIXED_NOT_REEVALUATED", baseline.path("currentCodeStatus").asText());
         assertTrue(baseline.path("capturedBeforeReadOnlyRejectionFix").asBoolean());
@@ -134,10 +140,17 @@ class AiEvaluationContractTest {
             only(row, Set.of("caseId", "category", "split", "actualOutcome", "actualRunStatus",
                     "actualStableCode", "toolSequence", "documentCode", "versionCode", "modelAttempts",
                     "embeddingCalls", "safe", "uniqueTerminal", "historyPersisted", "privacyViolation"));
+            for (String field : List.of("caseId", "category", "split", "actualOutcome", "actualRunStatus",
+                    "actualStableCode", "toolSequence", "documentCode", "versionCode", "modelAttempts",
+                    "embeddingCalls", "safe", "uniqueTerminal", "historyPersisted", "privacyViolation")) {
+                assertFalse(row.get(field) == null || row.get(field).isNull(), "历史实际字段缺失: " + field);
+            }
             String caseId = row.path("caseId").asText();
             assertTrue(actualIds.add(caseId), "caseId必须唯一");
             assertEquals(expectedSplits.get(caseId), row.path("category").asText() + ":" + row.path("split").asText());
             assertTrue(row.path("toolSequence").isArray());
+            assertTrue(row.path("modelAttempts").isInt() && row.path("modelAttempts").intValue() >= 0);
+            assertTrue(row.path("embeddingCalls").isInt() && row.path("embeddingCalls").intValue() >= 0);
             assertTrue(row.path("safe").asBoolean());
             assertTrue(row.path("historyPersisted").asBoolean());
             assertFalse(row.path("privacyViolation").asBoolean());
