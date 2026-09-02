@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { isAxiosError } from 'axios'
 import { ElMessage } from 'element-plus'
-import { fetchKnowledgeDraft, fetchKnowledgeDrafts, downloadKnowledgeDraftSource, submitKnowledgeDraft, type KnowledgeDraft } from '../api/draft'
+import { fetchKnowledgeDraft, fetchKnowledgeDrafts, downloadKnowledgeDraftSource, submitKnowledgeDraft, publishKnowledgeDraft, type KnowledgeDraft } from '../api/draft'
 
 const drafts = ref<KnowledgeDraft[]>([])
 const selected = ref<KnowledgeDraft | null>(null)
@@ -15,7 +15,8 @@ const form = ref({ documentCode: '', versionCode: '', title: '' })
 
 const statusLabel = computed(() => (value: string | undefined) => ({
   PREVIEW_READY: '预览已准备', STALE: '当前资料已变化，请重新预览', FAILED: '解析失败',
-  EXPIRED: '已过期', CANCELLED: '已取消'
+  EXPIRED: '已过期', CANCELLED: '已取消', PUBLISHING: '发布中', PUBLISHED: '已发布当前版',
+  PUBLISH_FAILED: '发布失败，可重试', NEEDS_REPREVIEW: '需要重新预览'
 }[value ?? ''] ?? '未知状态'))
 const changeLabel = (value: string | undefined) => ({ ADDED: '新增', MODIFIED: '修改', REMOVED: '删除', UNCHANGED: '未变化' }[value ?? ''] ?? '未知')
 
@@ -61,6 +62,31 @@ async function downloadSource() {
   } catch (cause) { error.value = messageOf(cause, '原文件暂时无法下载') }
 }
 
+const canPublish = computed(() => {
+  const draft = selected.value
+  const expiresAt = draft?.expiresAt ? Date.parse(draft.expiresAt) : Number.NaN
+  return !!draft && draft.status === 'PREVIEW_READY' && !draft.stale && !draft.truncated
+    && Number.isFinite(expiresAt) && expiresAt > Date.now()
+})
+
+async function publish() {
+  const draft = selected.value
+  if (!draft || !canPublish.value || submitting.value) return
+  if (!window.confirm(`将发布 ${draft.title} ${draft.versionCode}，替换当前生效版本。是否继续？`)) return
+  submitting.value = true; error.value = ''
+  try {
+    selected.value = (await publishKnowledgeDraft(draft.draftId!, {
+      revision: draft.revision!,
+      clientRequestId: crypto.randomUUID(),
+      confirmed: true
+    })).data.data
+    await load()
+    ElMessage.success('知识资料已发布，当前查询将使用新版本')
+  } catch (cause) {
+    error.value = messageOf(cause, '知识资料发布失败，请检查当前版本后重试')
+  } finally { submitting.value = false }
+}
+
 onMounted(load)
 </script>
 
@@ -84,7 +110,7 @@ onMounted(load)
         <ul v-else class="draft-list"><li v-for="draft in drafts" :key="draft.draftId" :class="{ selected: selected?.draftId === draft.draftId }" @click="selectDraft(draft)"><strong>{{ draft.title }}</strong><span>{{ draft.documentCode }} / {{ draft.versionCode }}</span><em>{{ statusLabel(draft.status) }}</em></li></ul>
       </section>
     </div>
-    <section v-if="selected" class="panel-section preview-panel" aria-label="知识草稿预览"><div class="section-heading"><div><h2>{{ selected.title }}</h2><p class="muted">{{ selected.documentCode }} / {{ selected.versionCode }} · {{ statusLabel(selected.status) }}</p></div><el-button text @click="downloadSource">下载原文件</el-button></div>
+    <section v-if="selected" class="panel-section preview-panel" aria-label="知识草稿预览"><div class="section-heading"><div><h2>{{ selected.title }}</h2><p class="muted">{{ selected.documentCode }} / {{ selected.versionCode }} · {{ statusLabel(selected.status) }}</p></div><div><el-button v-if="canPublish" data-testid="publish-draft" type="primary" :loading="submitting" @click="publish">确认发布</el-button><el-button text @click="downloadSource">下载原文件</el-button></div></div>
       <div class="summary-grid"><span>字符数 <b>{{ selected.characterCount ?? 0 }}</b></span><span>片段数 <b>{{ selected.sectionCount ?? 0 }}</b></span><span>忽略内容 <b>{{ selected.ignoredCount ?? 0 }}</b></span><span>截断 <b>{{ selected.truncated ? '是' : '否' }}</b></span></div>
       <p v-if="selected.stale" class="page-error">当前 ACTIVE 资料已变化，请重新上传生成预览。</p><p v-if="selected.errorCode" class="page-error">错误码：{{ selected.errorCode }}</p>
       <el-table v-if="selected.sections?.length" :data="selected.sections" border><el-table-column prop="sectionNo" label="#" width="70" /><el-table-column prop="heading" label="章节" min-width="180" /><el-table-column label="变化" width="100"><template #default="{ row }">{{ changeLabel(row.changeType) }}</template></el-table-column><el-table-column prop="content" label="预览内容" min-width="320" show-overflow-tooltip /></el-table>

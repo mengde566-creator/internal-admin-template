@@ -111,6 +111,7 @@ const expectedPaths = [
   '/api/ai/knowledge/drafts',
   '/api/ai/knowledge/drafts/{draftId}',
   '/api/ai/knowledge/drafts/{draftId}/source',
+  '/api/ai/knowledge/drafts/{draftId}/publish',
   '/api/ai/observability/evaluations/configs',
   '/api/ai/observability/evaluations/datasets',
   '/api/ai/observability/evaluations/runs',

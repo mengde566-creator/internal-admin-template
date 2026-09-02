@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-09-02-0005-add-knowledge-version-source" author="template" dbms="postgresql">
+        <addColumn schemaName="ai_knowledge" tableName="ai_knowledge_version">
+            <column name="source_type" type="VARCHAR(32)" defaultValue="SYNTHETIC"/>
+        </addColumn>
+        <addColumn schemaName="ai_knowledge" tableName="ai_knowledge_draft">
+            <column name="revision" type="INTEGER" defaultValueNumeric="0"/>
+        </addColumn>
+        <addNotNullConstraint schemaName="ai_knowledge" tableName="ai_knowledge_version"
+                             columnName="source_type" columnDataType="VARCHAR(32)"/>
+        <createIndex schemaName="ai_knowledge" tableName="ai_knowledge_version"
+                     indexName="idx_ai_knowledge_version_source_status">
+            <column name="source_type"/>
+            <column name="status"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>

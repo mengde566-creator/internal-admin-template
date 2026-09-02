@@ -1452,6 +1452,10 @@
           "parserVersion": {
             "type": "string"
           },
+          "revision": {
+            "format": "int32",
+            "type": "integer"
+          },
           "sectionCount": {
             "format": "int32",
             "type": "integer"
@@ -2354,6 +2358,21 @@
           },
           "name": {
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PublishRequest": {
+        "properties": {
+          "clientRequestId": {
+            "type": "string"
+          },
+          "confirmed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "int32",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -3491,6 +3510,46 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseDraftView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "knowledge-draft-controller"
+        ]
+      }
+    },
+    "/api/ai/knowledge/drafts/{draftId}/publish": {
+      "post": {
+        "operationId": "publish_1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draftId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

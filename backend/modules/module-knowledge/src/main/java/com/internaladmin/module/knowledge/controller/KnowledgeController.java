@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Fixed-sample Gate A knowledge endpoints; no upload or arbitrary content input is accepted. */
+/** Read-only knowledge endpoints plus the repository-owned synthetic import; no arbitrary content input is accepted. */
 @RestController
 @RequestMapping("/api/ai/knowledge")
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
@@ -36,7 +36,7 @@ public class KnowledgeController {
     }
 
     /**
-     * Query active synthetic knowledge with version references.
+     * Query trusted active knowledge with version references.
      *
      * @param query text query
      * @param topK bounded result count

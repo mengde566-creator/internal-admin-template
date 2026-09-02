@@ -211,6 +211,19 @@ class KnowledgeServiceSearchTest {
     }
 
     @Test
+    void mixedSourceTrustFactsAreNotReportedAsACompleteDocument() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
+        Instant now = Instant.parse("2026-08-30T00:00:00Z");
+        when(mapper.readActiveDocument("rules", 21, KnowledgeService.EMBEDDING_PROFILE, 1024)).thenReturn(List.of(
+                new KnowledgeMapper.DocumentChunkRow("rules", "规则", "v2", now, now, "# 一\n\n甲", 1, "SYNTHETIC"),
+                new KnowledgeMapper.DocumentChunkRow("rules", "规则", "v2", now, now, "# 二\n\n乙", 2, "USER_UPLOAD")));
+
+        assertThat(service(mapper, client).readActiveDocument("rules", 20, 20_000).status())
+                .isEqualTo(KnowledgeQueryApi.Status.NO_EVIDENCE);
+    }
+
+    @Test
     void fullDocumentReadTruncatesAtCharacterBudgetWithoutEmbedding() {
         KnowledgeMapper mapper = mock(KnowledgeMapper.class);
         KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);

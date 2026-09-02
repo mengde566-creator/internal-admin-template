@@ -19,9 +19,15 @@ public interface KnowledgeDraftApi {
     /** 读取当前用户自己的受控原文件；响应方负责设置下载文件名。 */
     DraftFile readSource(Long userId, String draftId);
 
+    /** Publish a previously reviewed draft after a second server-side validation. */
+    DraftView publish(Long userId, String draftId, PublishRequest request);
+
     /** 上传草稿所需的最小业务字段；限制、解析器和正文均不由调用方提交。 */
     record DraftRequest(String documentCode, String versionCode, String title,
                         String clientRequestId) {
+    }
+
+    record PublishRequest(Integer revision, String clientRequestId, boolean confirmed) {
     }
 
     record DraftPage(List<DraftView> records, long total, int page, int size) {
@@ -34,7 +40,16 @@ public interface KnowledgeDraftApi {
                      String status, String sourceType, String parserVersion, String contentHash,
                      int characterCount, int sectionCount, int ignoredCount, boolean truncated,
                      boolean stale, String errorCode, Instant createdAt, Instant updatedAt,
-                     Instant expiresAt, List<SectionView> sections) {
+                     Instant expiresAt, int revision, List<SectionView> sections) {
+        public DraftView(String draftId, String documentCode, String versionCode, String title,
+                         String status, String sourceType, String parserVersion, String contentHash,
+                         int characterCount, int sectionCount, int ignoredCount, boolean truncated,
+                         boolean stale, String errorCode, Instant createdAt, Instant updatedAt,
+                         Instant expiresAt, List<SectionView> sections) {
+            this(draftId, documentCode, versionCode, title, status, sourceType, parserVersion, contentHash,
+                    characterCount, sectionCount, ignoredCount, truncated, stale, errorCode, createdAt,
+                    updatedAt, expiresAt, 0, sections);
+        }
         public DraftView {
             sections = sections == null ? List.of() : List.copyOf(sections);
         }

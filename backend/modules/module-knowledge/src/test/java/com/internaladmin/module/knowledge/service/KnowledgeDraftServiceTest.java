@@ -11,8 +11,13 @@ import com.internaladmin.module.iam.api.IamActorDTO;
 import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.iam.api.ScopeMode;
 import com.internaladmin.module.knowledge.api.KnowledgeDraftApi;
+import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
+import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient;
+import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.RetrievalEmbedding;
+import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.SparseEntry;
 import com.internaladmin.module.knowledge.mapper.KnowledgeDraftMapper;
+import com.internaladmin.module.knowledge.mapper.KnowledgeMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -25,10 +30,15 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -37,6 +47,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class KnowledgeDraftServiceTest {
@@ -353,6 +364,387 @@ class KnowledgeDraftServiceTest {
         verify(files, times(1)).discard("asset-race-mismatch", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
     }
 
+    @Test
+    void publishEmbedsOutsideKnowledgeTransactionAndPublishesTrustedUserVersion() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        ControlledDocumentAsset asset = asset("asset-publish", "rules.md");
+        String markdown = "# 入库\n必须核对编码";
+        when(drafts.findOwned("draft-publish", 7L)).thenReturn(
+                draftWithStatus("draft-publish", "PREVIEW_READY", 0, normalizedHash(markdown)),
+                draftWithStatus("draft-publish", "PUBLISHING", 1, normalizedHash(markdown), "publish-1"),
+                draftWithStatus("draft-publish", "PUBLISHING", 1, normalizedHash(markdown), "publish-1"),
+                draftWithStatus("draft-publish", "PUBLISHING", 1, normalizedHash(markdown), "publish-1"),
+                draftWithStatus("draft-publish", "PUBLISHED", 2, normalizedHash(markdown)));
+        when(files.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                .thenReturn(new ControlledDocumentRead(asset, markdown.getBytes(StandardCharsets.UTF_8)));
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+        when(embedding.embedDocuments(any())).thenReturn(List.of(validEmbedding(1)));
+        when(drafts.claimForPublishing(eq("draft-publish"), eq(7L), eq(0), eq("publish-1"), any()))
+                .thenReturn(1);
+        when(drafts.markPublished(eq("draft-publish"), eq(7L), eq(1), eq("publish-1"), isNull(), any()))
+                .thenReturn(1);
+        when(mapper.findDocumentId("warehouse-rules")).thenReturn(null);
+        when(mapper.findVersion(anyString(), eq("v3"))).thenReturn(null);
+
+        KnowledgeDraftApi.DraftView view = publishService(files, drafts, knowledge, embedding, mapper)
+                .publish(7L, "draft-publish", new KnowledgeDraftApi.PublishRequest(0, "publish-1", true));
+
+        assertThat(view.status()).isEqualTo("PUBLISHED");
+        assertThat(view.sourceType()).isEqualTo("USER_UPLOAD");
+        assertThat(view.revision()).isEqualTo(2);
+        verify(embedding).embedDocuments(List.of("入库\n必须核对编码"));
+        verify(mapper).insertDocument(anyString(), eq("warehouse-rules"), eq("标题"), eq(false), any(), any());
+        verify(mapper).insertVersion(anyString(), anyString(), eq("v3"), anyString(),
+                eq(KnowledgeService.EMBEDDING_PROFILE), eq(1024), any(), eq("USER_UPLOAD"));
+        verify(mapper).insertVector(any(), eq("入库\n必须核对编码"), anyString(), any(), anyDouble(), any());
+        verify(mapper).activateVersion(anyString(), anyString(), any(), eq("标题"));
+        verify(files).retain("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
+    }
+
+    @Test
+    void freshPublishingClaimReturnsCurrentStatusWithoutStartingAnotherProviderCall() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        String markdown = "# 入库\n必须核对编码";
+        KnowledgeDraftMapper.DraftRow publishing = draftWithStatus("draft-in-progress", "PUBLISHING", 1,
+                normalizedHash(markdown), "first-request");
+        when(drafts.findOwned("draft-in-progress", 7L)).thenReturn(publishing);
+        when(drafts.findSections("draft-in-progress", 7L)).thenReturn(List.of());
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+
+        KnowledgeDraftApi.DraftView view = publishService(files, drafts, knowledge, embedding, mapper)
+                .publish(7L, "draft-in-progress", new KnowledgeDraftApi.PublishRequest(1, "first-request", true));
+
+        assertThat(view.status()).isEqualTo("PUBLISHING");
+        verifyNoInteractions(embedding, mapper, files);
+        verify(drafts, never()).claimForPublishing(anyString(), anyLong(), anyInt(), anyString(), any());
+        verify(drafts, never()).reclaimStalePublishing(anyString(), anyLong(), anyInt(), anyString(), any(), any());
+    }
+
+    @Test
+    void competingFreshPublishingRequestIsRejectedBeforeProvider() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        String markdown = "# 入库\n必须核对编码";
+        KnowledgeDraftMapper.DraftRow publishing = draftWithStatus("draft-in-progress-conflict", "PUBLISHING", 1,
+                normalizedHash(markdown), "first-request");
+        when(drafts.findOwned("draft-in-progress-conflict", 7L)).thenReturn(publishing);
+
+        assertThatThrownBy(() -> publishService(files, drafts, knowledge, embedding, mapper).publish(7L,
+                "draft-in-progress-conflict", new KnowledgeDraftApi.PublishRequest(1, "other-request", true)))
+                .hasMessageContaining("KNOWLEDGE_PUBLISH_CONFLICT");
+        verifyNoInteractions(files, knowledge, embedding, mapper);
+        verify(drafts, never()).claimForPublishing(anyString(), anyLong(), anyInt(), anyString(), any());
+    }
+
+    @Test
+    void stalePublishingClaimIsReclaimedWithFreshRevisionBeforeEmbedding() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        String markdown = "# 入库\n必须核对编码";
+        KnowledgeDraftMapper.DraftRow stale = withUpdatedAt(
+                draftWithStatus("draft-stale-publish", "PUBLISHING", 1, normalizedHash(markdown), "old-request"),
+                NOW.minusSeconds(601));
+        KnowledgeDraftMapper.DraftRow reclaimed = draftWithStatus("draft-stale-publish", "PUBLISHING", 2,
+                normalizedHash(markdown), "retry-request");
+        when(drafts.findOwned("draft-stale-publish", 7L)).thenReturn(stale, reclaimed, reclaimed);
+        when(files.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                .thenReturn(new ControlledDocumentRead(asset("asset-1", "rules.md"), markdown.getBytes(StandardCharsets.UTF_8)));
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+        when(drafts.reclaimStalePublishing(eq("draft-stale-publish"), eq(7L), eq(1), eq("retry-request"), any(), any()))
+                .thenReturn(1);
+        when(embedding.embedDocuments(any())).thenThrow(new IllegalStateException("provider unavailable"));
+        when(drafts.markPublishFailure(eq("draft-stale-publish"), eq(7L), eq(2), eq("retry-request"),
+                eq("AI_EMBEDDING_UNAVAILABLE"), any())).thenReturn(1);
+
+        assertThatThrownBy(() -> publishService(files, drafts, knowledge, embedding, mapper).publish(7L,
+                "draft-stale-publish", new KnowledgeDraftApi.PublishRequest(1, "retry-request", true)))
+                .hasMessageContaining("AI_EMBEDDING_UNAVAILABLE");
+        verify(drafts).reclaimStalePublishing(eq("draft-stale-publish"), eq(7L), eq(1), eq("retry-request"), any(), any());
+        verify(drafts, never()).claimForPublishing(anyString(), anyLong(), anyInt(), anyString(), any());
+        verify(embedding).embedDocuments(List.of("入库\n必须核对编码"));
+        verify(drafts).markPublishFailure(eq("draft-stale-publish"), eq(7L), eq(2), eq("retry-request"),
+                eq("AI_EMBEDDING_UNAVAILABLE"), any());
+    }
+
+    @Test
+    void completeActivePublicationIsReusedWithoutEmbedding() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        String markdown = "# 入库\n必须核对编码";
+        String contentHash = normalizedHash(markdown);
+        KnowledgeDraftMapper.DraftRow ready = draftWithStatusAndBase("draft-existing-publication", "PREVIEW_READY", 0,
+                contentHash, "v3", contentHash, null);
+        KnowledgeDraftMapper.DraftRow claimed = draftWithStatusAndBase("draft-existing-publication", "PUBLISHING", 1,
+                contentHash, "v3", contentHash, "publish-existing");
+        KnowledgeDraftMapper.DraftRow published = draftWithStatusAndBase("draft-existing-publication", "PUBLISHED", 2,
+                contentHash, "v3", contentHash, "publish-existing");
+        when(drafts.findOwned("draft-existing-publication", 7L)).thenReturn(ready, claimed, claimed, published);
+        ControlledDocumentAsset asset = asset("asset-1", "rules.md");
+        when(files.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                .thenReturn(new ControlledDocumentRead(asset, markdown.getBytes(StandardCharsets.UTF_8)));
+        KnowledgeQueryApi.Citation citation = new KnowledgeQueryApi.Citation("warehouse-rules", "标题", "v3", "入库", 1,
+                "# 入库\n\n必须核对编码", 1d, false, "knowledge://warehouse-rules/v3#1", NOW, NOW, "USER_UPLOAD");
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000)).thenReturn(
+                KnowledgeQueryApi.DocumentResult.found(
+                        new KnowledgeQueryApi.ActiveDocument("warehouse-rules", "标题", "v3", NOW, NOW, false,
+                                "USER_UPLOAD"), List.of(citation), NOW, false));
+        when(drafts.claimForPublishing(eq("draft-existing-publication"), eq(7L), eq(0), eq("publish-existing"), any()))
+                .thenReturn(1);
+        when(mapper.findDocumentId("warehouse-rules")).thenReturn("document-1");
+        when(mapper.findVersion("document-1", "v3")).thenReturn(new KnowledgeMapper.VersionRow("version-1",
+                contentHash, KnowledgeService.EMBEDDING_PROFILE, 1024, "USER_UPLOAD", "ACTIVE"));
+        when(mapper.countVectors("version-1")).thenReturn(1);
+        when(mapper.findVectorChunkNumbers("version-1")).thenReturn(Set.of(1));
+        when(mapper.findSparseChunkNumbers("version-1")).thenReturn(Set.of(1));
+        when(drafts.markPublished(eq("draft-existing-publication"), eq(7L), eq(1), eq("publish-existing"),
+                isNull(), any())).thenReturn(1);
+
+        KnowledgeDraftApi.DraftView view = publishService(files, drafts, knowledge, embedding, mapper)
+                .publish(7L, "draft-existing-publication",
+                        new KnowledgeDraftApi.PublishRequest(0, "publish-existing", true));
+
+        assertThat(view.status()).isEqualTo("PUBLISHED");
+        verifyNoInteractions(embedding);
+        verify(drafts).markPublished(eq("draft-existing-publication"), eq(7L), eq(1), eq("publish-existing"),
+                isNull(), any());
+        verify(mapper, never()).insertDocument(anyString(), anyString(), anyString(), anyBoolean(), any(), any());
+        verify(mapper, never()).insertVersion(anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyInt(), any(), anyString());
+        verify(mapper, never()).activateVersion(anyString(), anyString(), any(), anyString());
+    }
+
+    @Test
+    void embeddingFailureMarksPublishFailureAndDoesNotWriteKnowledgeVersion() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        String markdown = "# 入库\n必须核对编码";
+        when(drafts.findOwned("draft-failure", 7L)).thenReturn(
+                draftWithStatus("draft-failure", "PREVIEW_READY", 0, normalizedHash(markdown)),
+                draftWithStatus("draft-failure", "PUBLISHING", 1, normalizedHash(markdown), "publish-failure"),
+                draftWithStatus("draft-failure", "PUBLISHING", 1, normalizedHash(markdown), "publish-failure"));
+        ControlledDocumentAsset asset = asset("asset-publish-failure", "rules.md");
+        when(files.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                .thenReturn(new ControlledDocumentRead(asset, markdown.getBytes(StandardCharsets.UTF_8)));
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+        when(embedding.embedDocuments(any())).thenThrow(new IllegalStateException("provider shape"));
+        when(drafts.claimForPublishing(eq("draft-failure"), eq(7L), eq(0), eq("publish-failure"), any()))
+                .thenReturn(1);
+        when(drafts.markPublishFailure(eq("draft-failure"), eq(7L), eq(1), eq("publish-failure"),
+                eq("AI_EMBEDDING_UNAVAILABLE"), any())).thenReturn(1);
+
+        assertThatThrownBy(() -> publishService(files, drafts, knowledge, embedding, mapper).publish(7L,
+                "draft-failure", new KnowledgeDraftApi.PublishRequest(0, "publish-failure", true)))
+                .hasMessageContaining("AI_EMBEDDING_UNAVAILABLE");
+        verify(drafts).markPublishFailure(eq("draft-failure"), eq(7L), eq(1), eq("publish-failure"),
+                eq("AI_EMBEDDING_UNAVAILABLE"), any());
+        verifyNoKnowledgePublication(mapper);
+        verify(files, never()).retain(anyString(), anyLong(), any());
+    }
+
+    @Test
+    void secondEmbeddingBatchFailureWritesNoPublicationRows() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        StringBuilder source = new StringBuilder();
+        for (int index = 1; index <= 21; index++) source.append("# 规则").append(index).append("\n内容").append(index).append("\n");
+        String markdown = source.toString();
+        DocumentFileLimitSnapshot largeLimits = new DocumentFileLimitSnapshot(10_000_000, 100_000, 20_000, 100, 7, 30);
+        when(drafts.findOwned("draft-batch-failure", 7L)).thenReturn(
+                draftWithStatus("draft-batch-failure", "PREVIEW_READY", 0, normalizedHash(markdown, largeLimits)),
+                draftWithStatus("draft-batch-failure", "PUBLISHING", 1, normalizedHash(markdown, largeLimits),
+                        "publish-batch-failure"),
+                draftWithStatus("draft-batch-failure", "PUBLISHING", 1, normalizedHash(markdown, largeLimits),
+                        "publish-batch-failure"),
+                draftWithStatus("draft-batch-failure", "PUBLISHING", 1, normalizedHash(markdown, largeLimits),
+                        "publish-batch-failure"));
+        when(files.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                .thenReturn(new ControlledDocumentRead(asset("asset-1", "rules.md", largeLimits), markdown.getBytes(StandardCharsets.UTF_8)));
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+        int[] calls = {0};
+        when(embedding.embedDocuments(any())).thenAnswer(invocation -> {
+            if (calls[0]++ > 0) throw new IllegalStateException("second batch unavailable");
+            return java.util.stream.IntStream.range(0, 20).mapToObj(KnowledgeDraftServiceTest::validEmbedding).toList();
+        });
+        when(drafts.claimForPublishing(eq("draft-batch-failure"), eq(7L), eq(0), eq("publish-batch-failure"), any()))
+                .thenReturn(1);
+        when(drafts.markPublishFailure(eq("draft-batch-failure"), eq(7L), eq(1), eq("publish-batch-failure"),
+                eq("AI_EMBEDDING_UNAVAILABLE"), any())).thenReturn(1);
+
+        assertThatThrownBy(() -> publishService(files, drafts, knowledge, embedding, mapper).publish(7L,
+                "draft-batch-failure", new KnowledgeDraftApi.PublishRequest(0, "publish-batch-failure", true)))
+                .hasMessageContaining("AI_EMBEDDING_UNAVAILABLE");
+        assertThat(calls[0]).isEqualTo(2);
+        verify(drafts).markPublishFailure(eq("draft-batch-failure"), eq(7L), eq(1), eq("publish-batch-failure"),
+                eq("AI_EMBEDDING_UNAVAILABLE"), any());
+        verifyNoKnowledgePublication(mapper);
+        verify(files, never()).retain(anyString(), anyLong(), any());
+    }
+
+    @Test
+    void activeVersionChangeIsRejectedBeforeEmbedding() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        String markdown = "# 入库\n必须核对编码";
+        when(drafts.findOwned("draft-stale", 7L)).thenReturn(
+                draftWithBase("draft-stale", "v1", "old-hash", normalizedHash(markdown)));
+        ControlledDocumentAsset asset = asset("asset-stale", "rules.md");
+        when(files.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                .thenReturn(new ControlledDocumentRead(asset, markdown.getBytes(StandardCharsets.UTF_8)));
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000)).thenReturn(
+                KnowledgeQueryApi.DocumentResult.found(
+                        new KnowledgeQueryApi.ActiveDocument("warehouse-rules", "规则", "v2", NOW, NOW, true),
+                        List.of(new KnowledgeQueryApi.Citation("warehouse-rules", "规则", "v2", "入库", 1,
+                                "# 入库\n\n新内容", 1d, true, "knowledge://warehouse-rules/v2#1", NOW, NOW)), NOW, false));
+
+        assertThatThrownBy(() -> publishService(files, drafts, knowledge, embedding, mapper).publish(7L,
+                "draft-stale", new KnowledgeDraftApi.PublishRequest(0, "publish-stale", true)))
+                .hasMessageContaining("KNOWLEDGE_PUBLISH_ACTIVE_CHANGED");
+        verify(embedding, never()).embedDocuments(any());
+        verify(drafts).markNeedsRepreview("draft-stale", 7L, 0, "KNOWLEDGE_PUBLISH_ACTIVE_CHANGED");
+        verifyNoKnowledgePublication(mapper);
+    }
+
+    @Test
+    void stalePublishRevisionIsRejectedBeforeReadingSourceOrEmbedding() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        when(drafts.findOwned("draft-stale-revision", 7L)).thenReturn(
+                draftWithStatus("draft-stale-revision", "PREVIEW_READY", 3, "hash"));
+
+        assertThatThrownBy(() -> publishService(files, drafts, knowledge, embedding, mapper).publish(7L,
+                "draft-stale-revision", new KnowledgeDraftApi.PublishRequest(2, "publish-stale-revision", true)))
+                .hasMessageContaining("草稿修订已变化");
+        verifyNoInteractions(files, knowledge, embedding, mapper);
+    }
+
+    @Test
+    void alreadyPublishedDraftReturnsCurrentViewWithoutAnotherEmbeddingCall() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        when(drafts.findOwned("draft-done", 7L)).thenReturn(
+                draftWithStatus("draft-done", "PUBLISHED", 2, "hash"));
+        when(drafts.findSections("draft-done", 7L)).thenReturn(List.of());
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+
+        KnowledgeDraftApi.DraftView view = publishService(files, drafts, knowledge, embedding, mapper).publish(7L,
+                "draft-done", new KnowledgeDraftApi.PublishRequest(2, "publish-repeat", true));
+
+        assertThat(view.status()).isEqualTo("PUBLISHED");
+        verifyNoInteractions(embedding, mapper, files);
+    }
+
+    @Test
+    void retainFailureKeepsPublishedResultAndExposesSourceWarning() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        String markdown = "# 入库\n必须核对编码";
+        KnowledgeDraftMapper.DraftRow ready = draftWithStatus("draft-retain-warning", "PREVIEW_READY", 0,
+                normalizedHash(markdown));
+        KnowledgeDraftMapper.DraftRow publishing = draftWithStatus("draft-retain-warning", "PUBLISHING", 1,
+                normalizedHash(markdown), "publish-warning");
+        KnowledgeDraftMapper.DraftRow published = draftWithStatus("draft-retain-warning", "PUBLISHED", 2,
+                normalizedHash(markdown));
+        KnowledgeDraftMapper.DraftRow warned = new KnowledgeDraftMapper.DraftRow(published.draftId(),
+                published.documentCode(), published.versionCode(), published.title(), published.creatorUserId(),
+                published.fileAssetId(), published.sourceType(), published.status(), published.parserVersion(),
+                published.contentHash(), published.characterCount(), published.sectionCount(), published.ignoredCount(),
+                published.truncated(), published.baseActiveVersionCode(), published.baseActiveContentHash(),
+                "KNOWLEDGE_PUBLISH_SOURCE_RETENTION_WARNING", published.createdAt(), published.updatedAt(),
+                published.expiresAt(), published.revision());
+        when(drafts.findOwned("draft-retain-warning", 7L)).thenReturn(ready, publishing, publishing, publishing, published, warned);
+        when(files.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                .thenReturn(new ControlledDocumentRead(asset("asset-1", "rules.md"), markdown.getBytes(StandardCharsets.UTF_8)));
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+        when(embedding.embedDocuments(any())).thenReturn(List.of(validEmbedding(1)));
+        when(drafts.claimForPublishing(eq("draft-retain-warning"), eq(7L), eq(0), eq("publish-warning"), any()))
+                .thenReturn(1);
+        when(drafts.markPublished(eq("draft-retain-warning"), eq(7L), eq(1), eq("publish-warning"), isNull(), any()))
+                .thenReturn(1);
+        when(drafts.markSourceRetentionWarning("draft-retain-warning", 7L, 2,
+                "KNOWLEDGE_PUBLISH_SOURCE_RETENTION_WARNING")).thenReturn(1);
+        when(mapper.findDocumentId("warehouse-rules")).thenReturn(null);
+        when(mapper.findVersion(anyString(), eq("v3"))).thenReturn(null);
+        org.mockito.Mockito.doThrow(new IllegalStateException("retain unavailable"))
+                .when(files).retain("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
+
+        KnowledgeDraftApi.DraftView view = publishService(files, drafts, knowledge, embedding, mapper)
+                .publish(7L, "draft-retain-warning", new KnowledgeDraftApi.PublishRequest(0, "publish-warning", true));
+
+        assertThat(view.status()).isEqualTo("PUBLISHED");
+        assertThat(view.errorCode()).isEqualTo("KNOWLEDGE_PUBLISH_SOURCE_RETENTION_WARNING");
+        verify(drafts).markSourceRetentionWarning("draft-retain-warning", 7L, 2,
+                "KNOWLEDGE_PUBLISH_SOURCE_RETENTION_WARNING");
+    }
+
+    @Test
+    void publishedDraftDoesNotBecomeExpiredWhenOriginalDraftTtlHasPassed() {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        KnowledgeDraftMapper.DraftRow expiredPublished = draftWithStatus("draft-published-expired", "PUBLISHED", 2, "hash");
+        expiredPublished = new KnowledgeDraftMapper.DraftRow(expiredPublished.draftId(), expiredPublished.documentCode(),
+                expiredPublished.versionCode(), expiredPublished.title(), expiredPublished.creatorUserId(),
+                expiredPublished.fileAssetId(), expiredPublished.sourceType(), expiredPublished.status(),
+                expiredPublished.parserVersion(), expiredPublished.contentHash(), expiredPublished.characterCount(),
+                expiredPublished.sectionCount(), expiredPublished.ignoredCount(), expiredPublished.truncated(),
+                expiredPublished.baseActiveVersionCode(), expiredPublished.baseActiveContentHash(), expiredPublished.errorCode(),
+                expiredPublished.createdAt(), expiredPublished.updatedAt(), NOW.minusSeconds(1), expiredPublished.revision());
+        when(drafts.findOwned("draft-published-expired", 7L)).thenReturn(expiredPublished);
+        when(drafts.findSections("draft-published-expired", 7L)).thenReturn(List.of());
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+
+        KnowledgeDraftApi.DraftView view = publishService(files, drafts, knowledge, embedding, mapper).publish(7L,
+                "draft-published-expired", new KnowledgeDraftApi.PublishRequest(2, "publish-repeat", true));
+
+        assertThat(view.status()).isEqualTo("PUBLISHED");
+        verifyNoInteractions(embedding, mapper, files);
+    }
+
     private static KnowledgeDraftService service(ControlledDocumentFileApi files, KnowledgeDraftMapper mapper,
                                                   KnowledgeQueryApi knowledge) {
         IamActorApi actors = mock(IamActorApi.class);
@@ -362,10 +754,85 @@ class KnowledgeDraftServiceTest {
                 java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC), new KnowledgeDocumentParser());
     }
 
+    private static KnowledgeDraftService publishService(ControlledDocumentFileApi files, KnowledgeDraftMapper drafts,
+                                                         KnowledgeQueryApi knowledge,
+                                                         KnowledgeRetrievalEmbeddingClient embedding,
+                                                         KnowledgeMapper mapper) {
+        IamActorApi actors = mock(IamActorApi.class);
+        when(actors.resolve(anyLong())).thenReturn(new IamActorDTO(7L, 1L, ScopeMode.CURRENT_DEPARTMENT,
+                List.of(PermissionCodes.AI_KNOWLEDGE_MANAGE)));
+        AiProperties properties = new AiProperties();
+        properties.getEmbedding().getQwen().setDimensions(1024);
+        return new KnowledgeDraftService(files, knowledge, drafts, actors, new NoopTransactionManager(),
+                java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC), new KnowledgeDocumentParser(), embedding, mapper,
+                properties);
+    }
+
+    private static KnowledgeDraftMapper.DraftRow draftWithStatus(String id, String status, int revision, String hash) {
+        return draftWithStatus(id, status, revision, hash, null);
+    }
+
+    private static KnowledgeDraftMapper.DraftRow draftWithStatus(String id, String status, int revision, String hash,
+                                                                  String publishClientRequestId) {
+        KnowledgeDraftMapper.DraftRow draft = draft(id, "warehouse-rules", "v3", hash);
+        return new KnowledgeDraftMapper.DraftRow(draft.draftId(), draft.documentCode(), draft.versionCode(), draft.title(),
+                draft.creatorUserId(), draft.fileAssetId(), draft.sourceType(), status, draft.parserVersion(),
+                draft.contentHash(), draft.characterCount(), draft.sectionCount(), draft.ignoredCount(), draft.truncated(),
+                draft.baseActiveVersionCode(), draft.baseActiveContentHash(), draft.errorCode(), draft.createdAt(),
+                draft.updatedAt(), draft.expiresAt(), revision, publishClientRequestId);
+    }
+
+    private static KnowledgeDraftMapper.DraftRow draftWithStatusAndBase(String id, String status, int revision,
+                                                                          String hash, String baseVersion,
+                                                                          String baseHash, String publishRequestId) {
+        KnowledgeDraftMapper.DraftRow draft = draftWithBase(id, baseVersion, baseHash, hash);
+        return new KnowledgeDraftMapper.DraftRow(draft.draftId(), draft.documentCode(), draft.versionCode(), draft.title(),
+                draft.creatorUserId(), draft.fileAssetId(), draft.sourceType(), status, draft.parserVersion(),
+                draft.contentHash(), draft.characterCount(), draft.sectionCount(), draft.ignoredCount(), draft.truncated(),
+                draft.baseActiveVersionCode(), draft.baseActiveContentHash(), draft.errorCode(), draft.createdAt(),
+                draft.updatedAt(), draft.expiresAt(), revision, publishRequestId);
+    }
+
+    private static KnowledgeDraftMapper.DraftRow withUpdatedAt(KnowledgeDraftMapper.DraftRow draft, Instant updatedAt) {
+        return new KnowledgeDraftMapper.DraftRow(draft.draftId(), draft.documentCode(), draft.versionCode(), draft.title(),
+                draft.creatorUserId(), draft.fileAssetId(), draft.sourceType(), draft.status(), draft.parserVersion(),
+                draft.contentHash(), draft.characterCount(), draft.sectionCount(), draft.ignoredCount(), draft.truncated(),
+                draft.baseActiveVersionCode(), draft.baseActiveContentHash(), draft.errorCode(), draft.createdAt(),
+                updatedAt, draft.expiresAt(), draft.revision(), draft.publishClientRequestId());
+    }
+
+    private static KnowledgeDraftMapper.DraftRow draftWithBase(String id, String baseVersion, String baseHash,
+                                                                 String hash) {
+        KnowledgeDraftMapper.DraftRow draft = draftWithStatus(id, "PREVIEW_READY", 0, hash);
+        return new KnowledgeDraftMapper.DraftRow(draft.draftId(), draft.documentCode(), draft.versionCode(), draft.title(),
+                draft.creatorUserId(), draft.fileAssetId(), draft.sourceType(), draft.status(), draft.parserVersion(),
+                draft.contentHash(), draft.characterCount(), draft.sectionCount(), draft.ignoredCount(), draft.truncated(),
+                baseVersion, baseHash, draft.errorCode(), draft.createdAt(), draft.updatedAt(), draft.expiresAt(),
+                draft.revision());
+    }
+
+    private static RetrievalEmbedding validEmbedding(int index) {
+        float[] dense = new float[1024];
+        dense[index] = 1f;
+        return new RetrievalEmbedding(dense, List.of(new SparseEntry(index, 1f)));
+    }
+
+    private static void verifyNoKnowledgePublication(KnowledgeMapper mapper) {
+        verify(mapper, never()).insertDocument(anyString(), anyString(), anyString(), anyBoolean(), any(), any());
+        verify(mapper, never()).insertVersion(anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyInt(), any(), anyString());
+        verify(mapper, never()).insertVector(any(), anyString(), anyString(), any(), anyDouble(), any());
+        verify(mapper, never()).activateVersion(anyString(), anyString(), any(), anyString());
+    }
+
     private static ControlledDocumentAsset asset(String id, String filename) {
+        return asset(id, filename, LIMITS);
+    }
+
+    private static ControlledDocumentAsset asset(String id, String filename, DocumentFileLimitSnapshot limits) {
         LocalDateTime now = LocalDateTime.ofInstant(NOW, java.time.ZoneOffset.UTC);
         return new ControlledDocumentAsset(id, filename, "text/markdown", 10, "hash", 7L,
-                DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT, DocumentFileStatus.AVAILABLE, now, now.plusDays(7), LIMITS);
+                DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT, DocumentFileStatus.AVAILABLE, now, now.plusDays(7), limits);
     }
 
     private static KnowledgeDraftMapper.DraftRow draft(String id, String document, String version, String hash) {
@@ -375,8 +842,12 @@ class KnowledgeDraftServiceTest {
     }
 
     private static String normalizedHash(String markdown) {
+        return normalizedHash(markdown, LIMITS);
+    }
+
+    private static String normalizedHash(String markdown, DocumentFileLimitSnapshot limits) {
         KnowledgeDocumentParser.ParsedDocument parsed = new KnowledgeDocumentParser().parse(
-                markdown.getBytes(StandardCharsets.UTF_8), "rules.md", LIMITS);
+                markdown.getBytes(StandardCharsets.UTF_8), "rules.md", limits);
         StringBuilder value = new StringBuilder();
         for (KnowledgeDocumentParser.Section section : parsed.sections()) {
             value.append(section.sectionNo()).append('\u0000').append(section.sectionKey()).append('\u0000')

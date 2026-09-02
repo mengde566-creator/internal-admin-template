@@ -16,12 +16,12 @@ public interface KnowledgeQueryApi {
         return query(queryText, limit);
     }
 
-    /** Read the current synthetic catalogue without embedding or similarity search. */
+    /** Read the current trusted active catalogue without embedding or similarity search. */
     default CatalogResult listActiveDocuments() {
         return CatalogResult.unavailable(Instant.now());
     }
 
-    /** Read one server-selected active document in bounded chunk order. */
+    /** Read one server-selected trusted active document in bounded chunk order. */
     default DocumentResult readActiveDocument(String documentCode, int maxChunks, int maxChars) {
         return DocumentResult.unavailable(Instant.now());
     }
@@ -54,11 +54,22 @@ public interface KnowledgeQueryApi {
 
     record Citation(String documentCode, String title, String versionCode, String section,
                     int chunkNo, String content, double score, boolean synthetic, String sourceRef,
-                    Instant versionUpdatedAt, Instant indexedAt) {
+                    Instant versionUpdatedAt, Instant indexedAt, String sourceType) {
+        public Citation(String documentCode, String title, String versionCode, String section,
+                        int chunkNo, String content, double score, boolean synthetic, String sourceRef,
+                        Instant versionUpdatedAt, Instant indexedAt) {
+            this(documentCode, title, versionCode, section, chunkNo, content, score, synthetic, sourceRef,
+                    versionUpdatedAt, indexedAt, synthetic ? "SYNTHETIC" : "USER_UPLOAD");
+        }
     }
 
     record ActiveDocument(String documentCode, String title, String versionCode,
-                          Instant versionUpdatedAt, Instant indexedAt, boolean synthetic) {
+                          Instant versionUpdatedAt, Instant indexedAt, boolean synthetic, String sourceType) {
+        public ActiveDocument(String documentCode, String title, String versionCode,
+                              Instant versionUpdatedAt, Instant indexedAt, boolean synthetic) {
+            this(documentCode, title, versionCode, versionUpdatedAt, indexedAt, synthetic,
+                    synthetic ? "SYNTHETIC" : "USER_UPLOAD");
+        }
     }
 
     record CatalogResult(Status status, List<ActiveDocument> documents, Instant queriedAt,

@@ -4,8 +4,9 @@ import type { components } from '../../../generated/api-schema'
 export type KnowledgeDraft = components['schemas']['DraftView']
 export type KnowledgeDraftPage = components['schemas']['DraftPage']
 export type KnowledgeDraftSection = components['schemas']['SectionView']
+export type KnowledgeDraftPublishRequest = components['schemas']['PublishRequest']
 
-const statuses = new Set(['PREVIEW_READY', 'STALE', 'FAILED', 'EXPIRED', 'CANCELLED'])
+const statuses = new Set(['PREVIEW_READY', 'STALE', 'FAILED', 'EXPIRED', 'CANCELLED', 'PUBLISHING', 'PUBLISHED', 'PUBLISH_FAILED', 'NEEDS_REPREVIEW'])
 const changes = new Set(['ADDED', 'MODIFIED', 'REMOVED', 'UNCHANGED'])
 
 export async function submitKnowledgeDraft(file: File, request: {
@@ -30,6 +31,12 @@ export async function fetchKnowledgeDraft(draftId: string) {
   return withData(response, parseDraft)
 }
 
+export async function publishKnowledgeDraft(draftId: string, request: KnowledgeDraftPublishRequest) {
+  const response = await http.post<ApiResponse<KnowledgeDraft>>(
+    `/api/ai/knowledge/drafts/${encodeURIComponent(draftId)}/publish`, request)
+  return withData(response, parseDraft)
+}
+
 export function downloadKnowledgeDraftSource(draftId: string) {
   return http.get<Blob>(`/api/ai/knowledge/drafts/${encodeURIComponent(draftId)}/source`, { responseType: 'blob' })
 }
@@ -45,6 +52,7 @@ function parseDraft(value: unknown): KnowledgeDraft {
     || typeof draft.versionCode !== 'string' || typeof draft.title !== 'string'
     || typeof draft.status !== 'string' || !statuses.has(draft.status)
     || draft.sourceType !== 'USER_UPLOAD' || typeof draft.contentHash !== 'string'
+    || typeof draft.revision !== 'number' || !Number.isInteger(draft.revision) || draft.revision < 0
     || !Array.isArray(draft.sections)) throw new Error('知识草稿响应不符合契约')
   draft.sections.forEach((section) => {
     if (typeof section.sectionNo !== 'number' || typeof section.sectionKey !== 'string'

@@ -163,6 +163,7 @@ class NoDatabaseOpenApiContractTest {
         assertTrue(specification.path("paths").has("/api/ai/knowledge/drafts"));
         assertTrue(specification.path("paths").has("/api/ai/knowledge/drafts/{draftId}"));
         assertTrue(specification.path("paths").has("/api/ai/knowledge/drafts/{draftId}/source"));
+        assertTrue(specification.path("paths").has("/api/ai/knowledge/drafts/{draftId}/publish"));
 
         writeRawSpecification(json);
     }

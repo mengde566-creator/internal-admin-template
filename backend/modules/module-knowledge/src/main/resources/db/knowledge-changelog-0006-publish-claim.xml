@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-09-02-0006-add-knowledge-publish-claim" author="template" dbms="postgresql">
+        <addColumn schemaName="ai_knowledge" tableName="ai_knowledge_draft">
+            <column name="publish_client_request_id" type="VARCHAR(128)"/>
+        </addColumn>
+    </changeSet>
+</databaseChangeLog>

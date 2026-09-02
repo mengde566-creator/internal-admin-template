@@ -99,8 +99,8 @@ class KnowledgePostgresIT {
             AiProperties properties = new AiProperties();
             properties.getEmbedding().getQwen().setDimensions(1024);
             PlatformTransactionManager tx = new DataSourceTransactionManager(dataSource);
-            KnowledgeService service = new KnowledgeService(properties, embedding,
-                    new KnowledgeMapper(jdbc), tx);
+            KnowledgeMapper knowledgeMapper = new KnowledgeMapper(jdbc);
+            KnowledgeService service = new KnowledgeService(properties, embedding, knowledgeMapper, tx);
 
             KnowledgeService.ImportSummary first = service.importSyntheticSamples();
             assertThat(first.chunksCreated()).isGreaterThan(20);
@@ -112,6 +112,10 @@ class KnowledgePostgresIT {
             assertThat(embeddingCalls).hasValue(callsAfterFirst);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_knowledge.ai_knowledge_version WHERE status='ACTIVE'", Integer.class))
                     .isEqualTo(4);
+            assertThat(jdbc.queryForObject("SELECT v.source_type FROM ai_knowledge.ai_knowledge_version v "
+                            + "JOIN ai_knowledge.ai_knowledge_document d ON d.id=v.document_id "
+                            + "WHERE d.document_code='warehouse-rules' AND v.status='ACTIVE'", String.class))
+                    .isEqualTo("SYNTHETIC");
             assertThat(jdbc.queryForObject("SELECT d.title FROM ai_knowledge.ai_knowledge_document d "
                             + "JOIN ai_knowledge.ai_knowledge_version v ON v.document_id=d.id "
                             + "WHERE d.document_code='warehouse-rules' AND v.status='ACTIVE'", String.class))
@@ -123,8 +127,38 @@ class KnowledgePostgresIT {
                     assertThat(citation.title()).isEqualTo("仓储操作规则（合成测试资料，当前版）"));
             assertThat(service.query("客户折扣", 5).status())
                     .isEqualTo(com.internaladmin.module.knowledge.api.KnowledgeQueryApi.Status.NO_EVIDENCE);
+            String userDocumentId = UUID.randomUUID().toString();
+            String userVersionId = UUID.randomUUID().toString();
+            knowledgeMapper.insertDocument(userDocumentId, "user-rules", "用户规则（当前版）", false,
+                    java.sql.Timestamp.valueOf("2026-09-02 00:00:00"), java.sql.Timestamp.valueOf("2026-09-02 00:00:00"));
+            knowledgeMapper.insertVersion(userVersionId, userDocumentId, "v1", "user-hash",
+                    KnowledgeService.EMBEDDING_PROFILE, 1024,
+                    java.sql.Timestamp.valueOf("2026-09-02 00:00:00"), "USER_UPLOAD");
+            float[] userVector = new float[1024];
+            userVector[2] = 1f;
+            knowledgeMapper.insertVector(UUID.randomUUID(), "用户规则正文", "{\"versionId\":\"" + userVersionId
+                    + "\",\"chunkNo\":1}", userVector, 1d, List.of(new SparseEntry(2, 1f)));
+            knowledgeMapper.activateVersion(userDocumentId, userVersionId,
+                    java.sql.Timestamp.valueOf("2026-09-02 00:00:00"), "用户规则（当前版）");
+            assertThat(service.listActiveDocuments().documents()).anySatisfy(document -> {
+                if ("user-rules".equals(document.documentCode())) {
+                    assertThat(document.synthetic()).isFalse();
+                    assertThat(document.sourceType()).isEqualTo("USER_UPLOAD");
+                }
+            });
+            assertThat(service.readActiveDocument("user-rules", 20, 20_000).citations())
+                    .singleElement().satisfies(citation -> {
+                        assertThat(citation.synthetic()).isFalse();
+                        assertThat(citation.sourceType()).isEqualTo("USER_UPLOAD");
+                    });
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM knowledge_databasechangelog", Integer.class))
-                    .isGreaterThanOrEqualTo(4);
+                    .isEqualTo(6);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns "
+                    + "WHERE table_schema='ai_knowledge' AND table_name='ai_knowledge_draft' "
+                    + "AND column_name='publish_client_request_id'", Integer.class)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM pg_indexes "
+                    + "WHERE schemaname='ai_knowledge' AND indexname LIKE '%publish_claim%'", Integer.class))
+                    .isZero();
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables "
                     + "WHERE table_schema='ai_knowledge' AND table_name='ai_knowledge_sparse_vector'", Integer.class))
                     .isEqualTo(1);
@@ -143,6 +177,13 @@ class KnowledgePostgresIT {
                     "PREVIEW_READY", KnowledgeDocumentParser.PARSER_VERSION, "draft-hash", 10, 2, 1, false,
                     "v2", "active-hash", null, draftNow, draftNow, draftNow.plusSeconds(3600));
             assertThat(draftMapper.insertDraft(draft, "request-pg-1")).isEqualTo(1);
+            java.sql.Timestamp claimAt = java.sql.Timestamp.valueOf("2026-09-02 00:10:00");
+            assertThat(draftMapper.claimForPublishing("draft-pg-1", 42L, 0, "publish-pg-1", claimAt))
+                    .isEqualTo(1);
+            assertThat(draftMapper.claimForPublishing("draft-pg-1", 42L, 0, "publish-pg-2", claimAt))
+                    .isZero();
+            assertThat(draftMapper.findByRequest(42L, "request-pg-1").publishClientRequestId())
+                    .isEqualTo("publish-pg-1");
             List<KnowledgeDraftMapper.SectionRow> draftSections = List.of(
                     new KnowledgeDraftMapper.SectionRow("draft-section-pg-1", null, 1, "rule", "规则",
                             "必须核对", 4, "section-hash-1", "ADDED"),

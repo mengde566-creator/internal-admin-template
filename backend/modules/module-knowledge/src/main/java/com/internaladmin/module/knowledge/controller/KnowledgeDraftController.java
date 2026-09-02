@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -69,6 +70,13 @@ public class KnowledgeDraftController {
         headers.setContentType(MediaType.parseMediaType(file.contentType()));
         headers.setContentDisposition(ContentDisposition.attachment().filename(file.filename(), StandardCharsets.UTF_8).build());
         return ResponseEntity.ok().headers(headers).body(file.content());
+    }
+
+    /** 二次确认并发布当前草稿；发布期间不接受正文或向量等客户端字段。 */
+    @PostMapping("/{draftId}/publish")
+    public ApiResponse<KnowledgeDraftApi.DraftView> publish(
+            @PathVariable String draftId, @RequestBody KnowledgeDraftApi.PublishRequest request) {
+        return ApiResponse.ok(service.publish(user(), draftId, request));
     }
 
     private static Long user() {

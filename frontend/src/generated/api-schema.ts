@@ -116,6 +116,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ai/knowledge/drafts/{draftId}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["publish_1"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ai/knowledge/drafts/{draftId}/source": {
         parameters: {
             query?: never;
@@ -1514,6 +1530,8 @@ export interface components {
             ignoredCount?: number;
             parserVersion?: string;
             /** Format: int32 */
+            revision?: number;
+            /** Format: int32 */
             sectionCount?: number;
             sections?: components["schemas"]["SectionView"][];
             sourceType?: string;
@@ -1817,6 +1835,12 @@ export interface components {
         PermissionOptionDTO: {
             code?: string;
             name?: string;
+        };
+        PublishRequest: {
+            clientRequestId?: string;
+            confirmed?: boolean;
+            /** Format: int32 */
+            revision?: number;
         };
         RoleListDTO: {
             code?: string;
@@ -2331,6 +2355,32 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseDraftView"];
+                };
+            };
+        };
+    };
+    publish_1: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                draftId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishRequest"];
+            };
+        };
         responses: {
             /** @description OK */
             200: {

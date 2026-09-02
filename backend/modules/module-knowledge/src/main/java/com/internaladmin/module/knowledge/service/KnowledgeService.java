@@ -27,7 +27,7 @@ import java.util.UUID;
 import java.util.LinkedHashMap;
 import java.util.Objects;
 
-/** Fixed synthetic knowledge import and active-version filtered vector search. */
+/** Fixed synthetic import and trusted active-version filtered vector search. */
 @Service
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
 public class KnowledgeService implements KnowledgeQueryApi {
@@ -188,7 +188,7 @@ public class KnowledgeService implements KnowledgeQueryApi {
     }
 
     /**
-     * Search current ACTIVE synthetic chunks with one bounded SQL cosine query.
+     * Search current ACTIVE trusted chunks with one bounded sparse-then-dense query.
      *
      * @param query query text
      * @param limit maximum result count, bounded to 5
@@ -236,9 +236,9 @@ public class KnowledgeService implements KnowledgeQueryApi {
                 }
                 citations.add(new KnowledgeQueryApi.Citation(row.documentCode(), row.title(),
                         row.versionCode(), sectionTitle(row.content()), row.chunkNo(),
-                        row.content(), row.score(), true,
+                        row.content(), row.score(), row.synthetic(),
                         "knowledge://" + row.documentCode() + "/" + row.versionCode() + "#" + row.chunkNo(),
-                        row.versionUpdatedAt(), row.indexedAt()));
+                        row.versionUpdatedAt(), row.indexedAt(), row.sourceType()));
                 if (citations.size() == stageTopK) {
                     break;
                 }
@@ -259,12 +259,13 @@ public class KnowledgeService implements KnowledgeQueryApi {
         try {
             List<KnowledgeMapper.ActiveDocumentRow> rows = mapper.findActiveDocuments(20, EMBEDDING_PROFILE, 1024);
             List<KnowledgeQueryApi.ActiveDocument> documents = rows == null ? List.of() : rows.stream()
-                    .filter(row -> row != null && row.synthetic() && row.documentCode() != null
+                    .filter(row -> row != null && row.sourceType() != null
+                            && Set.of("SYNTHETIC", "USER_UPLOAD").contains(row.sourceType()) && row.documentCode() != null
                             && !row.documentCode().isBlank() && row.title() != null && !row.title().isBlank()
                             && row.versionCode() != null && !row.versionCode().isBlank()
                             && row.versionUpdatedAt() != null && row.indexedAt() != null)
                     .map(row -> new KnowledgeQueryApi.ActiveDocument(row.documentCode(), row.title(), row.versionCode(),
-                            row.versionUpdatedAt(), row.indexedAt(), true)).toList();
+                            row.versionUpdatedAt(), row.indexedAt(), row.synthetic(), row.sourceType())).toList();
             if (documents.isEmpty()) {
                 return KnowledgeQueryApi.CatalogResult.noEvidence(queriedAt);
             }
@@ -306,12 +307,14 @@ public class KnowledgeService implements KnowledgeQueryApi {
                 if (!Objects.equals(first.versionCode(), row.versionCode())
                         || !Objects.equals(first.title(), row.title())
                         || !Objects.equals(first.versionUpdatedAt(), row.versionUpdatedAt())
-                        || !Objects.equals(first.indexedAt(), row.indexedAt())) {
+                        || !Objects.equals(first.indexedAt(), row.indexedAt())
+                        || !Objects.equals(first.sourceType(), row.sourceType())) {
                     return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
                 }
             }
             KnowledgeQueryApi.ActiveDocument document = new KnowledgeQueryApi.ActiveDocument(
-                    first.documentCode(), first.title(), first.versionCode(), first.versionUpdatedAt(), first.indexedAt(), true);
+                    first.documentCode(), first.title(), first.versionCode(), first.versionUpdatedAt(), first.indexedAt(),
+                    first.synthetic(), first.sourceType());
             List<KnowledgeQueryApi.Citation> citations = new ArrayList<>();
             int usedChars = 0;
             boolean truncated = rows.size() > maxChunks;
@@ -324,9 +327,9 @@ public class KnowledgeService implements KnowledgeQueryApi {
                 }
                 usedChars = next;
                 citations.add(new KnowledgeQueryApi.Citation(row.documentCode(), row.title(), row.versionCode(),
-                        sectionTitle(row.content()), row.chunkNo(), row.content(), 1d, true,
+                        sectionTitle(row.content()), row.chunkNo(), row.content(), 1d, row.synthetic(),
                         "knowledge://" + row.documentCode() + "/" + row.versionCode() + "#" + row.chunkNo(),
-                        row.versionUpdatedAt(), row.indexedAt()));
+                        row.versionUpdatedAt(), row.indexedAt(), row.sourceType()));
             }
             if (citations.isEmpty()) return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
             return KnowledgeQueryApi.DocumentResult.found(document, citations, queriedAt, truncated);
@@ -386,7 +389,7 @@ public class KnowledgeService implements KnowledgeQueryApi {
             } else {
                 versionId = UUID.randomUUID().toString();
                 mapper.insertVersion(versionId, documentId, first.chunk.versionCode(), contentHash,
-                        EMBEDDING_PROFILE, properties.getEmbedding().getQwen().getDimensions(), timestampNow());
+                        EMBEDDING_PROFILE, properties.getEmbedding().getQwen().getDimensions(), timestampNow(), "SYNTHETIC");
                 versionsCreated++;
             }
             if (first.chunk.desiredStatus().equals("ACTIVE")) {
@@ -427,6 +430,7 @@ public class KnowledgeService implements KnowledgeQueryApi {
                     "chunkNo", chunk.chunkNo(),
                     "contentHash", sha256(chunk.content()),
                     "synthetic", true,
+                    "sourceType", "SYNTHETIC",
                     "chunkerVersion", CHUNKER_VERSION));
         } catch (Exception exception) {
             throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_CONFLICT: 向量元数据无法序列化", exception);

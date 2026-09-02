@@ -24,7 +24,7 @@ public class KnowledgeDraftMapper {
     public DraftRow findByRequest(long creatorUserId, String clientRequestId) {
         List<DraftRow> rows = jdbc.query("SELECT id,document_code,version_code,title,creator_user_id,file_asset_id,"
                         + "source_type,status,parser_version,content_hash,character_count,section_count,ignored_count,"
-                        + "truncated,base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at "
+                        + "truncated,base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at,revision,publish_client_request_id "
                         + "FROM ai_knowledge.ai_knowledge_draft WHERE creator_user_id=? AND client_request_id=?",
                 this::mapDraft, creatorUserId, clientRequestId);
         return rows.isEmpty() ? null : rows.getFirst();
@@ -34,7 +34,7 @@ public class KnowledgeDraftMapper {
     public DraftRow findByDocumentVersion(String documentCode, String versionCode) {
         List<DraftRow> rows = jdbc.query("SELECT id,document_code,version_code,title,creator_user_id,file_asset_id,"
                         + "source_type,status,parser_version,content_hash,character_count,section_count,ignored_count,"
-                        + "truncated,base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at "
+                        + "truncated,base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at,revision,publish_client_request_id "
                         + "FROM ai_knowledge.ai_knowledge_draft WHERE document_code=? AND version_code=? "
                         + "ORDER BY created_at DESC LIMIT 1", this::mapDraft, documentCode, versionCode);
         return rows.isEmpty() ? null : rows.getFirst();
@@ -45,13 +45,74 @@ public class KnowledgeDraftMapper {
         return jdbc.update("INSERT INTO ai_knowledge.ai_knowledge_draft "
                         + "(id,document_code,version_code,title,creator_user_id,file_asset_id,client_request_id,source_type,status,"
                         + "parser_version,content_hash,character_count,section_count,ignored_count,truncated,"
-                        + "base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at) "
-                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at,revision) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 draft.draftId(), draft.documentCode(), draft.versionCode(), draft.title(), draft.creatorUserId(),
                 draft.fileAssetId(), clientRequestId, draft.sourceType(), draft.status(), draft.parserVersion(),
                 draft.contentHash(), draft.characterCount(), draft.sectionCount(), draft.ignoredCount(), draft.truncated(),
                 draft.baseActiveVersionCode(), draft.baseActiveContentHash(), draft.errorCode(),
-                Timestamp.from(draft.createdAt()), Timestamp.from(draft.updatedAt()), Timestamp.from(draft.expiresAt()));
+                Timestamp.from(draft.createdAt()), Timestamp.from(draft.updatedAt()), Timestamp.from(draft.expiresAt()), draft.revision());
+    }
+
+    /** Claim a draft before any provider call, persisting the sole publishing request owner. */
+    public int claimForPublishing(String draftId, long creatorUserId, int expectedRevision,
+                                  String publishClientRequestId, Timestamp claimedAt) {
+        return jdbc.update("UPDATE ai_knowledge.ai_knowledge_draft SET status='PUBLISHING',revision=revision+1,"
+                        + "publish_client_request_id=?,error_code=NULL,updated_at=? "
+                        + "WHERE id=? AND creator_user_id=? AND revision=? AND status IN ('PREVIEW_READY','PUBLISH_FAILED') "
+                        + "AND expires_at > ?",
+                publishClientRequestId, claimedAt, draftId, creatorUserId, expectedRevision, claimedAt);
+    }
+
+    /** Reclaim an interrupted publishing draft only after its explicit stale threshold. */
+    public int reclaimStalePublishing(String draftId, long creatorUserId, int expectedRevision,
+                                      String publishClientRequestId, Timestamp staleBefore, Timestamp claimedAt) {
+        return jdbc.update("UPDATE ai_knowledge.ai_knowledge_draft SET status='PUBLISHING',revision=revision+1,"
+                        + "publish_client_request_id=?,error_code=NULL,updated_at=? "
+                        + "WHERE id=? AND creator_user_id=? AND revision=? AND status='PUBLISHING' AND updated_at<=? "
+                        + "AND expires_at > ?",
+                publishClientRequestId, claimedAt, draftId, creatorUserId, expectedRevision, staleBefore, claimedAt);
+    }
+
+    /** Record a retryable publication failure only for the claimed publishing request. */
+    public int markPublishFailure(String draftId, long creatorUserId, int expectedRevision,
+                                  String publishClientRequestId, String errorCode, Timestamp updatedAt) {
+        return jdbc.update("UPDATE ai_knowledge.ai_knowledge_draft SET status='PUBLISH_FAILED',error_code=?,"
+                        + "revision=revision+1,updated_at=? "
+                        + "WHERE id=? AND creator_user_id=? AND revision=? AND status='PUBLISHING' "
+                        + "AND publish_client_request_id=?",
+                errorCode, updatedAt, draftId, creatorUserId, expectedRevision, publishClientRequestId);
+    }
+
+    public int markNeedsRepreview(String draftId, long creatorUserId, int expectedRevision, String errorCode) {
+        return jdbc.update("UPDATE ai_knowledge.ai_knowledge_draft SET status='NEEDS_REPREVIEW',error_code=?,revision=revision+1,updated_at=? "
+                        + "WHERE id=? AND creator_user_id=? AND revision=? AND status IN ('PREVIEW_READY','PUBLISH_FAILED')",
+                errorCode, Timestamp.from(Instant.now()), draftId, creatorUserId, expectedRevision);
+    }
+
+    /** Move the claimed request to PUBLISHED without overwriting another request. */
+    public int markPublished(String draftId, long creatorUserId, int expectedRevision,
+                             String publishClientRequestId, String errorCode, Timestamp updatedAt) {
+        return jdbc.update("UPDATE ai_knowledge.ai_knowledge_draft SET status='PUBLISHED',error_code=?,revision=revision+1,updated_at=? "
+                        + "WHERE id=? AND creator_user_id=? AND revision=? AND status='PUBLISHING' "
+                        + "AND publish_client_request_id=?",
+                errorCode, updatedAt, draftId, creatorUserId, expectedRevision, publishClientRequestId);
+    }
+
+    /** Mark a claimed publication as needing a new preview after a concurrent ACTIVE change. */
+    public int markPublishingNeedsRepreview(String draftId, long creatorUserId, int expectedRevision,
+                                            String publishClientRequestId, String errorCode, Timestamp updatedAt) {
+        return jdbc.update("UPDATE ai_knowledge.ai_knowledge_draft SET status='NEEDS_REPREVIEW',error_code=?,"
+                        + "revision=revision+1,updated_at=? "
+                        + "WHERE id=? AND creator_user_id=? AND revision=? AND status='PUBLISHING' "
+                        + "AND publish_client_request_id=?",
+                errorCode, updatedAt, draftId, creatorUserId, expectedRevision, publishClientRequestId);
+    }
+
+    public int markSourceRetentionWarning(String draftId, long creatorUserId, int expectedRevision, String errorCode) {
+        return jdbc.update("UPDATE ai_knowledge.ai_knowledge_draft SET error_code=?,updated_at=? "
+                        + "WHERE id=? AND creator_user_id=? AND revision=? AND status='PUBLISHED'",
+                errorCode, Timestamp.from(Instant.now()), draftId, creatorUserId, expectedRevision);
     }
 
     /** 使用真正的 JDBC batch 写入章节，不在循环内逐条提交。 */
@@ -96,7 +157,7 @@ public class KnowledgeDraftMapper {
     public List<DraftRow> page(long creatorUserId, int offset, int size) {
         return jdbc.query("SELECT id,document_code,version_code,title,creator_user_id,file_asset_id,source_type,status,"
                         + "parser_version,content_hash,character_count,section_count,ignored_count,truncated,"
-                        + "base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at "
+                        + "base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at,revision,publish_client_request_id "
                         + "FROM ai_knowledge.ai_knowledge_draft WHERE creator_user_id=? "
                         + "ORDER BY created_at DESC,id LIMIT ? OFFSET ?", this::mapDraft, creatorUserId, size, offset);
     }
@@ -110,7 +171,7 @@ public class KnowledgeDraftMapper {
     public DraftRow findOwned(String draftId, long creatorUserId) {
         List<DraftRow> rows = jdbc.query("SELECT id,document_code,version_code,title,creator_user_id,file_asset_id,"
                         + "source_type,status,parser_version,content_hash,character_count,section_count,ignored_count,"
-                        + "truncated,base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at "
+                        + "truncated,base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at,revision,publish_client_request_id "
                         + "FROM ai_knowledge.ai_knowledge_draft WHERE id=? AND creator_user_id=?",
                 this::mapDraft, draftId, creatorUserId);
         return rows.isEmpty() ? null : rows.getFirst();
@@ -124,7 +185,8 @@ public class KnowledgeDraftMapper {
                 rs.getInt("ignored_count"), rs.getBoolean("truncated"), rs.getString("base_active_version_code"),
                 rs.getString("base_active_content_hash"), rs.getString("error_code"),
                 rs.getTimestamp("created_at").toInstant(), rs.getTimestamp("updated_at").toInstant(),
-                rs.getTimestamp("expires_at").toInstant());
+                rs.getTimestamp("expires_at").toInstant(), rs.getInt("revision"),
+                rs.getString("publish_client_request_id"));
     }
 
     public record DraftRow(String draftId, String documentCode, String versionCode, String title,
@@ -132,7 +194,29 @@ public class KnowledgeDraftMapper {
                            String parserVersion, String contentHash, int characterCount, int sectionCount,
                            int ignoredCount, boolean truncated, String baseActiveVersionCode,
                            String baseActiveContentHash, String errorCode, Instant createdAt, Instant updatedAt,
-                           Instant expiresAt) {
+                           Instant expiresAt, int revision, String publishClientRequestId) {
+        public DraftRow(String draftId, String documentCode, String versionCode, String title,
+                        long creatorUserId, String fileAssetId, String sourceType, String status,
+                        String parserVersion, String contentHash, int characterCount, int sectionCount,
+                        int ignoredCount, boolean truncated, String baseActiveVersionCode,
+                        String baseActiveContentHash, String errorCode, Instant createdAt, Instant updatedAt,
+                        Instant expiresAt, int revision) {
+            this(draftId, documentCode, versionCode, title, creatorUserId, fileAssetId, sourceType, status,
+                    parserVersion, contentHash, characterCount, sectionCount, ignoredCount, truncated,
+                    baseActiveVersionCode, baseActiveContentHash, errorCode, createdAt, updatedAt, expiresAt,
+                    revision, null);
+        }
+
+        public DraftRow(String draftId, String documentCode, String versionCode, String title,
+                        long creatorUserId, String fileAssetId, String sourceType, String status,
+                        String parserVersion, String contentHash, int characterCount, int sectionCount,
+                        int ignoredCount, boolean truncated, String baseActiveVersionCode,
+                        String baseActiveContentHash, String errorCode, Instant createdAt, Instant updatedAt,
+                        Instant expiresAt) {
+            this(draftId, documentCode, versionCode, title, creatorUserId, fileAssetId, sourceType, status,
+                    parserVersion, contentHash, characterCount, sectionCount, ignoredCount, truncated,
+                    baseActiveVersionCode, baseActiveContentHash, errorCode, createdAt, updatedAt, expiresAt, 0, null);
+        }
     }
 
     public record SectionRow(String sectionId, String draftId, int sectionNo, String sectionKey,
