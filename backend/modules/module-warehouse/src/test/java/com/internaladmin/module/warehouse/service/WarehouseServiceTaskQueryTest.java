@@ -21,10 +21,13 @@ import com.internaladmin.module.warehouse.model.dto.StockPageRowDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseLocationCandidateRowDTO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseMovementTaskRowDTO;
 import com.internaladmin.module.warehouse.model.entity.ItemDO;
+import com.internaladmin.module.warehouse.model.entity.StockBalanceDO;
+import com.internaladmin.module.warehouse.model.entity.InventoryMovementDO;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.util.List;
+import java.util.Set;
 import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -366,6 +369,27 @@ class WarehouseServiceTaskQueryTest {
         assertEquals("ITEM-6204", result.rows().get(0).itemCode());
         verify(movements).selectTaskMovementsByItemId(any(LocalDateTime.class), eq(11L), eq("%%"), eq("%%"),
                 eq(3L), eq(21));
+    }
+
+    @Test
+    void itemImportFactsUseTheSameGlobalDisableAndUnitRulesInTwoBoundedReads() {
+        ItemMapper items = mock(ItemMapper.class);
+        LocationMapper locations = mock(LocationMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        InventoryMovementMapper movements = mock(InventoryMovementMapper.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        StockBalanceDO stock = new StockBalanceDO(); stock.setItemId(11L); stock.setQuantityScaled(3L);
+        InventoryMovementDO movement = new InventoryMovementDO(); movement.setItemId(12L);
+        when(balances.selectByItemIds(eq(Set.of(11L, 12L)))).thenReturn(List.of(stock));
+        when(movements.selectByItemIds(eq(Set.of(11L, 12L)))).thenReturn(List.of(movement));
+
+        WarehouseService service = service(items, iam, locations, balances, movements);
+        WarehouseService.ItemImportFacts facts = service.inspectItemImportFacts(Set.of(11L, 12L));
+
+        assertEquals(Set.of(11L), facts.positiveStockItemIds());
+        assertEquals(Set.of(12L), facts.movementItemIds());
+        verify(balances).selectByItemIds(eq(Set.of(11L, 12L)));
+        verify(movements).selectByItemIds(eq(Set.of(11L, 12L)));
     }
 
     private ItemDO item(Long id, String code, String name) {

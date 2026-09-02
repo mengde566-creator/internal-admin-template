@@ -11,7 +11,7 @@
 - 存储根为 `app.storage-root`（默认 `./data/uploads`），数据库只存 `yyyyMMdd/UUID.ext` 相对路径。
 - JPEG/PNG 由 JDK ImageIO、WebP 由锁定的 TwelveMonkeys ImageIO 3.14.0 完整解码；客户端 MIME、文件名和扩展名只能做一致性校验。
 - 实际字节数不超过 10MB、单边不超过 8192、总像素不超过 40,000,000，且只允许单帧。
-- 顺序必须是：受控临时文件 → 格式/资源/完整解码/单帧校验 → 在业务事务内登记 `STAGING` 元数据 → 原子移动最终文件 → 同一事务切换 `AVAILABLE`。读取只接受 `AVAILABLE`；提交回滚由事务同步补偿最终文件，非事务测试路径同步删除元数据和文件，任何补偿失败必须可诊断。
+- 顺序必须是：受控临时文件 → 格式/资源/完整解码/单帧校验 → 在业务事务内登记 `STAGING` 元数据 → 原子移动最终文件 → 同一事务切换 `AVAILABLE`。读取只接受 `AVAILABLE`；提交回滚由事务同步补偿最终文件，非事务测试路径同步删除元数据和文件，任何补偿失败必须可诊断并保留不可消费的 `REJECTED` 标记；清理仅按到期时间有界处理稳定的 `AVAILABLE`/`EXPIRED`/`REJECTED` 资产。
 - 最终 Content-Type 和扩展名只从解码结果派生；禁止使用用户路径或文件名作为存储事实。
 - 当前不承诺剥离全部 Exif、ICC、XMP、尾随数据或全部 polyglot 风险；内容净化属于独立需求。
 - 受控文档只接受 xlsx、csv、docx、md、txt；实际容器、UTF-8、OOXML XML、展开资源、公式、宏、OLE、外部关系和控制字符在保存前校验。文档通过 `ControlledDocumentFileApi` 以服务端生成键落盘，数据库只存相对路径和创建时限制快照；无扫描服务，不能宣称病毒安全。

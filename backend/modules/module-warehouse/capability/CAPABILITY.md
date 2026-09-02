@@ -6,6 +6,10 @@
 
 提供物品、仓库、库位、精确库存余额、入库/出库/调拨/盘点和只读查询 API；不提供 AI 写操作、审批、订单、批次、成本、撤销或删除流水。
 
+06B additionally owns the controlled item-import preview flow: standard template generation, bounded current-item export, safe xlsx/csv analysis, six-category impact classification, owner-scoped preview jobs and revision-safe cancellation. It never writes `wh_item`; confirmation and batch mutation are 06C responsibilities. Item master data is global in the current warehouse contract: `warehouse:master:manage` is the complete item scope, while department scope applies to warehouse/location facts. Preview constraints reuse `WarehouseService.inspectItemImportFacts`: non-zero stock blocks disable and any existing movement blocks base-unit changes.
+
+Import jobs return immediately in `RECEIVED`/`ANALYZING` and use a single bounded in-process worker. User list/detail reads are side-effect free. An interrupted `RECEIVED` or stale `ANALYZING` job is recovered only when its owner explicitly requests reanalysis; the service rechecks current IAM permission, TTL, owner/purpose and file availability, then uses a revision CAS before enqueueing exactly one analysis. Queue pressure returns a claim to `RECEIVED` so the owner can retry explicitly. The worker re-resolves the creator's current IAM actor before reading the asset and before business-fact queries; revoked users produce `IMPORT_PERMISSION_REVOKED` without file/fact reads. Preview rows and their summary are committed in one transaction using bounded multi-row inserts. The source asset remains an unconfirmed 06A asset with the job's captured TTL while analysis/preview is usable; cancellation and analysis failure perform one observable `ControlledDocumentFileApi.discard`, retaining the job-to-asset reference if release fails. Automatic scheduling, global recovery, physical cleanup and release retries belong to 06F. Export is an explicitly bounded synchronous CSV response (no result asset is created), and its filter matches the current item-page keyword semantics; formula-like values are prefixed safely after leading whitespace/control characters are considered.
+
 ## 2. 特有约束
 
 - 数量外部为十进制字符串，内部为四位缩放 BIGINT；超过四位、缩放溢出、加减溢出均拒绝。
@@ -23,7 +27,7 @@
 
 ## 5. 依赖与组合
 
-依赖 platform-kernel/web/data/security、module-iam、module-audit；app-server 装配 Mapper 与 Liquibase。IAM 通过 `DepartmentReferenceChecker` 调用本模块检查启用仓库引用。
+依赖 platform-kernel/web/data/security、module-iam、module-audit 和 module-file 的受控文件公开 API；app-server 装配 Mapper 与 Liquibase。IAM 通过 `DepartmentReferenceChecker` 调用本模块检查启用仓库引用。
 
 ## 6. 装配与裁剪
 

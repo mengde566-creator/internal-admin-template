@@ -507,7 +507,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["list_1"];
+        get: operations["list_2"];
         put?: never;
         post?: never;
         delete?: never;
@@ -590,6 +590,134 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["inbound"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/warehouse/item-imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_1"];
+        put?: never;
+        post: operations["submit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/warehouse/item-imports/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/warehouse/item-imports/template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["template"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/warehouse/item-imports/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/warehouse/item-imports/{jobId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/warehouse/item-imports/{jobId}/reanalyze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reanalyze"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/warehouse/item-imports/{jobId}/rows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["rows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/warehouse/item-imports/{jobId}/rows/{sourceRowNo}/exclude": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["excludeRow"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1032,6 +1160,18 @@ export interface components {
             message?: string;
             success?: boolean;
         };
+        ApiResponseListWarehouseItemImportJobView: {
+            code?: string;
+            data?: components["schemas"]["WarehouseItemImportJobView"][] | null;
+            message?: string;
+            success?: boolean;
+        };
+        ApiResponseListWarehouseItemImportRowView: {
+            code?: string;
+            data?: components["schemas"]["WarehouseItemImportRowView"][] | null;
+            message?: string;
+            success?: boolean;
+        };
         ApiResponseLoginResultDTO: {
             code?: string;
             data?: components["schemas"]["LoginResultDTO"] | null;
@@ -1089,6 +1229,12 @@ export interface components {
         ApiResponseVoid: {
             code?: string;
             data?: null;
+            message?: string;
+            success?: boolean;
+        };
+        ApiResponseWarehouseItemImportJobView: {
+            code?: string;
+            data?: components["schemas"]["WarehouseItemImportJobView"] | null;
             message?: string;
             success?: boolean;
         };
@@ -1746,6 +1892,47 @@ export interface components {
             /** Format: int64 */
             departmentId: number;
             name: string;
+        };
+        WarehouseItemImportJobView: {
+            /** Format: int32 */
+            conflictCount?: number;
+            /** Format: int32 */
+            createCount?: number;
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: int32 */
+            disableCount?: number;
+            errorCode?: string;
+            /** Format: date-time */
+            expiresAt?: string;
+            /** Format: int32 */
+            invalidCount?: number;
+            jobId?: string;
+            reanalyzeAvailable?: boolean;
+            /** Format: int32 */
+            revision?: number;
+            status?: string;
+            /** Format: int32 */
+            totalRows?: number;
+            /** Format: int32 */
+            unchangedCount?: number;
+            /** Format: int32 */
+            updateCount?: number;
+        };
+        WarehouseItemImportRowView: {
+            baseUnit?: string;
+            category?: string;
+            code?: string;
+            currentEnabled?: boolean;
+            /** Format: int32 */
+            currentVersion?: number;
+            enabled?: boolean;
+            errorCode?: string;
+            excluded?: boolean;
+            name?: string;
+            recommendation?: string;
+            /** Format: int32 */
+            sourceRowNo?: number;
         };
         WarehouseUpdateDTO: {
             /** Format: int64 */
@@ -2656,7 +2843,7 @@ export interface operations {
             };
         };
     };
-    list_1: {
+    list_2: {
         parameters: {
             query?: never;
             header?: never;
@@ -2860,6 +3047,221 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseObject"];
+                };
+            };
+        };
+    };
+    list_1: {
+        parameters: {
+            query?: {
+                page?: number;
+                size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseListWarehouseItemImportJobView"];
+                };
+            };
+        };
+    };
+    submit: {
+        parameters: {
+            query: {
+                clientRequestId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseWarehouseItemImportJobView"];
+                };
+            };
+        };
+    };
+    export: {
+        parameters: {
+            query?: {
+                keyword?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    template: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseWarehouseItemImportJobView"];
+                };
+            };
+        };
+    };
+    cancel: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseWarehouseItemImportJobView"];
+                };
+            };
+        };
+    };
+    reanalyze: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseWarehouseItemImportJobView"];
+                };
+            };
+        };
+    };
+    rows: {
+        parameters: {
+            query?: {
+                category?: "CREATE" | "UPDATE" | "DISABLE" | "UNCHANGED" | "INVALID" | "CONFLICT";
+                page?: number;
+                size?: number;
+            };
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseListWarehouseItemImportRowView"];
+                };
+            };
+        };
+    };
+    excludeRow: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                jobId: string;
+                sourceRowNo: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseWarehouseItemImportJobView"];
                 };
             };
         };

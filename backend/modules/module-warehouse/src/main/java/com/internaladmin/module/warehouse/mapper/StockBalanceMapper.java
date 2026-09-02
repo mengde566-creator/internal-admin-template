@@ -9,9 +9,12 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
+import java.util.Collection;
 
 @Mapper
 public interface StockBalanceMapper extends BaseMapper<StockBalanceDO> {
+    @Select({"<script>", "SELECT id, location_id, item_id, quantity_scaled, version, updated_at FROM wh_stock_balance WHERE item_id IN", "<foreach collection='itemIds' item='itemId' open='(' separator=',' close=')'>#{itemId}</foreach>", "</script>"})
+    List<StockBalanceDO> selectByItemIds(@Param("itemIds") Collection<Long> itemIds);
     @Select({"<script>",
             "SELECT item_id AS itemId, item_code AS itemCode, item_name AS itemName, base_unit AS baseUnit, " +
                     "warehouse_id AS warehouseId, warehouse_code AS warehouseCode, warehouse_name AS warehouseName, " +

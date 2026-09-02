@@ -281,6 +281,39 @@ public class ControlledDocumentFileService implements ControlledDocumentFileApi 
         }
     }
 
+    @Override
+    public void discard(String assetId, Long ownerId, DocumentFilePurpose purpose) {
+        ControlledDocumentAssetDO asset = assetMapper.selectById(assetId);
+        // Release is intentionally idempotent: once a trusted caller has
+        // discarded an asset, a later bounded job-cleanup retry may see the
+        // metadata already gone. No readable data is exposed by treating that
+        // terminal absence as success.
+        if (asset == null) return;
+        if (ownerId == null || !ownerId.equals(asset.getOwnerId())
+                || purpose == null || !purpose.name().equals(asset.getPurpose())) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "受控文件不存在或已失效");
+        }
+        if (!DocumentFileStatus.REJECTED.name().equals(asset.getStatus())) {
+            asset.setStatus(DocumentFileStatus.REJECTED.name());
+            if (assetMapper.updateById(asset) != 1) {
+                throw new BusinessException(ErrorCode.INTERNAL_ERROR, "受控文件释放状态登记失败，请稍后诊断");
+            }
+        }
+        Path file = storageRoot.resolve(asset.getRelativePath()).normalize();
+        if (!file.startsWith(storageRoot)) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "受控文件存储位置无效");
+        }
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException e) {
+            LOGGER.error("受控文件释放删除失败 assetId={} relativePath={}", assetId, asset.getRelativePath(), e);
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "受控文件释放失败，请稍后诊断");
+        }
+        if (assetMapper.deleteById(assetId) != 1) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "受控文件释放元数据清理失败，请稍后诊断");
+        }
+    }
+
     /**
      * 有界清理过期文档资产。
      *
@@ -288,7 +321,7 @@ public class ControlledDocumentFileService implements ControlledDocumentFileApi 
      *
      * <p>执行链路（共 4 步）：</p>
      * 1. 校验当前时间和批次上限；
-     * 2. 使用分页查询取得本模块少量 retained=false 且 expiresAt 已到期的记录；
+     * 2. 使用分页查询取得本模块少量 retained=false 且 expiresAt 已到期的 AVAILABLE、EXPIRED 或 REJECTED 记录；
      * 3. 先删除物理文件，成功后删除对应元数据；
      * 4. 任何失败都抛出可诊断错误，不把未清理结果报告为成功。</p>
      *
@@ -306,10 +339,16 @@ public class ControlledDocumentFileService implements ControlledDocumentFileApi 
         assetMapper.selectPage(page, new LambdaQueryWrapper<ControlledDocumentAssetDO>()
                 .le(ControlledDocumentAssetDO::getExpiresAt, now)
                 .eq(ControlledDocumentAssetDO::getRetained, false)
-                .in(ControlledDocumentAssetDO::getStatus, DocumentFileStatus.AVAILABLE.name(), DocumentFileStatus.EXPIRED.name())
+                .in(ControlledDocumentAssetDO::getStatus, DocumentFileStatus.AVAILABLE.name(),
+                        DocumentFileStatus.EXPIRED.name(), DocumentFileStatus.REJECTED.name())
                 .orderByAsc(ControlledDocumentAssetDO::getExpiresAt));
         int deleted = 0;
         for (ControlledDocumentAssetDO asset : page.getRecords()) {
+            // Keep the visibility boundary defensive even if a mapper implementation returns a stale row.
+            if (!Set.of(DocumentFileStatus.AVAILABLE.name(), DocumentFileStatus.EXPIRED.name(),
+                    DocumentFileStatus.REJECTED.name()).contains(asset.getStatus())) {
+                continue;
+            }
             Path file = storageRoot.resolve(asset.getRelativePath()).normalize();
             if (!file.startsWith(storageRoot)) {
                 throw new BusinessException(ErrorCode.INTERNAL_ERROR, "受控文件存储位置无效");

@@ -3,6 +3,11 @@ package com.internaladmin.app;
 import com.internaladmin.module.file.api.ControlledDocumentFileApi;
 import com.internaladmin.module.file.api.ControlledDocumentStoreRequest;
 import com.internaladmin.module.file.api.DocumentFilePurpose;
+import com.internaladmin.module.file.api.ControlledDocumentAsset;
+import com.internaladmin.module.warehouse.mapper.WarehouseItemImportJobMapper;
+import com.internaladmin.module.warehouse.mapper.WarehouseItemImportRowMapper;
+import com.internaladmin.module.warehouse.service.WarehouseItemImportService;
+import com.internaladmin.module.warehouse.model.entity.WarehouseItemImportJobDO;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,6 +26,8 @@ import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.time.LocalDateTime;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -40,6 +47,15 @@ class ControlledDocumentLiquibaseTest {
 
     @Autowired
     private PlatformTransactionManager transactionManager;
+
+    @Autowired
+    private WarehouseItemImportJobMapper importJobs;
+
+    @Autowired
+    private WarehouseItemImportRowMapper importRows;
+
+    @Autowired
+    private WarehouseItemImportService importService;
 
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
@@ -72,6 +88,12 @@ class ControlledDocumentLiquibaseTest {
         assertTrue(columns.containsAll(Set.of("asset_id", "owner_id", "purpose", "status", "relative_path",
                 "max_file_bytes", "max_spreadsheet_rows", "max_document_characters", "max_document_chunks",
                 "unconfirmed_retention_days", "result_retention_days")));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wh_item_import_job'", Integer.class));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wh_item_import_row'", Integer.class));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM pragma_table_info('wh_item_import_row') WHERE name='excluded'", Integer.class));
+        assertEquals(2, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE id IN ('2026-09-01-0001-create-item-import-preview','2026-09-01-0002-add-item-import-row-excluded')", Integer.class),
+                "06B只登记作业/行表和excluded两份变更集");
+        assertEquals(0, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE id LIKE '%cleanup%'", Integer.class));
         assertEquals(6, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM system_config WHERE param_key LIKE 'file_import.%'", Integer.class));
     }
 
@@ -96,6 +118,50 @@ class ControlledDocumentLiquibaseTest {
 
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM file_document_asset WHERE status='AVAILABLE'", Integer.class));
         assertEquals(1, regularFileCount(), "外层回滚不得留下只有文件的孤儿");
+    }
+
+    @Test
+    void springServiceExplicitReanalyzeClaimsPersistedReceivedJob() throws Exception {
+        Long adminId = jdbcTemplate.queryForObject("SELECT id FROM iam_user WHERE username='admin'", Long.class);
+        String csv = "物品编码,物品名称,基本单位,启用状态\nRECOVERY-1,恢复测试,件,启用\n";
+        ControlledDocumentAsset asset = documentFiles.store(new ControlledDocumentStoreRequest(
+                adminId, DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT, "recovery.csv", "text/csv",
+                new ByteArrayInputStream(csv.getBytes(StandardCharsets.UTF_8))));
+        LocalDateTime now = LocalDateTime.now();
+        WarehouseItemImportJobDO job = new WarehouseItemImportJobDO();
+        job.setJobId(UUID.randomUUID().toString());
+        job.setClientRequestId("spring-recovery-" + UUID.randomUUID());
+        job.setCreatorUserId(adminId);
+        job.setFileAssetId(asset.assetId());
+        job.setFileSha256(asset.sha256());
+        job.setStatus("RECEIVED");
+        job.setRevision(0);
+        job.setCreatedAt(now);
+        job.setUpdatedAt(now);
+        job.setExpiresAt(now.plusMinutes(10));
+        job.setTotalRows(0);
+        job.setCreateCount(0); job.setUpdateCount(0); job.setDisableCount(0);
+        job.setUnchangedCount(0); job.setInvalidCount(0); job.setConflictCount(0);
+        assertEquals(1, importJobs.insert(job));
+
+        var queued = importService.reanalyze(adminId, job.getJobId(), 0);
+        assertTrue(Set.of("ANALYZING", "PREVIEW_READY", "NEEDS_ATTENTION").contains(queued.status()));
+
+        String status = null;
+        for (int i = 0; i < 100; i++) {
+            status = jdbcTemplate.queryForObject("SELECT status FROM wh_item_import_job WHERE job_id=?", String.class, job.getJobId());
+            if ("PREVIEW_READY".equals(status) || "NEEDS_ATTENTION".equals(status) || "ANALYSIS_FAILED".equals(status)) break;
+            Thread.sleep(20);
+        }
+        assertEquals("PREVIEW_READY", status);
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM wh_item_import_row WHERE job_id=?", Integer.class, job.getJobId()));
+
+        // This integration test owns the persisted fixture. Remove it through
+        // the same public file release contract so other methods in this shared
+        // test database remain order-independent.
+        documentFiles.discard(asset.assetId(), adminId, DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT);
+        importRows.deleteByJobId(job.getJobId());
+        importJobs.deleteById(job.getJobId());
     }
 
     private int regularFileCount() throws IOException {

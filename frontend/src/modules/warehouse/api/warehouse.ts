@@ -37,3 +37,17 @@ export function submitInbound(payload: InventoryRequest) { return http.post('/ap
 export function submitOutbound(payload: InventoryRequest) { return http.post('/api/warehouse/outbound', payload) }
 export function submitTransfer(payload: InventoryRequest) { return http.post('/api/warehouse/transfer', payload) }
 export function submitStocktake(payload: InventoryRequest) { return http.post('/api/warehouse/stocktake', payload) }
+
+type ImportJob = components['schemas']['WarehouseItemImportJobView']
+type ImportRow = components['schemas']['WarehouseItemImportRowView']
+export type WarehouseItemImportJob = Required<ImportJob>
+export type WarehouseItemImportRow = Required<ImportRow>
+export function downloadItemTemplate() { return http.get<Blob>('/api/warehouse/item-imports/template', { responseType: 'blob' }) }
+export function exportWarehouseItems(keyword?: string) { return http.get<Blob>('/api/warehouse/item-imports/export', { params: keyword ? { keyword } : {}, responseType: 'blob' }) }
+export function submitItemImport(file: File, clientRequestId: string) { const form = new FormData(); form.append('file', file); form.append('clientRequestId', clientRequestId); return http.post<ApiResponse<WarehouseItemImportJob>>('/api/warehouse/item-imports', form) }
+export function fetchItemImports(page = 1, size = 20) { return http.get<ApiResponse<WarehouseItemImportJob[]>>('/api/warehouse/item-imports', { params: { page, size } }) }
+export function fetchItemImport(jobId: string) { return http.get<ApiResponse<WarehouseItemImportJob>>(`/api/warehouse/item-imports/${jobId}`) }
+export function fetchItemImportRows(jobId: string, category?: string, page = 1, size = 50) { return http.get<ApiResponse<WarehouseItemImportRow[]>>(`/api/warehouse/item-imports/${jobId}/rows`, { params: { ...(category ? { category } : {}), page, size } }) }
+export function reanalyzeItemImport(jobId: string, revision: number) { return http.post<ApiResponse<WarehouseItemImportJob>>(`/api/warehouse/item-imports/${jobId}/reanalyze`, null, { params: { revision } }) }
+export function excludeItemImportRow(jobId: string, sourceRowNo: number, revision: number) { return http.post<ApiResponse<WarehouseItemImportJob>>(`/api/warehouse/item-imports/${jobId}/rows/${sourceRowNo}/exclude`, null, { params: { revision } }) }
+export function cancelItemImport(jobId: string, revision: number) { return http.post<ApiResponse<WarehouseItemImportJob>>(`/api/warehouse/item-imports/${jobId}/cancel`, null, { params: { revision } }) }

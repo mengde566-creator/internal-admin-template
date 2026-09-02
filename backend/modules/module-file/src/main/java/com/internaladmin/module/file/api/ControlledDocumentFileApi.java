@@ -19,6 +19,12 @@ public interface ControlledDocumentFileApi {
     /** 将资产标记为业务保留，避免未确认/结果清理任务删除它。 */
     void retain(String assetId, Long ownerId, DocumentFilePurpose purpose);
 
+    /**
+     * 释放尚未绑定到业务作业的资产；实现必须保留不可消费的失败标记，
+     * 且允许受信清理重试（已释放/已不存在资产按幂等成功处理）。
+     */
+    void discard(String assetId, Long ownerId, DocumentFilePurpose purpose);
+
     /** 有界删除本模块拥有且已过期、未保留的文档资产。 */
     int cleanupExpired(LocalDateTime now, int batchSize);
 }

@@ -2,11 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Edit, Plus, Refresh, Search, SwitchButton } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
-import { createItem, fetchWarehouseItems, updateItem, type Item } from '../api/warehouse'
+import { useAuthStore } from '../../auth/store/auth'
+import { createItem, fetchWarehouseItems, updateItem, downloadItemTemplate, exportWarehouseItems, submitItemImport, fetchItemImports, fetchItemImport, fetchItemImportRows, reanalyzeItemImport, excludeItemImportRow, cancelItemImport, type Item, type WarehouseItemImportJob, type WarehouseItemImportRow } from '../api/warehouse'
 import { messageOf } from '../composables/useWarehouseReferences'
 
 const router = useRouter()
 const route = useRoute()
+const auth = useAuthStore()
+const canManageItems = computed(() => auth.hasPermission('warehouse:master:manage'))
 const items = ref<Item[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -15,6 +18,15 @@ const focusItemId = computed(() => String(route?.query?.item ?? ''))
 const drawerOpen = ref(false)
 const editing = ref(false)
 const form = ref({ id: '', code: '', name: '', baseUnit: '', enabled: true, version: 0 })
+const importFile = ref<File | null>(null)
+const importJob = ref<WarehouseItemImportJob | null>(null)
+const importJobs = ref<WarehouseItemImportJob[]>([])
+const importRows = ref<WarehouseItemImportRow[]>([])
+const importCategory = ref<string | undefined>(undefined)
+const importPage = ref(1)
+const importLoading = ref(false)
+const importError = ref('')
+const importInput = ref<HTMLInputElement | null>(null)
 
 const tableWrapperRef = ref<HTMLElement | null>(null)
 const canFixAction = ref(false)
@@ -63,6 +75,62 @@ async function save() {
 async function toggle(item: Item) {
   try { await updateItem(item.id, { name: item.name, baseUnit: item.baseUnit, version: item.version, enabled: !item.enabled }); await load() } catch (cause: any) { error.value = messageOf(cause, '数据已被其他人更新，请刷新后重新操作') }
 }
+function saveBlob(blob: Blob, name: string) { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url) }
+async function downloadTemplate() { try { saveBlob((await downloadItemTemplate()).data, '物品导入模板.xlsx') } catch (cause: any) { importError.value = messageOf(cause, '模板下载失败') } }
+async function exportItems() { try { saveBlob((await exportWarehouseItems(keyword.value || undefined)).data, '物品数据.csv') } catch (cause: any) { importError.value = messageOf(cause, '导出失败，请缩小筛选范围') } }
+function chooseFile(event: Event) { importFile.value = (event.target as HTMLInputElement).files?.[0] ?? null }
+async function uploadImport() { if (!importFile.value) { importError.value = '请选择 xlsx 或 csv 文件'; return }; importLoading.value = true; importError.value = ''; try { const result = await submitItemImport(importFile.value, crypto.randomUUID()); importJob.value = result.data.data; importJobs.value = [importJob.value, ...importJobs.value.filter((j) => j.jobId !== importJob.value?.jobId)]; await waitForImportTerminal(importJob.value.jobId); importFile.value = null; if (importInput.value) importInput.value.value = '' } catch (cause: any) { importError.value = messageOf(cause, '文件分析失败，请检查格式后重试') } finally { importLoading.value = false } }
+async function reanalyzeImport() {
+  if (!importJob.value?.reanalyzeAvailable) return
+  importError.value = ''
+  try {
+    const latest = (await reanalyzeItemImport(importJob.value.jobId, importJob.value.revision)).data.data
+    importJob.value = latest
+    importJobs.value = importJobs.value.map((job) => job.jobId === latest.jobId ? latest : job)
+    await waitForImportTerminal(latest.jobId)
+  } catch (cause: any) {
+    importError.value = messageOf(cause, '当前作业不能重新分析，请刷新后重试')
+  }
+}
+async function waitForImportTerminal(jobId: string) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const latest = (await fetchItemImport(jobId)).data.data
+    importJob.value = latest
+    importJobs.value = importJobs.value.map((j) => j.jobId === latest.jobId ? latest : j)
+    if (!['RECEIVED', 'ANALYZING'].includes(latest.status)) { importRows.value = []; importRows.value = await rowsFor(latest); return }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  importRows.value = []
+}
+async function rowsFor(job: WarehouseItemImportJob) {
+  if (!['PREVIEW_READY', 'NEEDS_ATTENTION'].includes(job.status)) return []
+  try {
+    return (await fetchItemImportRows(job.jobId, importCategory.value, importPage.value, 50)).data.data
+  } catch (cause: any) {
+    importRows.value = []
+    importError.value = messageOf(cause, '预览明细加载失败，请重试')
+    throw cause
+  }
+}
+async function excludeRow(row: WarehouseItemImportRow) {
+  if (!importJob.value || row.excluded) return
+  try {
+    importJob.value = (await excludeItemImportRow(importJob.value.jobId, row.sourceRowNo, importJob.value.revision)).data.data
+    importRows.value = await rowsFor(importJob.value)
+  } catch (cause: any) { importError.value = messageOf(cause, '异常行状态已变化，请刷新后重试') }
+}
+async function cancelImport() {
+  if (!importJob.value || !['RECEIVED', 'ANALYZING', 'PREVIEW_READY', 'NEEDS_ATTENTION'].includes(importJob.value.status)) return
+  try {
+    importJob.value = (await cancelItemImport(importJob.value.jobId, importJob.value.revision)).data.data
+    importJobs.value = importJobs.value.map((job) => job.jobId === importJob.value?.jobId ? importJob.value! : job)
+    importRows.value = []
+  } catch (cause: any) { importError.value = messageOf(cause, '作业状态已变化，请刷新后重试') }
+}
+async function selectImport(jobId: string) { try { importRows.value = []; importJob.value = (await fetchItemImport(jobId)).data.data; importRows.value = await rowsFor(importJob.value) } catch (cause: any) { importError.value = messageOf(cause, '导入作业加载失败') } }
+async function refreshImports() { try { const list = (await fetchItemImports()).data.data; importJobs.value = list; importJob.value = list[0] ?? null; importRows.value = []; importRows.value = importJob.value ? await rowsFor(importJob.value) : [] } catch (cause: any) { importRows.value = []; importError.value = messageOf(cause, '导入作业加载失败') } }
+async function changeImportCategory(category?: string) { importCategory.value = category || undefined; importPage.value = 1; if (importJob.value) { try { importRows.value = await rowsFor(importJob.value) } catch { /* rowsFor exposes the error and clears stale rows. */ } } }
+async function changeImportPage(delta: number) { const next = importPage.value + delta; if (next < 1 || !importJob.value) return; importPage.value = next; try { importRows.value = await rowsFor(importJob.value) } catch { /* rowsFor exposes the error and clears stale rows. */ } }
 onMounted(async () => {
   checkFixAction()
   if (typeof ResizeObserver !== 'undefined' && tableWrapperRef.value) {
@@ -73,6 +141,7 @@ onMounted(async () => {
   }
   window.addEventListener('resize', checkFixAction)
   await load()
+  if (canManageItems.value) await refreshImports()
   if (focusItemId.value && !keyword.value) {
     const focused = items.value.find((item) => item.id === focusItemId.value)
     if (focused) keyword.value = focused.code
@@ -96,19 +165,50 @@ onBeforeUnmount(() => {
       </div>
       <div class="view-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">重新加载</el-button>
-        <el-button type="primary" :icon="Plus" @click="openCreate">添加物品</el-button>
+        <template v-if="canManageItems">
+          <el-button @click="downloadTemplate">下载标准模板</el-button>
+          <el-button @click="exportItems">导出当前数据</el-button>
+          <el-button type="primary" :icon="Plus" @click="openCreate">添加物品</el-button>
+        </template>
       </div>
     </header>
     <el-alert v-if="error" type="error" :closable="false" show-icon class="state-alert">{{ error }}</el-alert>
+    <el-alert v-if="importError" type="error" :closable="false" show-icon class="state-alert">{{ importError }}</el-alert>
     <el-card shadow="never" class="data-card">
       <div class="filter-bar">
         <el-input v-model="keyword" clearable placeholder="搜索物品编码或名称" :prefix-icon="Search" @keyup.enter="load" />
         <el-button type="primary" :icon="Search" @click="load">搜索</el-button>
       </div>
+      <div v-if="canManageItems" class="import-bar">
+        <input ref="importInput" type="file" accept=".xlsx,.csv" @change="chooseFile" />
+        <el-button type="primary" :loading="importLoading" @click="uploadImport">上传并分析</el-button>
+        <el-button @click="refreshImports">刷新导入作业</el-button>
+        <span class="import-hint">系统只进行格式与结构安全校验，不提供病毒扫描；未知列会被忽略，预览阶段不会写入物品。</span>
+      </div>
+      <div v-if="canManageItems && importJobs.length" class="import-job-picker">
+        <el-select :model-value="importJob?.jobId" placeholder="选择导入作业" @change="selectImport">
+          <el-option v-for="job in importJobs" :key="job.jobId" :value="job.jobId" :label="`${job.status} · ${job.createdAt}`" />
+        </el-select>
+        <el-select :model-value="importCategory" clearable placeholder="全部分类" @change="changeImportCategory">
+          <el-option label="新增" value="CREATE"/><el-option label="更新" value="UPDATE"/><el-option label="停用" value="DISABLE"/><el-option label="不变" value="UNCHANGED"/><el-option label="异常" value="INVALID"/><el-option label="冲突" value="CONFLICT"/>
+        </el-select>
+      </div>
+      <div v-if="importJob" class="import-preview">
+        <div class="import-summary"><strong>最近作业：{{ importJob.status }}</strong><span>总行 {{ importJob.totalRows }}</span><span>新增 {{ importJob.createCount }}</span><span>更新 {{ importJob.updateCount }}</span><span>停用 {{ importJob.disableCount }}</span><span>不变 {{ importJob.unchangedCount }}</span><span class="danger">无效 {{ importJob.invalidCount }}</span><span class="danger">冲突 {{ importJob.conflictCount }}</span><el-button v-if="['RECEIVED', 'ANALYZING', 'PREVIEW_READY', 'NEEDS_ATTENTION'].includes(importJob.status)" size="small" @click="cancelImport">取消作业</el-button></div>
+        <p v-if="importJob.status === 'RECEIVED' || importJob.status === 'ANALYZING'" class="import-note">正在分析；若进程中断，请刷新后点击“重新分析”。</p>
+        <p v-else-if="importJob.status === 'ANALYSIS_FAILED'" class="import-note danger">分析失败（{{ importJob.errorCode || '未知错误' }}），请检查文件后重新上传。</p>
+        <p v-else-if="importJob.status === 'EXPIRED'" class="import-note">该作业已过期，不能继续分析。</p>
+        <p v-else-if="importJob.status === 'CANCELLED' && importJob.errorCode === 'IMPORT_FILE_RELEASE_FAILED'" class="import-note danger">作业已取消，但文件释放未完成（{{ importJob.errorCode }}），请稍后刷新。</p>
+        <p v-else-if="importJob.status === 'CANCELLED'" class="import-note">该作业已取消，不能继续分析。</p>
+        <el-button v-if="importJob.reanalyzeAvailable" size="small" type="primary" @click="reanalyzeImport">重新分析</el-button>
+        <el-table v-if="importRows.length" :data="importRows" size="small"><el-table-column prop="sourceRowNo" label="行号" width="70"/><el-table-column prop="code" label="编码"/><el-table-column prop="name" label="名称"/><el-table-column prop="category" label="分类"/><el-table-column prop="errorCode" label="原因"/><el-table-column prop="recommendation" label="建议"/><el-table-column label="处理" width="110"><template #default="scope"><el-button v-if="(scope.row.category === 'INVALID' || scope.row.category === 'CONFLICT') && !scope.row.excluded" link type="primary" @click="excludeRow(scope.row)">排除此行</el-button><span v-else-if="scope.row.excluded">已排除</span></template></el-table-column></el-table>
+        <div v-if="importRows.length" class="import-pagination"><el-button size="small" :disabled="importPage <= 1" @click="changeImportPage(-1)">上一页</el-button><span>第 {{ importPage }} 页</span><el-button size="small" :disabled="importRows.length < 50" @click="changeImportPage(1)">下一页</el-button></div>
+        <p v-if="importJob.status === 'PREVIEW_READY' || importJob.status === 'NEEDS_ATTENTION'" class="import-note">预览已准备，最终确认将在下一阶段开放。</p>
+      </div>
       <div v-if="!loading && !items.length && !keyword" class="empty-state">
         <h3>还没有物品</h3>
         <p>先添加物品，才能办理入库和查询库存。</p>
-        <el-button type="primary" @click="openCreate">添加第一个物品</el-button>
+        <el-button v-if="canManageItems" type="primary" @click="openCreate">添加第一个物品</el-button>
       </div>
       <div v-else-if="!loading && !filteredItems.length" class="empty-state">
         <h3>没有找到符合条件的物品</h3>
@@ -181,6 +281,14 @@ onBeforeUnmount(() => {
 .data-card { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface); box-shadow: var(--ui-shadow-soft); }
 .filter-bar { margin-bottom: 18px; }
 .filter-bar .el-input { max-width: 360px; }
+.import-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 18px; padding: 12px; border: 1px dashed var(--ui-border); border-radius: 8px; }
+.import-job-picker { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.import-pagination { display: flex; align-items: center; gap: 10px; margin-top: 10px; color: var(--ui-text-muted); font-size: .85rem; }
+.import-hint { color: var(--ui-text-muted); font-size: .82rem; }
+.import-summary { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; color: var(--ui-text-muted); }
+.import-summary strong { color: var(--ui-text-strong); }
+.import-summary .danger { color: var(--el-color-danger); }
+.import-note { margin: 10px 0 0; color: var(--ui-text-muted); font-size: .85rem; }
 .empty-state { display: grid; justify-items: center; gap: 8px; padding: 64px 20px; color: var(--ui-text-muted); text-align: center; }
 .empty-state h3 { margin: 0; color: var(--ui-text-strong); }
 .empty-state p { margin: 0 0 8px; }

@@ -8,9 +8,26 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
+import java.util.Collection;
 
 @Mapper
 public interface ItemMapper extends BaseMapper<ItemDO> {
+    @Select({"<script>", "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at FROM wh_item WHERE code IN",
+            "<foreach collection='codes' item='code' open='(' separator=',' close=')'>#{code}</foreach>",
+            "ORDER BY code, id", "</script>"})
+    List<ItemDO> selectByCodes(@Param("codes") Collection<String> codes);
+
+    @Select({"<script>", "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at FROM (",
+            "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at,",
+            "ROW_NUMBER() OVER (ORDER BY code, id) AS row_num FROM wh_item",
+            "<where><if test='keyword != null and keyword != \"\"'>AND (code LIKE #{pattern} ESCAPE '!' OR name LIKE #{pattern} ESCAPE '!')</if></where>",
+            ") bounded WHERE row_num > #{offset} AND row_num &lt;= (#{offset} + #{limit}) ORDER BY row_num", "</script>"})
+    List<ItemDO> selectExportPage(@Param("keyword") String keyword, @Param("pattern") String pattern,
+                                  @Param("offset") int offset, @Param("limit") int limit);
+
+    @Select({"<script>", "SELECT COUNT(*) FROM wh_item",
+            "<where><if test='keyword != null and keyword != \"\"'>AND (code LIKE #{pattern} ESCAPE '!' OR name LIKE #{pattern} ESCAPE '!')</if></where>", "</script>"})
+    long countExport(@Param("keyword") String keyword, @Param("pattern") String pattern);
     /** Stable cursor scan used by a derived search index; disabled items are included. */
     @Select("SELECT id, code, name, base_unit, enabled, version, created_at, updated_at FROM (" +
             "SELECT id, code, name, base_unit, enabled, version, created_at, updated_at, " +

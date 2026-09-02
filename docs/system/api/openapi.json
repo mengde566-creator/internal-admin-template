@@ -523,6 +523,60 @@
         },
         "type": "object"
       },
+      "ApiResponseListWarehouseItemImportJobView": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WarehouseItemImportJobView"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ApiResponseListWarehouseItemImportRowView": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WarehouseItemImportRowView"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ApiResponseLoginResultDTO": {
         "properties": {
           "code": {
@@ -739,6 +793,30 @@
           },
           "data": {
             "type": "null"
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ApiResponseWarehouseItemImportJobView": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WarehouseItemImportJobView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "message": {
             "type": "string"
@@ -2703,6 +2781,103 @@
         ],
         "type": "object"
       },
+      "WarehouseItemImportJobView": {
+        "properties": {
+          "conflictCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "createCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "disableCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "invalidCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "reanalyzeAvailable": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "totalRows": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "unchangedCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "updateCount": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "WarehouseItemImportRowView": {
+        "properties": {
+          "baseUnit": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "currentEnabled": {
+            "type": "boolean"
+          },
+          "currentVersion": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "excluded": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "sourceRowNo": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "WarehouseUpdateDTO": {
         "properties": {
           "departmentId": {
@@ -4037,7 +4212,7 @@
     },
     "/api/system/configs": {
       "get": {
-        "operationId": "list_1",
+        "operationId": "list_2",
         "responses": {
           "200": {
             "content": {
@@ -4289,6 +4464,368 @@
         },
         "tags": [
           "warehouse-controller"
+        ]
+      }
+    },
+    "/api/warehouse/item-imports": {
+      "get": {
+        "operationId": "list_1",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListWarehouseItemImportJobView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "warehouse-item-import-controller"
+        ]
+      },
+      "post": {
+        "operationId": "submit",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "clientRequestId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseWarehouseItemImportJobView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "warehouse-item-import-controller"
+        ]
+      }
+    },
+    "/api/warehouse/item-imports/export": {
+      "get": {
+        "operationId": "export",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "keyword",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "byte",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "warehouse-item-import-controller"
+        ]
+      }
+    },
+    "/api/warehouse/item-imports/template": {
+      "get": {
+        "operationId": "template",
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "byte",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "warehouse-item-import-controller"
+        ]
+      }
+    },
+    "/api/warehouse/item-imports/{jobId}": {
+      "get": {
+        "operationId": "get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseWarehouseItemImportJobView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "warehouse-item-import-controller"
+        ]
+      }
+    },
+    "/api/warehouse/item-imports/{jobId}/cancel": {
+      "post": {
+        "operationId": "cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseWarehouseItemImportJobView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "warehouse-item-import-controller"
+        ]
+      }
+    },
+    "/api/warehouse/item-imports/{jobId}/reanalyze": {
+      "post": {
+        "operationId": "reanalyze",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseWarehouseItemImportJobView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "warehouse-item-import-controller"
+        ]
+      }
+    },
+    "/api/warehouse/item-imports/{jobId}/rows": {
+      "get": {
+        "operationId": "rows",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "enum": [
+                "CREATE",
+                "UPDATE",
+                "DISABLE",
+                "UNCHANGED",
+                "INVALID",
+                "CONFLICT"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseListWarehouseItemImportRowView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "warehouse-item-import-controller"
+        ]
+      }
+    },
+    "/api/warehouse/item-imports/{jobId}/rows/{sourceRowNo}/exclude": {
+      "post": {
+        "operationId": "excludeRow",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sourceRowNo",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseWarehouseItemImportJobView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "warehouse-item-import-controller"
         ]
       }
     },

@@ -15,5 +15,7 @@
     <include file="db/changelog/2026-08-04-0001-add-layout-and-sections.xml"/>
     <include file="db/changelog/2026-08-03-0001-create-audit-operation.xml"/>
     <include file="db/changelog/2026-08-16-0001-create-warehouse-tables.xml"/>
+    <include file="db/changelog/2026-09-01-0001-create-item-import-preview.xml"/>
+    <include file="db/changelog/2026-09-01-0002-add-item-import-row-excluded.xml"/>
 
 </databaseChangeLog>

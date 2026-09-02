@@ -26,7 +26,9 @@ import com.internaladmin.module.site.controller.SiteController;
 import com.internaladmin.module.site.service.SiteService;
 import com.internaladmin.module.warehouse.controller.WarehouseController;
 import com.internaladmin.module.warehouse.controller.WarehouseQueryController;
+import com.internaladmin.module.warehouse.controller.WarehouseItemImportController;
 import com.internaladmin.module.warehouse.service.WarehouseService;
+import com.internaladmin.module.warehouse.api.WarehouseItemImportApi;
 import com.internaladmin.module.iam.api.IamActorApi;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.ai.observability.api.AiFeedbackApi;
@@ -357,6 +359,7 @@ class NoDatabaseOpenApiContractTest {
             SiteController.class,
             WarehouseController.class,
             WarehouseQueryController.class,
+            WarehouseItemImportController.class,
             ContractCollaborators.class
     })
     static class ContractApplication {
@@ -411,6 +414,11 @@ class NoDatabaseOpenApiContractTest {
         @Bean
         WarehouseService warehouseService() {
             return mock(WarehouseService.class);
+        }
+
+        @Bean
+        WarehouseItemImportApi warehouseItemImportApi() {
+            return mock(WarehouseItemImportApi.class);
         }
 
         @Bean

@@ -7,9 +7,12 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
+import java.util.Collection;
 
 @Mapper
 public interface InventoryMovementMapper extends BaseMapper<InventoryMovementDO> {
+    @Select({"<script>", "SELECT id, operation_id, line_no, item_id, location_id, department_id_snapshot, movement_type, delta_quantity, before_quantity, after_quantity, line_remark, created_at FROM wh_inventory_movement WHERE item_id IN", "<foreach collection='itemIds' item='itemId' open='(' separator=',' close=')'>#{itemId}</foreach>", "</script>"})
+    List<InventoryMovementDO> selectByItemIds(@Param("itemIds") Collection<Long> itemIds);
     @Select({"<script>",
             "SELECT id, operation_id, line_no, item_id, item_code, item_name, base_unit, warehouse_id, warehouse_code, warehouse_name, location_id, location_code, location_name, movement_type, delta_quantity, created_at " +
                     "FROM (SELECT m.id, m.operation_id, m.line_no, m.item_id, i.code AS item_code, i.name AS item_name, i.base_unit, " +

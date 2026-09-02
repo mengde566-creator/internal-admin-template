@@ -395,6 +395,28 @@ public class WarehouseService implements WarehouseQueryApi, WarehouseItemProject
         int offset = Math.max(0, page - 1) * bounded;
         return itemMapper.selectPageOptions(pattern, offset, bounded).stream().map(this::toItem).toList();
     }
+
+    /**
+     * Returns the global item facts used by the 06B preview. Item master data is global in
+     * this model (department scope applies to warehouse/location facts), so disabling an
+     * item is blocked by non-zero stock anywhere and changing its unit is blocked by any
+     * existing movement. The two reads are deliberately batched and reuse the same mapper
+     * facts as the normal item mutation rules.
+     */
+    public ItemImportFacts inspectItemImportFacts(Set<Long> itemIds) {
+        if (itemIds == null || itemIds.size() > 10_000) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "物品事实查询范围无效");
+        }
+        if (itemIds.isEmpty()) return new ItemImportFacts(Set.of(), Set.of());
+        Set<Long> positiveStock = balanceMapper.selectByItemIds(itemIds).stream()
+                .filter(row -> row.getQuantityScaled() != null && row.getQuantityScaled() > 0)
+                .map(StockBalanceDO::getItemId).collect(java.util.stream.Collectors.toSet());
+        Set<Long> movements = movementMapper.selectByItemIds(itemIds).stream()
+                .map(InventoryMovementDO::getItemId).collect(java.util.stream.Collectors.toSet());
+        return new ItemImportFacts(Set.copyOf(positiveStock), Set.copyOf(movements));
+    }
+
+    public record ItemImportFacts(Set<Long> positiveStockItemIds, Set<Long> movementItemIds) {}
     public List<WarehouseDTO> listWarehouses(WarehouseAccessScopeDTO scope) {
         scope = validateTrustedScope(scope);
         List<WarehouseDO> rows = scope.allDepartments()
