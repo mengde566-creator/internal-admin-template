@@ -17,6 +17,8 @@ public class WarehouseItemImportJobDO {
     private LocalDateTime createdAt;
     private LocalDateTime expiresAt;
     private LocalDateTime updatedAt;
+    private LocalDateTime completedAt;
+    private String confirmRequestId;
     private String errorCode;
     private Integer totalRows;
     private Integer createCount;
@@ -35,6 +37,8 @@ public class WarehouseItemImportJobDO {
     public LocalDateTime getCreatedAt(){return createdAt;} public void setCreatedAt(LocalDateTime v){createdAt=v;}
     public LocalDateTime getExpiresAt(){return expiresAt;} public void setExpiresAt(LocalDateTime v){expiresAt=v;}
     public LocalDateTime getUpdatedAt(){return updatedAt;} public void setUpdatedAt(LocalDateTime v){updatedAt=v;}
+    public LocalDateTime getCompletedAt(){return completedAt;} public void setCompletedAt(LocalDateTime v){completedAt=v;}
+    public String getConfirmRequestId(){return confirmRequestId;} public void setConfirmRequestId(String v){confirmRequestId=v;}
     public String getErrorCode(){return errorCode;} public void setErrorCode(String v){errorCode=v;}
     public Integer getTotalRows(){return totalRows;} public void setTotalRows(Integer v){totalRows=v;}
     public Integer getCreateCount(){return createCount;} public void setCreateCount(Integer v){createCount=v;}

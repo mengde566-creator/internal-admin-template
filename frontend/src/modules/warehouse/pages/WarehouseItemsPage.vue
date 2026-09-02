@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Edit, Plus, Refresh, Search, SwitchButton } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../auth/store/auth'
-import { createItem, fetchWarehouseItems, updateItem, downloadItemTemplate, exportWarehouseItems, submitItemImport, fetchItemImports, fetchItemImport, fetchItemImportRows, reanalyzeItemImport, excludeItemImportRow, cancelItemImport, type Item, type WarehouseItemImportJob, type WarehouseItemImportRow } from '../api/warehouse'
+import { ElMessageBox } from 'element-plus'
+import { createItem, fetchWarehouseItems, updateItem, downloadItemTemplate, exportWarehouseItems, submitItemImport, fetchItemImports, fetchItemImport, fetchItemImportRows, reanalyzeItemImport, confirmItemImport, excludeItemImportRow, cancelItemImport, type Item, type WarehouseItemImportJob, type WarehouseItemImportRow } from '../api/warehouse'
 import { messageOf } from '../composables/useWarehouseReferences'
 
 const router = useRouter()
@@ -91,6 +92,31 @@ async function reanalyzeImport() {
   } catch (cause: any) {
     importError.value = messageOf(cause, '当前作业不能重新分析，请刷新后重试')
   }
+}
+async function confirmImport() {
+  if (!importJob.value || importJob.value.status !== 'PREVIEW_READY') return
+  try {
+    await ElMessageBox.confirm(
+      `确认将 ${importJob.value.createCount} 条新增、${importJob.value.updateCount} 条更新、${importJob.value.disableCount} 条停用写入物品主数据？不变和已排除行不会写入。`,
+      '二次确认导入',
+      { type: 'warning', confirmButtonText: '确认导入', cancelButtonText: '取消' },
+    )
+  } catch { return }
+  importLoading.value = true
+  importError.value = ''
+  try {
+    const latest = (await confirmItemImport(importJob.value.jobId, {
+      revision: importJob.value.revision,
+      clientRequestId: crypto.randomUUID(),
+      confirmed: true,
+    })).data.data
+    importJob.value = latest
+    importJobs.value = importJobs.value.map((job) => job.jobId === latest.jobId ? latest : job)
+    importRows.value = []
+    if (latest.status === 'COMPLETED') await load()
+  } catch (cause: any) {
+    importError.value = messageOf(cause, '导入事实已变化，请重新预览后再试')
+  } finally { importLoading.value = false }
 }
 async function waitForImportTerminal(jobId: string) {
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -194,16 +220,20 @@ onBeforeUnmount(() => {
         </el-select>
       </div>
       <div v-if="importJob" class="import-preview">
-        <div class="import-summary"><strong>最近作业：{{ importJob.status }}</strong><span>总行 {{ importJob.totalRows }}</span><span>新增 {{ importJob.createCount }}</span><span>更新 {{ importJob.updateCount }}</span><span>停用 {{ importJob.disableCount }}</span><span>不变 {{ importJob.unchangedCount }}</span><span class="danger">无效 {{ importJob.invalidCount }}</span><span class="danger">冲突 {{ importJob.conflictCount }}</span><el-button v-if="['RECEIVED', 'ANALYZING', 'PREVIEW_READY', 'NEEDS_ATTENTION'].includes(importJob.status)" size="small" @click="cancelImport">取消作业</el-button></div>
+        <div class="import-summary"><strong>最近作业：{{ importJob.status }}</strong><span>总行 {{ importJob.totalRows }}</span><span>新增 {{ importJob.createCount }}</span><span>更新 {{ importJob.updateCount }}</span><span>停用 {{ importJob.disableCount }}</span><span>不变 {{ importJob.unchangedCount }}</span><span>已排除 {{ importJob.excludedCount }}</span><span class="danger">无效 {{ importJob.invalidCount }}</span><span class="danger">冲突 {{ importJob.conflictCount }}</span><el-button v-if="importJob.status === 'PREVIEW_READY'" size="small" type="primary" :loading="importLoading" @click="confirmImport">确认导入</el-button><el-button v-if="['RECEIVED', 'ANALYZING', 'PREVIEW_READY', 'NEEDS_ATTENTION'].includes(importJob.status)" size="small" @click="cancelImport">取消作业</el-button></div>
         <p v-if="importJob.status === 'RECEIVED' || importJob.status === 'ANALYZING'" class="import-note">正在分析；若进程中断，请刷新后点击“重新分析”。</p>
         <p v-else-if="importJob.status === 'ANALYSIS_FAILED'" class="import-note danger">分析失败（{{ importJob.errorCode || '未知错误' }}），请检查文件后重新上传。</p>
+        <p v-else-if="importJob.status === 'EXECUTION_FAILED'" class="import-note danger">导入执行失败（{{ importJob.errorCode || '未知错误' }}），物品未部分写入，请重新预览。</p>
+        <p v-else-if="importJob.status === 'NEEDS_REPREVIEW'" class="import-note danger">确认前事实已变化，请重新分析后再确认。</p>
+        <p v-else-if="importJob.status === 'EXECUTING'" class="import-note">正在执行导入，重复点击已禁用。</p>
+        <p v-else-if="importJob.status === 'COMPLETED'" class="import-note success">导入已完成，可返回上方物品列表刷新核对真实结果。</p>
         <p v-else-if="importJob.status === 'EXPIRED'" class="import-note">该作业已过期，不能继续分析。</p>
         <p v-else-if="importJob.status === 'CANCELLED' && importJob.errorCode === 'IMPORT_FILE_RELEASE_FAILED'" class="import-note danger">作业已取消，但文件释放未完成（{{ importJob.errorCode }}），请稍后刷新。</p>
         <p v-else-if="importJob.status === 'CANCELLED'" class="import-note">该作业已取消，不能继续分析。</p>
         <el-button v-if="importJob.reanalyzeAvailable" size="small" type="primary" @click="reanalyzeImport">重新分析</el-button>
         <el-table v-if="importRows.length" :data="importRows" size="small"><el-table-column prop="sourceRowNo" label="行号" width="70"/><el-table-column prop="code" label="编码"/><el-table-column prop="name" label="名称"/><el-table-column prop="category" label="分类"/><el-table-column prop="errorCode" label="原因"/><el-table-column prop="recommendation" label="建议"/><el-table-column label="处理" width="110"><template #default="scope"><el-button v-if="(scope.row.category === 'INVALID' || scope.row.category === 'CONFLICT') && !scope.row.excluded" link type="primary" @click="excludeRow(scope.row)">排除此行</el-button><span v-else-if="scope.row.excluded">已排除</span></template></el-table-column></el-table>
         <div v-if="importRows.length" class="import-pagination"><el-button size="small" :disabled="importPage <= 1" @click="changeImportPage(-1)">上一页</el-button><span>第 {{ importPage }} 页</span><el-button size="small" :disabled="importRows.length < 50" @click="changeImportPage(1)">下一页</el-button></div>
-        <p v-if="importJob.status === 'PREVIEW_READY' || importJob.status === 'NEEDS_ATTENTION'" class="import-note">预览已准备，最终确认将在下一阶段开放。</p>
+        <p v-if="importJob.status === 'PREVIEW_READY'" class="import-note">预览已准备；确认前服务端会再次校验版本、库存和流水事实。</p>
       </div>
       <div v-if="!loading && !items.length && !keyword" class="empty-state">
         <h3>还没有物品</h3>
@@ -289,6 +319,7 @@ onBeforeUnmount(() => {
 .import-summary strong { color: var(--ui-text-strong); }
 .import-summary .danger { color: var(--el-color-danger); }
 .import-note { margin: 10px 0 0; color: var(--ui-text-muted); font-size: .85rem; }
+.import-note.success { color: var(--ui-success, #1f8a58); }
 .empty-state { display: grid; justify-items: center; gap: 8px; padding: 64px 20px; color: var(--ui-text-muted); text-align: center; }
 .empty-state h3 { margin: 0; color: var(--ui-text-strong); }
 .empty-state p { margin: 0 0 8px; }

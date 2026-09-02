@@ -73,6 +73,7 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
     private static final Logger LOGGER = LoggerFactory.getLogger(WarehouseItemImportService.class);
     private static final int MAX_PAGE = 100;
     private static final int MAX_EXPORT_ROWS = 10_000;
+    private static final int MAX_CONFIRM_ROWS = 100_000;
     private static final int BATCH = 200;
     private static final int ANALYSIS_QUEUE_CAPACITY = 16;
     private static final java.time.Duration ANALYSIS_STALE_AFTER = java.time.Duration.ofMinutes(5);
@@ -180,7 +181,8 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
             if (job.getUpdatedAt() == null || !job.getUpdatedAt().isBefore(now.minus(ANALYSIS_STALE_AFTER))) {
                 throw conflict("作业仍在分析，请稍后刷新");
             }
-        } else if (!WarehouseItemImportStatus.RECEIVED.name().equals(job.getStatus())) {
+        } else if (!WarehouseItemImportStatus.RECEIVED.name().equals(job.getStatus())
+                && !WarehouseItemImportStatus.NEEDS_REPREVIEW.name().equals(job.getStatus())) {
             throw conflict("当前作业不可重新分析，请重新上传");
         }
         try {
@@ -202,6 +204,179 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         int runningRevision = claimRevision + 1;
         enqueueAnalysis(userId, jobId, runningRevision);
         return view(jobs.findOwned(jobId, userId));
+    }
+
+    @Override
+    public WarehouseItemImportJobView confirm(Long userId, String jobId,
+                                              WarehouseItemImportConfirmRequest request) {
+        requireManager(userId);
+        if (request == null || !request.confirmed()) throw bad("请确认导入摘要");
+        if (request.revision() < 0) throw bad("作业版本不合法");
+        String confirmRequestId = normalizeRequestId(request.clientRequestId());
+        try {
+            WarehouseItemImportJobView result = transactionTemplate == null
+                    ? confirmInTransaction(userId, jobId, request, confirmRequestId)
+                    : transactionTemplate.execute(status -> confirmInTransaction(userId, jobId, request, confirmRequestId));
+            if (result == null) throw new IllegalStateException("确认结果为空");
+            // Response serialization happens after commit.  No post-commit
+            // failure is allowed to mutate a completed job.
+            return result;
+        } catch (ConfirmationClaimLostException race) {
+            return resolveConfirmationCompetition(userId, jobId, request.revision(), confirmRequestId);
+        } catch (ConfirmationWorkException work) {
+            RuntimeException failure = work.runtimeCause();
+            if (failure instanceof WarehouseItemImportPreconditionException
+                    || failure instanceof WarehouseService.ItemImportPreconditionException) {
+                return markConfirmationFailure(userId, jobId, request.revision(), confirmRequestId,
+                        WarehouseItemImportStatus.NEEDS_REPREVIEW.name(), "IMPORT_REPREVIEW_REQUIRED");
+            }
+            if (failure instanceof DataAccessException) {
+                return markConfirmationFailure(userId, jobId, request.revision(), confirmRequestId,
+                        WarehouseItemImportStatus.EXECUTION_FAILED.name(), "IMPORT_DATABASE_UNAVAILABLE");
+            }
+            return markConfirmationFailure(userId, jobId, request.revision(), confirmRequestId,
+                    WarehouseItemImportStatus.EXECUTION_FAILED.name(), confirmationErrorCode(failure));
+        } catch (DataAccessException failure) {
+            // A failure before the callback can wrap the cause (for example a
+            // SQLite write-lock/claim error).  Resolve it through the same
+            // PREVIEW_READY CAS; a concurrent COMPLETED result wins, while an
+            // unchanged preview receives a visible database failure state.
+            return markConfirmationFailure(userId, jobId, request.revision(), confirmRequestId,
+                    WarehouseItemImportStatus.EXECUTION_FAILED.name(), "IMPORT_DATABASE_UNAVAILABLE");
+        } catch (org.springframework.transaction.TransactionException failure) {
+            // This also covers commit/rollback boundary failures.  The CAS
+            // helper never overwrites a success that may have committed.
+            return markConfirmationFailure(userId, jobId, request.revision(), confirmRequestId,
+                    WarehouseItemImportStatus.EXECUTION_FAILED.name(), "IMPORT_DATABASE_UNAVAILABLE");
+        }
+    }
+
+    private WarehouseItemImportJobView confirmInTransaction(Long userId, String jobId,
+                                                             WarehouseItemImportConfirmRequest request,
+                                                             String confirmRequestId) {
+        WarehouseItemImportJobDO job = owned(userId, jobId);
+        String status = job.getStatus();
+        if (WarehouseItemImportStatus.COMPLETED.name().equals(status)) return view(job);
+        if ((WarehouseItemImportStatus.EXECUTING.name().equals(status)
+                || WarehouseItemImportStatus.NEEDS_REPREVIEW.name().equals(status)
+                || WarehouseItemImportStatus.EXECUTION_FAILED.name().equals(status))
+                && confirmRequestId.equals(job.getConfirmRequestId())) return view(job);
+        if (!WarehouseItemImportStatus.PREVIEW_READY.name().equals(status)) {
+            throw conflict("当前作业不可确认，请先完成预览");
+        }
+        if (isExpired(job, LocalDateTime.now())) throw bad("作业已过期");
+        if (nz(job.getInvalidCount()) > 0 || nz(job.getConflictCount()) > 0) {
+            throw bad("仍有未处理异常行，不能确认导入");
+        }
+        if (jobs.claimConfirmation(jobId, userId, request.revision(), confirmRequestId, LocalDateTime.now()) != 1) {
+            throw new ConfirmationClaimLostException();
+        }
+        int executionRevision = request.revision() + 1;
+        try {
+            requireManager(userId);
+            ControlledDocumentRead read = files.read(job.getFileAssetId(), userId, DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT);
+            if (read == null || read.metadata() == null || !job.getFileSha256().equals(read.metadata().sha256())) {
+                throw new WarehouseItemImportPreconditionException("受控文件内容已变化");
+            }
+            List<WarehouseItemImportRowDO> activeRows = rows.findActiveForConfirm(jobId);
+            if (activeRows == null || activeRows.size() > MAX_CONFIRM_ROWS) {
+                throw new WarehouseItemImportPreconditionException("预览行范围无效");
+            }
+            Counts counts = Counts.of(activeRows);
+            int persistedActive = nz(job.getCreateCount()) + nz(job.getUpdateCount())
+                    + nz(job.getDisableCount()) + nz(job.getUnchangedCount())
+                    + nz(job.getInvalidCount()) + nz(job.getConflictCount());
+            if (activeRows.size() != persistedActive) {
+                throw new WarehouseItemImportPreconditionException("预览行摘要已变化");
+            }
+            if (counts.invalid > 0 || counts.conflict > 0) {
+                throw new WarehouseItemImportPreconditionException("仍有未处理异常行");
+            }
+            List<WarehouseService.ItemImportCommand> commands = activeRows.stream()
+                    .map(r -> new WarehouseService.ItemImportCommand(r.getCategory(), r.getCode(), r.getName(),
+                            r.getBaseUnit(), Integer.valueOf(1).equals(r.getEnabled()), r.getCurrentVersion(), r.getCurrentEnabled()))
+                    .toList();
+            requireManager(userId);
+            warehouse.executeItemImportBatch(userId, commands);
+            // The retain update uses the same business DataSource/transaction.
+            // Filesystem state is never treated as a database commit marker.
+            files.retain(job.getFileAssetId(), userId, DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT);
+            LocalDateTime completedAt = LocalDateTime.now();
+            if (jobs.finishConfirmation(jobId, userId, executionRevision,
+                    WarehouseItemImportStatus.COMPLETED.name(), completedAt, completedAt, null,
+                    nz(job.getTotalRows()), counts.create, counts.update, counts.disable,
+                    counts.unchanged, counts.invalid, counts.conflict) != 1) {
+                throw conflict("导入作业状态已变化");
+            }
+            return view(jobs.findOwned(jobId, userId));
+        } catch (RuntimeException failure) {
+            throw new ConfirmationWorkException(failure);
+        }
+    }
+
+    private WarehouseItemImportJobView resolveConfirmationCompetition(Long userId, String jobId, int expectedRevision,
+                                                                       String confirmRequestId) {
+        WarehouseItemImportJobDO latest = jobs.findOwned(jobId, userId);
+        if (latest == null) throw new BusinessException(ErrorCode.NOT_FOUND, "导入作业不存在");
+        if (WarehouseItemImportStatus.COMPLETED.name().equals(latest.getStatus())
+                || ((WarehouseItemImportStatus.NEEDS_REPREVIEW.name().equals(latest.getStatus())
+                || WarehouseItemImportStatus.EXECUTION_FAILED.name().equals(latest.getStatus()))
+                && confirmRequestId.equals(latest.getConfirmRequestId()))) {
+            return view(latest);
+        }
+        if (WarehouseItemImportStatus.PREVIEW_READY.name().equals(latest.getStatus())
+                && Integer.valueOf(expectedRevision).equals(latest.getRevision())) {
+            // The competing transaction rolled back; the original request may
+            // safely be retried from the unchanged PREVIEW_READY revision.
+            return view(latest);
+        }
+        throw conflict("导入确认正在被其他请求处理，请刷新后重试");
+    }
+
+    private WarehouseItemImportJobView markConfirmationFailure(Long userId, String jobId, int revision,
+                                                                String confirmRequestId, String status,
+                                                                String errorCode) {
+        LocalDateTime now = LocalDateTime.now();
+        int updated = jobs.markConfirmationFailure(jobId, userId, revision, confirmRequestId, status, now, errorCode);
+        WarehouseItemImportJobDO current = jobs.findOwned(jobId, userId);
+        if (updated == 1) return view(current);
+        if (current != null && WarehouseItemImportStatus.COMPLETED.name().equals(current.getStatus())) {
+            // Another executor committed successfully; never overwrite it with
+            // a late failure from this request.
+            return view(current);
+        }
+        if (current != null && (WarehouseItemImportStatus.NEEDS_REPREVIEW.name().equals(current.getStatus())
+                || WarehouseItemImportStatus.EXECUTION_FAILED.name().equals(current.getStatus()))
+                && confirmRequestId.equals(current.getConfirmRequestId())) return view(current);
+        // Any other state means another owner or lifecycle transition won the
+        // race. Do not return a stale EXECUTING/CANCELLED view as if this
+        // request had a terminal result; make the competition explicit.
+        if (current != null && !WarehouseItemImportStatus.PREVIEW_READY.name().equals(current.getStatus())) {
+            throw conflict("导入确认状态已变化，请刷新后重试");
+        }
+        throw conflict("导入确认状态已变化，请刷新后重试");
+    }
+
+    private static final class ConfirmationClaimLostException extends RuntimeException { }
+
+    private static final class ConfirmationWorkException extends RuntimeException {
+        private ConfirmationWorkException(Throwable cause) { super(cause); }
+        private RuntimeException runtimeCause() {
+            return getCause() instanceof RuntimeException runtime ? runtime : new IllegalStateException(getCause());
+        }
+    }
+
+    private static String confirmationErrorCode(RuntimeException failure) {
+        if (failure instanceof BusinessException business
+                && business.getErrorCode() == ErrorCode.FORBIDDEN) return "IMPORT_PERMISSION_REVOKED";
+        String message = failure.getMessage() == null ? "" : failure.getMessage();
+        if (message.contains("受控文件") || message.contains("文件内容")) return "IMPORT_FILE_UNAVAILABLE";
+        if (message.contains("权限") || message.contains("登录")) return "IMPORT_PERMISSION_REVOKED";
+        return "IMPORT_EXECUTION_FAILED";
+    }
+
+    private static final class WarehouseItemImportPreconditionException extends RuntimeException {
+        private WarehouseItemImportPreconditionException(String message) { super(message); }
     }
 
     private void analyze(Long userId, String jobId, int revision) {
@@ -265,6 +440,10 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
 
     private void persistAnalysis(String jobId, Long userId, int revision, List<WarehouseItemImportRowDO> analyzed, Counts c) {
         Runnable persist = () -> {
+            // A reanalysis of NEEDS_REPREVIEW replaces the prior preview as one
+            // transaction.  If parsing/facts/row insertion fails, the old
+            // preview remains intact instead of leaving a partial mix.
+            rows.deleteByJobId(jobId);
             for (int i = 0; i < analyzed.size(); i += BATCH) {
                 int inserted = rows.insertBatch(analyzed.subList(i, Math.min(i + BATCH, analyzed.size())));
                 if (inserted != Math.min(BATCH, analyzed.size() - i)) throw new IllegalStateException("预览行写入数量不一致");
@@ -292,7 +471,7 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         }
     }
 
-    /** Analysis failures release once; later cleanup/retry is owned by 06F. */
+    /** Analysis failures release once; later retention handling/retry is owned by 06F. */
     private void releaseAssetAfterFailure(Long userId, String jobId) {
         try {
             releaseAsset(userId, jobId);
@@ -450,8 +629,8 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
     @Override public List<WarehouseItemImportJobView> list(Long userId,int page,int size){
         requireManager(userId);
         int p=Math.max(1,page), s=Math.min(MAX_PAGE,Math.max(1,size));
-        // Listing is a read-only user view. Recovery and cleanup are explicit
-        // operations and never a side effect of opening a page.
+        // Listing is a read-only user view. Reanalysis and retention handling
+        // are explicit operations and never a side effect of opening a page.
         return jobs.pageOwned(userId,(p-1)*s,s).stream().map(this::view).toList();
     }
     @Override public List<WarehouseItemImportRowView> rows(Long userId,String jobId,WarehouseItemImportCategory category,int page,int size){
@@ -569,6 +748,7 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         String status = visibleStatus(j, now);
         boolean reanalyzeAvailable = !isExpired(j, now)
                 && (WarehouseItemImportStatus.RECEIVED.name().equals(j.getStatus())
+                || WarehouseItemImportStatus.NEEDS_REPREVIEW.name().equals(j.getStatus())
                 || (WarehouseItemImportStatus.ANALYZING.name().equals(j.getStatus())
                 && j.getUpdatedAt() != null
                 && j.getUpdatedAt().isBefore(now.minus(ANALYSIS_STALE_AFTER))));
@@ -578,7 +758,10 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
                 && errorCode == null) {
             errorCode = "IMPORT_JOB_EXPIRED";
         }
-        return new WarehouseItemImportJobView(j.getJobId(),status,j.getRevision(),nz(j.getTotalRows()),nz(j.getCreateCount()),nz(j.getUpdateCount()),nz(j.getDisableCount()),nz(j.getUnchangedCount()),nz(j.getInvalidCount()),nz(j.getConflictCount()),errorCode,j.getCreatedAt(),j.getExpiresAt(),reanalyzeAvailable);
+        int total = nz(j.getTotalRows());
+        int excluded = Math.max(0, total - nz(j.getCreateCount()) - nz(j.getUpdateCount()) - nz(j.getDisableCount())
+                - nz(j.getUnchangedCount()) - nz(j.getInvalidCount()) - nz(j.getConflictCount()));
+        return new WarehouseItemImportJobView(j.getJobId(),status,j.getRevision(),total,nz(j.getCreateCount()),nz(j.getUpdateCount()),nz(j.getDisableCount()),nz(j.getUnchangedCount()),nz(j.getInvalidCount()),nz(j.getConflictCount()),errorCode,j.getCreatedAt(),j.getExpiresAt(),reanalyzeAvailable,excluded,j.getCompletedAt());
     }
     private static boolean isExpired(WarehouseItemImportJobDO job, LocalDateTime now) {
         return job.getExpiresAt() == null || !job.getExpiresAt().isAfter(now);

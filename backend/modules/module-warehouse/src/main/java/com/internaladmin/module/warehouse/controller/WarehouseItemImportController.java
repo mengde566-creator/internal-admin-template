@@ -19,7 +19,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
-/** 物品导入预览接口；06B 不提供确认写入。 */
+/** 物品导入预览与确认接口；确认只接受服务端预览的版本令牌。 */
 @RestController
 @RequestMapping("/api/warehouse/item-imports")
 @PreAuthorize("hasAuthority('" + PermissionCodes.WAREHOUSE_MASTER_MANAGE + "')")
@@ -35,6 +35,7 @@ public class WarehouseItemImportController {
     @GetMapping("/{jobId}") public ApiResponse<WarehouseItemImportApi.WarehouseItemImportJobView> get(@PathVariable String jobId){return ApiResponse.ok(service.get(user(),jobId));}
     @GetMapping("/{jobId}/rows") public ApiResponse<List<WarehouseItemImportApi.WarehouseItemImportRowView>> rows(@PathVariable String jobId,@RequestParam(required=false) WarehouseItemImportCategory category,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="50") int size){return ApiResponse.ok(service.rows(user(),jobId,category,page,size));}
     @PostMapping("/{jobId}/reanalyze") public ApiResponse<WarehouseItemImportApi.WarehouseItemImportJobView> reanalyze(@PathVariable String jobId,@RequestParam int revision){return ApiResponse.ok(service.reanalyze(user(),jobId,revision));}
+    @PostMapping("/{jobId}/confirm") public ApiResponse<WarehouseItemImportApi.WarehouseItemImportJobView> confirm(@PathVariable String jobId,@RequestBody WarehouseItemImportApi.WarehouseItemImportConfirmRequest request){return ApiResponse.ok(service.confirm(user(),jobId,request));}
     @PostMapping("/{jobId}/rows/{sourceRowNo}/exclude") public ApiResponse<WarehouseItemImportApi.WarehouseItemImportJobView> excludeRow(@PathVariable String jobId,@PathVariable int sourceRowNo,@RequestParam int revision){return ApiResponse.ok(service.excludeRow(user(),jobId,sourceRowNo,revision));}
     @PostMapping("/{jobId}/cancel") public ApiResponse<WarehouseItemImportApi.WarehouseItemImportJobView> cancel(@PathVariable String jobId,@RequestParam int revision){return ApiResponse.ok(service.cancel(user(),jobId,revision));}
     @GetMapping("/template") public ResponseEntity<byte[]> template(){return file(service.template(user()),"warehouse-item-template.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");}

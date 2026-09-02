@@ -2781,8 +2781,27 @@
         ],
         "type": "object"
       },
+      "WarehouseItemImportConfirmRequest": {
+        "properties": {
+          "clientRequestId": {
+            "type": "string"
+          },
+          "confirmed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "WarehouseItemImportJobView": {
         "properties": {
+          "completedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
           "conflictCount": {
             "format": "int32",
             "type": "integer"
@@ -2801,6 +2820,10 @@
           },
           "errorCode": {
             "type": "string"
+          },
+          "excludedCount": {
+            "format": "int32",
+            "type": "integer"
           },
           "expiresAt": {
             "format": "date-time",
@@ -4659,6 +4682,46 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseWarehouseItemImportJobView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "warehouse-item-import-controller"
+        ]
+      }
+    },
+    "/api/warehouse/item-imports/{jobId}/confirm": {
+      "post": {
+        "operationId": "confirm",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WarehouseItemImportConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

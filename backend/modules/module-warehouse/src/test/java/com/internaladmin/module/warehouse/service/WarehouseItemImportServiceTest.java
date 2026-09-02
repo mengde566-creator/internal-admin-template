@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -165,6 +166,33 @@ class WarehouseItemImportServiceTest {
     }
 
     @Test
+    void needsRepreviewCanReanalyzeAndReplacesOldRowsAtomically() throws Exception {
+        stubJob();
+        WarehouseItemImportJobDO job = new WarehouseItemImportJobDO();
+        job.setJobId("repreview-job");
+        job.setCreatorUserId(7L);
+        job.setFileAssetId("asset-1");
+        job.setStatus("NEEDS_REPREVIEW");
+        job.setRevision(2);
+        job.setExpiresAt(LocalDateTime.now().plusMinutes(10));
+        when(jobs.findOwned("repreview-job", 7L)).thenReturn(job);
+        when(files.read(eq("asset-1"), eq(7L), eq(DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT)))
+                .thenReturn(read("物品编码,物品名称,基本单位,启用状态\nA100,重新预览,件,启用\n"));
+        when(items.selectByCodes(anyCollection())).thenReturn(List.of());
+        when(warehouse.inspectItemImportFacts(anySet()))
+                .thenReturn(new WarehouseService.ItemImportFacts(Set.of(), Set.of()));
+
+        service.reanalyze(7L, "repreview-job", 2);
+
+        for (int i = 0; i < 100 && !"PREVIEW_READY".equals(job.getStatus()); i++) {
+            Thread.sleep(5);
+        }
+        assertEquals("PREVIEW_READY", job.getStatus());
+        verify(rows).deleteByJobId("repreview-job");
+        verify(jobs).claimAnalysis(eq("repreview-job"), eq(7L), eq(2), any());
+    }
+
+    @Test
     void freshAnalyzingJobCannotBeReanalyzed() {
         when(iamActor.resolve(7L)).thenReturn(actor(7L));
         WarehouseItemImportJobDO job = new WarehouseItemImportJobDO();
@@ -280,7 +308,7 @@ class WarehouseItemImportServiceTest {
     }
 
     @Test
-    void failedCancelReleaseRemainsCancelledWithAssetReferenceForLaterCleanup() {
+    void failedCancelReleaseRemainsCancelledWithAssetReferenceForLaterReleaseHandling() {
         when(iamActor.resolve(7L)).thenReturn(actor(7L));
         WarehouseItemImportJobDO job = new WarehouseItemImportJobDO();
         job.setJobId("cancel-release");
@@ -398,6 +426,156 @@ class WarehouseItemImportServiceTest {
         assertEquals("NEEDS_ATTENTION", view.status());
         verify(rows).markExcluded("job-1", 4);
         verify(jobs).bumpRevisionForExclusion(eq("job-1"), eq(7L), eq(2), any());
+    }
+
+    @Test
+    void confirmRequiresExplicitSignalAndPreviewWithoutWritingItems() {
+        when(iamActor.resolve(7L)).thenReturn(actor(7L));
+        WarehouseItemImportJobDO job = confirmableJob("confirm-invalid", "PREVIEW_READY", 4);
+        when(jobs.findOwned(job.getJobId(), 7L)).thenReturn(job);
+
+        assertThrows(RuntimeException.class, () -> service.confirm(7L, job.getJobId(),
+                new WarehouseItemImportApi.WarehouseItemImportConfirmRequest(4, "confirm-1", false)));
+        verifyNoInteractions(files, items, warehouse, rows);
+        verify(jobs, never()).claimConfirmation(anyString(), anyLong(), anyInt(), anyString(), any());
+    }
+
+    @Test
+    void staleConfirmationRevisionIsRejectedEvenWhenPreviewIsStillAvailable() {
+        when(iamActor.resolve(7L)).thenReturn(actor(7L));
+        WarehouseItemImportJobDO job = confirmableJob("confirm-stale-revision", "PREVIEW_READY", 4);
+        when(jobs.findOwned(job.getJobId(), 7L)).thenReturn(job);
+        when(jobs.claimConfirmation(eq(job.getJobId()), eq(7L), eq(3), eq("stale-request"), any())).thenReturn(0);
+
+        assertThrows(RuntimeException.class, () -> service.confirm(7L, job.getJobId(),
+                new WarehouseItemImportApi.WarehouseItemImportConfirmRequest(3, "stale-request", true)));
+        verifyNoInteractions(files, items, warehouse, rows);
+    }
+
+    @Test
+    void confirmRechecksFileAndCommitsOneBatchWithIdempotentResult() {
+        when(iamActor.resolve(7L)).thenReturn(actor(7L));
+        WarehouseItemImportJobDO job = confirmableJob("confirm-success", "PREVIEW_READY", 4);
+        when(jobs.findOwned(job.getJobId(), 7L)).thenReturn(job);
+        when(jobs.claimConfirmation(eq(job.getJobId()), eq(7L), eq(4), eq("confirm-1"), any()))
+                .thenAnswer(inv -> { job.setStatus("EXECUTING"); job.setRevision(5); job.setConfirmRequestId("confirm-1"); return 1; });
+        when(files.read(eq("asset-confirm"), eq(7L), eq(DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT))).thenReturn(readWithAsset("asset-confirm", "hash"));
+        WarehouseItemImportRowDO row = importRow("A100", "密封圈", "件", 1, "UPDATE", 3, 1);
+        when(rows.findActiveForConfirm(job.getJobId())).thenReturn(List.of(row));
+        when(jobs.finishConfirmation(eq(job.getJobId()), eq(7L), eq(5), eq("COMPLETED"), any(), any(), isNull(), eq(1), eq(0), eq(1), eq(0), eq(0), eq(0), eq(0)))
+                .thenAnswer(inv -> { job.setStatus("COMPLETED"); job.setRevision(6); job.setCompletedAt(LocalDateTime.now()); return 1; });
+
+        var result = service.confirm(7L, job.getJobId(),
+                new WarehouseItemImportApi.WarehouseItemImportConfirmRequest(4, "confirm-1", true));
+
+        assertEquals("COMPLETED", result.status());
+        assertEquals(1, result.updateCount());
+        verify(warehouse).executeItemImportBatch(eq(7L), argThat(commands -> commands.size() == 1
+                && "UPDATE".equals(commands.get(0).category()) && "A100".equals(commands.get(0).code())));
+        verify(files).retain("asset-confirm", 7L, DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT);
+        verify(jobs).finishConfirmation(eq(job.getJobId()), eq(7L), eq(5), eq("COMPLETED"), any(), any(), isNull(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt());
+
+        var repeated = service.confirm(7L, job.getJobId(),
+                new WarehouseItemImportApi.WarehouseItemImportConfirmRequest(4, "confirm-1", true));
+        assertEquals("COMPLETED", repeated.status());
+        verify(warehouse, times(1)).executeItemImportBatch(anyLong(), anyList());
+    }
+
+    @Test
+    void confirmStaleFactsRequireRepreviewAndPerformNoItemWrite() {
+        when(iamActor.resolve(7L)).thenReturn(actor(7L));
+        WarehouseItemImportJobDO job = confirmableJob("confirm-stale", "PREVIEW_READY", 1);
+        when(jobs.findOwned(job.getJobId(), 7L)).thenReturn(job);
+        when(jobs.claimConfirmation(eq(job.getJobId()), eq(7L), eq(1), eq("confirm-stale-1"), any()))
+                .thenAnswer(inv -> { job.setStatus("EXECUTING"); job.setRevision(2); job.setConfirmRequestId("confirm-stale-1"); return 1; });
+        when(files.read(eq("asset-confirm"), eq(7L), eq(DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT))).thenReturn(readWithAsset("asset-confirm", "hash"));
+        WarehouseItemImportRowDO row = importRow("A100", "密封圈", "件", 1, "UPDATE", 3, 1);
+        when(rows.findActiveForConfirm(job.getJobId())).thenReturn(List.of(row));
+        doThrow(new WarehouseService.ItemImportPreconditionException("物品版本已变化"))
+                .when(warehouse).executeItemImportBatch(anyLong(), anyList());
+        when(jobs.markConfirmationFailure(eq(job.getJobId()), eq(7L), eq(1), eq("confirm-stale-1"),
+                eq("NEEDS_REPREVIEW"), any(), eq("IMPORT_REPREVIEW_REQUIRED")))
+                .thenAnswer(inv -> { job.setStatus("NEEDS_REPREVIEW"); job.setRevision(2); job.setConfirmRequestId("confirm-stale-1"); job.setErrorCode("IMPORT_REPREVIEW_REQUIRED"); return 1; });
+
+        var result = service.confirm(7L, job.getJobId(),
+                new WarehouseItemImportApi.WarehouseItemImportConfirmRequest(1, "confirm-stale-1", true));
+
+        assertEquals("NEEDS_REPREVIEW", result.status());
+        assertEquals("IMPORT_REPREVIEW_REQUIRED", result.errorCode());
+        verify(warehouse).executeItemImportBatch(eq(7L), anyList());
+
+        var repeated = service.confirm(7L, job.getJobId(),
+                new WarehouseItemImportApi.WarehouseItemImportConfirmRequest(1, "confirm-stale-1", true));
+        assertEquals("NEEDS_REPREVIEW", repeated.status());
+        verify(warehouse, times(1)).executeItemImportBatch(anyLong(), anyList());
+    }
+
+    @Test
+    void lateFailureCasCannotOverwriteAConcurrentCompletedConfirmation() {
+        when(iamActor.resolve(7L)).thenReturn(actor(7L));
+        WarehouseItemImportJobDO preview = confirmableJob("confirm-race", "PREVIEW_READY", 2);
+        WarehouseItemImportJobDO completed = confirmableJob("confirm-race", "COMPLETED", 4);
+        completed.setConfirmRequestId("other-request");
+        when(jobs.findOwned(preview.getJobId(), 7L)).thenReturn(preview, completed);
+        when(jobs.claimConfirmation(eq(preview.getJobId()), eq(7L), eq(2), eq("failed-request"), any()))
+                .thenReturn(1);
+        when(files.read(eq("asset-confirm"), eq(7L), eq(DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT)))
+                .thenReturn(readWithAsset("asset-confirm", "hash"));
+        WarehouseItemImportRowDO row = importRow("A100", "密封圈", "件", 1, "UPDATE", 3, 1);
+        when(rows.findActiveForConfirm(preview.getJobId())).thenReturn(List.of(row));
+        doThrow(new WarehouseService.ItemImportPreconditionException("物品版本已变化"))
+                .when(warehouse).executeItemImportBatch(anyLong(), anyList());
+        when(jobs.markConfirmationFailure(eq(preview.getJobId()), eq(7L), eq(2), eq("failed-request"),
+                eq("NEEDS_REPREVIEW"), any(), eq("IMPORT_REPREVIEW_REQUIRED"))).thenReturn(0);
+
+        var result = service.confirm(7L, preview.getJobId(),
+                new WarehouseItemImportApi.WarehouseItemImportConfirmRequest(2, "failed-request", true));
+
+        assertEquals("COMPLETED", result.status());
+        verify(jobs).markConfirmationFailure(eq(preview.getJobId()), eq(7L), eq(2), eq("failed-request"),
+                eq("NEEDS_REPREVIEW"), any(), eq("IMPORT_REPREVIEW_REQUIRED"));
+    }
+
+    @Test
+    void repeatedConfirmationAfterTerminalFailureReturnsTheSameResultWithoutRetryingWrites() {
+        when(iamActor.resolve(7L)).thenReturn(actor(7L));
+        WarehouseItemImportJobDO job = confirmableJob("confirm-failed", "EXECUTION_FAILED", 6);
+        job.setConfirmRequestId("confirm-failed-1");
+        job.setErrorCode("IMPORT_DATABASE_UNAVAILABLE");
+        when(jobs.findOwned(job.getJobId(), 7L)).thenReturn(job);
+
+        var result = service.confirm(7L, job.getJobId(),
+                new WarehouseItemImportApi.WarehouseItemImportConfirmRequest(6, "confirm-failed-1", true));
+
+        assertEquals("EXECUTION_FAILED", result.status());
+        assertEquals("IMPORT_DATABASE_UNAVAILABLE", result.errorCode());
+        verifyNoInteractions(files, items, warehouse, rows);
+        verify(jobs, never()).claimConfirmation(anyString(), anyLong(), anyInt(), anyString(), any());
+    }
+
+    private static WarehouseItemImportJobDO confirmableJob(String id, String status, int revision) {
+        WarehouseItemImportJobDO job = new WarehouseItemImportJobDO();
+        job.setJobId(id); job.setCreatorUserId(7L); job.setFileAssetId("asset-confirm"); job.setFileSha256("hash");
+        job.setStatus(status); job.setRevision(revision); job.setCreatedAt(LocalDateTime.now());
+        job.setUpdatedAt(LocalDateTime.now()); job.setExpiresAt(LocalDateTime.now().plusHours(1));
+        job.setTotalRows(1); job.setCreateCount(0); job.setUpdateCount(1); job.setDisableCount(0); job.setUnchangedCount(0); job.setInvalidCount(0); job.setConflictCount(0);
+        return job;
+    }
+
+    private static ControlledDocumentRead readWithAsset(String assetId, String hash) {
+        return new ControlledDocumentRead(new ControlledDocumentAsset(assetId, "items.csv", "text/csv", 10, hash, 7L,
+                DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT, DocumentFileStatus.AVAILABLE, LocalDateTime.now(), LocalDateTime.now().plusHours(1), null),
+                "".getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static WarehouseItemImportRowDO importRow(String code, String name, String unit, int enabled,
+                                                       String category, int version, int currentEnabled) {
+        WarehouseItemImportRowDO row = new WarehouseItemImportRowDO();
+        row.setRowId(UUID.randomUUID().toString()); row.setJobId("confirm"); row.setSourceRowNo(1);
+        row.setCode(code); row.setName(name); row.setBaseUnit(unit); row.setEnabled(enabled); row.setCategory(category);
+        row.setCurrentVersion(version); row.setCurrentEnabled(currentEnabled); row.setExcluded(0);
+        row.setCreatedAt(LocalDateTime.now());
+        return row;
     }
 
     private void stubJob() {

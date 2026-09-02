@@ -17,5 +17,6 @@
     <include file="db/changelog/2026-08-16-0001-create-warehouse-tables.xml"/>
     <include file="db/changelog/2026-09-01-0001-create-item-import-preview.xml"/>
     <include file="db/changelog/2026-09-01-0002-add-item-import-row-excluded.xml"/>
+    <include file="db/changelog/2026-09-01-0003-add-item-import-confirmation.xml"/>
 
 </databaseChangeLog>

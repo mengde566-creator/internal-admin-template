@@ -75,6 +75,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -84,6 +85,8 @@ import java.util.Set;
 public class WarehouseService implements WarehouseQueryApi, WarehouseItemProjectionApi, DepartmentReferenceChecker {
     private static final int MAX_OPTION_ROWS = 100;
     private static final int MAX_PAGE_SIZE = 100;
+    private static final int ITEM_IMPORT_BATCH_SIZE = 200;
+    private static final int MAX_ITEM_IMPORT_ROWS = 100_000;
     private final ItemMapper itemMapper;
     private final WarehouseMapper warehouseMapper;
     private final LocationMapper locationMapper;
@@ -414,6 +417,130 @@ public class WarehouseService implements WarehouseQueryApi, WarehouseItemProject
         Set<Long> movements = movementMapper.selectByItemIds(itemIds).stream()
                 .map(InventoryMovementDO::getItemId).collect(java.util.stream.Collectors.toSet());
         return new ItemImportFacts(Set.copyOf(positiveStock), Set.copyOf(movements));
+    }
+
+    /**
+     * Applies one import preview as a single warehouse transaction.  The caller
+     * supplies only server-owned preview facts; this method re-reads all item,
+     * stock and movement facts in the active transaction before writing anything.
+     * This is an internal transaction-bound operation; callers must invoke it
+     * from the import confirmation TransactionTemplate and must not use it as a
+     * standalone mutation entry point.
+     */
+    /* package */ void executeItemImportBatch(Long operatorId, List<ItemImportCommand> commands) {
+        if (operatorId == null || commands == null || commands.size() > MAX_ITEM_IMPORT_ROWS) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "导入执行范围无效");
+        }
+        List<ItemImportCommand> ordered = commands.stream().toList();
+        Set<String> codes = new java.util.LinkedHashSet<>();
+        for (ItemImportCommand command : ordered) {
+            if (command == null || command.code() == null || command.code().isBlank()
+                    || command.category() == null) {
+                throw new ItemImportPreconditionException("导入预览事实无效");
+            }
+            if (!codes.add(command.code())) {
+                throw new ItemImportPreconditionException("导入编码事实已变化");
+            }
+        }
+        Map<String, ItemDO> current = loadImportItems(codes);
+        Set<Long> itemIds = current.values().stream().map(ItemDO::getId).collect(java.util.stream.Collectors.toSet());
+        ItemImportFacts facts = inspectImportFactsInBatches(itemIds);
+        LocalDateTime now = LocalDateTime.now();
+        for (ItemImportCommand command : ordered) {
+            ItemDO item = current.get(command.code());
+            if ("CREATE".equals(command.category())) {
+                if (item != null || command.expectedVersion() != null || command.expectedEnabled() != null) {
+                    throw new ItemImportPreconditionException("新增物品事实已变化");
+                }
+                ItemDO created = new ItemDO();
+                created.setCode(command.code());
+                created.setName(command.name());
+                created.setBaseUnit(command.baseUnit());
+                created.setEnabled(command.enabled() ? 1 : 0);
+                created.setVersion(1);
+                created.setCreatedAt(now);
+                created.setUpdatedAt(now);
+                try {
+                    if (itemMapper.insert(created) != 1) {
+                        throw new ItemImportPreconditionException("新增物品事实未写入");
+                    }
+                } catch (DataIntegrityViolationException ex) {
+                    throw new ItemImportPreconditionException("新增物品事实已变化");
+                }
+                auditRecordApi.record(operatorId, "WAREHOUSE_ITEM_CREATE", created.getId(), "SUCCESS");
+                publishItemChanged(created.getId(), created.getVersion());
+                continue;
+            }
+            if (item == null || command.expectedVersion() == null
+                    || !command.expectedVersion().equals(item.getVersion())
+                    || command.expectedEnabled() == null
+                    || !command.expectedEnabled().equals(item.getEnabled())) {
+                throw new ItemImportPreconditionException("物品版本或状态已变化");
+            }
+            if ("UNCHANGED".equals(command.category())) {
+                if (!sameImportValues(command, item)) throw new ItemImportPreconditionException("物品字段已变化");
+                continue;
+            }
+            if (!("UPDATE".equals(command.category()) || "DISABLE".equals(command.category()))) {
+                throw new ItemImportPreconditionException("导入行仍存在未处理异常");
+            }
+            if (command.enabled() == false && item.getEnabled() != null && item.getEnabled() == 1
+                    && facts.positiveStockItemIds().contains(item.getId())) {
+                throw new ItemImportPreconditionException("物品存在非零库存，不能停用");
+            }
+            if (!command.baseUnit().equals(item.getBaseUnit()) && facts.movementItemIds().contains(item.getId())) {
+                throw new ItemImportPreconditionException("物品已有库存流水，基本单位不可修改");
+            }
+            item.setName(command.name());
+            item.setBaseUnit(command.baseUnit());
+            item.setEnabled(command.enabled() ? 1 : 0);
+            item.setUpdatedAt(now);
+            if (itemMapper.updateCas(item) != 1) throw new ItemImportPreconditionException("物品版本已变化");
+            auditRecordApi.record(operatorId, "WAREHOUSE_ITEM_UPDATE", item.getId(), "SUCCESS");
+            publishItemChanged(item.getId(), item.getVersion() == null ? 1L : item.getVersion() + 1L);
+        }
+    }
+
+    private static boolean sameImportValues(ItemImportCommand command, ItemDO item) {
+        return java.util.Objects.equals(command.name(), item.getName())
+                && java.util.Objects.equals(command.baseUnit(), item.getBaseUnit())
+                && command.enabled() == Integer.valueOf(1).equals(item.getEnabled());
+    }
+
+    private Map<String, ItemDO> loadImportItems(Set<String> codes) {
+        Map<String, ItemDO> current = new LinkedHashMap<>();
+        List<String> ordered = new ArrayList<>(codes);
+        ordered.sort(String::compareTo);
+        for (int offset = 0; offset < ordered.size(); offset += ITEM_IMPORT_BATCH_SIZE) {
+            List<String> batch = ordered.subList(offset, Math.min(offset + ITEM_IMPORT_BATCH_SIZE, ordered.size()));
+            for (ItemDO item : itemMapper.selectByCodes(batch)) {
+                if (item != null && item.getCode() != null) current.putIfAbsent(item.getCode(), item);
+            }
+        }
+        return current;
+    }
+
+    private ItemImportFacts inspectImportFactsInBatches(Set<Long> itemIds) {
+        if (itemIds.isEmpty()) return new ItemImportFacts(Set.of(), Set.of());
+        Set<Long> positiveStock = new HashSet<>();
+        Set<Long> movements = new HashSet<>();
+        List<Long> ordered = new ArrayList<>(itemIds);
+        ordered.sort(Long::compareTo);
+        for (int offset = 0; offset < ordered.size(); offset += ITEM_IMPORT_BATCH_SIZE) {
+            Set<Long> batch = new java.util.LinkedHashSet<>(ordered.subList(offset,
+                    Math.min(offset + ITEM_IMPORT_BATCH_SIZE, ordered.size())));
+            ItemImportFacts facts = inspectItemImportFacts(batch);
+            positiveStock.addAll(facts.positiveStockItemIds());
+            movements.addAll(facts.movementItemIds());
+        }
+        return new ItemImportFacts(Set.copyOf(positiveStock), Set.copyOf(movements));
+    }
+
+    public record ItemImportCommand(String category, String code, String name, String baseUnit, boolean enabled,
+                                    Integer expectedVersion, Integer expectedEnabled) {}
+
+    public static final class ItemImportPreconditionException extends RuntimeException {
+        public ItemImportPreconditionException(String message) { super(message); }
     }
 
     public record ItemImportFacts(Set<Long> positiveStockItemIds, Set<Long> movementItemIds) {}

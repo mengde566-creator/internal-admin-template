@@ -13,6 +13,8 @@ public interface WarehouseItemImportRowMapper extends BaseMapper<WarehouseItemIm
             "(#{item.rowId}, #{item.jobId}, #{item.sourceRowNo}, #{item.code}, #{item.name}, #{item.baseUnit}, #{item.enabled}, #{item.category}, #{item.errorCode}, #{item.recommendation}, #{item.currentVersion}, #{item.currentEnabled}, #{item.excluded}, #{item.createdAt})",
             "</foreach>", "</script>"})
     int insertBatch(@Param("values") List<WarehouseItemImportRowDO> values);
+    @Select("SELECT row_id, job_id, source_row_no, code, name, base_unit, enabled, category, error_code, recommendation, current_version, current_enabled, excluded, created_at FROM (SELECT row_id, job_id, source_row_no, code, name, base_unit, enabled, category, error_code, recommendation, current_version, current_enabled, excluded, created_at, ROW_NUMBER() OVER (ORDER BY source_row_no, row_id) AS row_num FROM wh_item_import_row WHERE job_id=#{jobId} AND excluded=0) bounded WHERE row_num <= 100001 ORDER BY row_num")
+    List<WarehouseItemImportRowDO> findActiveForConfirm(@Param("jobId") String jobId);
     @Select({"<script>", "SELECT row_id, job_id, source_row_no, code, name, base_unit, enabled, category, error_code, recommendation, current_version, current_enabled, excluded, created_at FROM (",
             "SELECT row_id, job_id, source_row_no, code, name, base_unit, enabled, category, error_code, recommendation, current_version, current_enabled, excluded, created_at,",
             "ROW_NUMBER() OVER (ORDER BY source_row_no, row_id) AS row_num FROM wh_item_import_row WHERE job_id=#{jobId}",

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+    <changeSet id="2026-09-01-0003-add-item-import-confirmation" author="template">
+        <addColumn tableName="wh_item_import_job">
+            <column name="completed_at" type="TIMESTAMP"/>
+            <column name="confirm_request_id" type="VARCHAR(100)"/>
+        </addColumn>
+        <createIndex indexName="uk_wh_item_import_confirm_request" tableName="wh_item_import_job" unique="true">
+            <column name="creator_user_id"/>
+            <column name="confirm_request_id"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>

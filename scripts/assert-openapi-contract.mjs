@@ -161,6 +161,7 @@ const expectedPaths = [
   '/api/warehouse/item-imports/template',
   '/api/warehouse/item-imports/{jobId}',
   '/api/warehouse/item-imports/{jobId}/cancel',
+  '/api/warehouse/item-imports/{jobId}/confirm',
   '/api/warehouse/item-imports/{jobId}/reanalyze',
   '/api/warehouse/item-imports/{jobId}/rows',
   '/api/warehouse/item-imports/{jobId}/rows/{sourceRowNo}/exclude',

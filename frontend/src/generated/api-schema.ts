@@ -676,6 +676,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/warehouse/item-imports/{jobId}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/warehouse/item-imports/{jobId}/reanalyze": {
         parameters: {
             query?: never;
@@ -1893,7 +1909,15 @@ export interface components {
             departmentId: number;
             name: string;
         };
+        WarehouseItemImportConfirmRequest: {
+            clientRequestId?: string;
+            confirmed?: boolean;
+            /** Format: int32 */
+            revision?: number;
+        };
         WarehouseItemImportJobView: {
+            /** Format: date-time */
+            completedAt?: string;
             /** Format: int32 */
             conflictCount?: number;
             /** Format: int32 */
@@ -1903,6 +1927,8 @@ export interface components {
             /** Format: int32 */
             disableCount?: number;
             errorCode?: string;
+            /** Format: int32 */
+            excludedCount?: number;
             /** Format: date-time */
             expiresAt?: string;
             /** Format: int32 */
@@ -3179,6 +3205,32 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseWarehouseItemImportJobView"];
+                };
+            };
+        };
+    };
+    confirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WarehouseItemImportConfirmRequest"];
+            };
+        };
         responses: {
             /** @description OK */
             200: {

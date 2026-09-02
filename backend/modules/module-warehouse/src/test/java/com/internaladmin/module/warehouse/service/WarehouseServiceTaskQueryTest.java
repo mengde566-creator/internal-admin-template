@@ -25,6 +25,7 @@ import com.internaladmin.module.warehouse.model.entity.StockBalanceDO;
 import com.internaladmin.module.warehouse.model.entity.InventoryMovementDO;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.List;
 import java.util.Set;
@@ -390,6 +391,122 @@ class WarehouseServiceTaskQueryTest {
         assertEquals(Set.of(12L), facts.movementItemIds());
         verify(balances).selectByItemIds(eq(Set.of(11L, 12L)));
         verify(movements).selectByItemIds(eq(Set.of(11L, 12L)));
+    }
+
+    @Test
+    void itemImportBatchRechecksFactsAndUsesOneWarehouseTransactionPath() {
+        ItemMapper items = mock(ItemMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        InventoryMovementMapper movements = mock(InventoryMovementMapper.class);
+        AuditRecordApi audit = mock(AuditRecordApi.class);
+        ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+        ItemDO existing = item(11L, "A100", "旧名");
+        existing.setBaseUnit("件"); existing.setEnabled(1); existing.setVersion(2);
+        when(items.selectByCodes(anyCollection())).thenReturn(List.of(existing));
+        when(balances.selectByItemIds(anySet())).thenReturn(List.of());
+        when(movements.selectByItemIds(anySet())).thenReturn(List.of());
+        when(items.updateCas(any(ItemDO.class))).thenReturn(1);
+        when(items.insert(any(ItemDO.class))).thenAnswer(invocation -> {
+            ItemDO created = invocation.getArgument(0);
+            created.setId(12L);
+            return 1;
+        });
+        WarehouseService service = new WarehouseService(items, mock(WarehouseMapper.class), mock(LocationMapper.class),
+                balances, mock(InventoryOperationMapper.class), movements, mock(IamActorApi.class),
+                mock(DepartmentQueryApi.class), audit, mock(PlatformTransactionManager.class));
+        service.setEventPublisher(events);
+
+        service.executeItemImportBatch(7L, List.of(
+                new WarehouseService.ItemImportCommand("CREATE", "B200", "新物品", "件", true, null, null),
+                new WarehouseService.ItemImportCommand("UPDATE", "A100", "新名", "件", true, 2, 1)));
+
+        verify(items).selectByCodes(anyCollection());
+        verify(items).insert(any(ItemDO.class));
+        verify(items).updateCas(argThat(row -> "新名".equals(row.getName()) && row.getVersion() == 2));
+        verify(audit).record(eq(7L), eq("WAREHOUSE_ITEM_CREATE"), any(), eq("SUCCESS"));
+        verify(audit).record(eq(7L), eq("WAREHOUSE_ITEM_UPDATE"), any(), eq("SUCCESS"));
+        verify(events, times(2)).publishEvent(any(com.internaladmin.module.warehouse.api.WarehouseItemChangedEvent.class));
+    }
+
+    @Test
+    void itemImportBatchAppliesCreateUpdateDisableAndUnchangedWithoutPartialWrites() {
+        ItemMapper items = mock(ItemMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        InventoryMovementMapper movements = mock(InventoryMovementMapper.class);
+        AuditRecordApi audit = mock(AuditRecordApi.class);
+        ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+        ItemDO update = item(11L, "A100", "旧名");
+        update.setVersion(2); update.setEnabled(1);
+        ItemDO disable = item(12L, "D300", "待停用");
+        disable.setVersion(4); disable.setEnabled(1);
+        ItemDO unchanged = item(13L, "U400", "不变");
+        unchanged.setVersion(3); unchanged.setEnabled(1);
+        when(items.selectByCodes(anyCollection())).thenReturn(List.of(update, disable, unchanged));
+        when(balances.selectByItemIds(anySet())).thenReturn(List.of());
+        when(movements.selectByItemIds(anySet())).thenReturn(List.of());
+        when(items.insert(any(ItemDO.class))).thenAnswer(invocation -> {
+            ItemDO created = invocation.getArgument(0);
+            created.setId(14L);
+            return 1;
+        });
+        when(items.updateCas(any(ItemDO.class))).thenReturn(1);
+        WarehouseService service = new WarehouseService(items, mock(WarehouseMapper.class), mock(LocationMapper.class),
+                balances, mock(InventoryOperationMapper.class), movements, mock(IamActorApi.class),
+                mock(DepartmentQueryApi.class), audit, mock(PlatformTransactionManager.class));
+        service.setEventPublisher(events);
+
+        service.executeItemImportBatch(7L, List.of(
+                new WarehouseService.ItemImportCommand("CREATE", "C200", "新建", "件", true, null, null),
+                new WarehouseService.ItemImportCommand("UPDATE", "A100", "新名", "件", true, 2, 1),
+                new WarehouseService.ItemImportCommand("DISABLE", "D300", "待停用", "件", false, 4, 1),
+                new WarehouseService.ItemImportCommand("UNCHANGED", "U400", "不变", "件", true, 3, 1)));
+
+        verify(items, times(1)).insert(any(ItemDO.class));
+        verify(items, times(2)).updateCas(any(ItemDO.class));
+        verify(audit, times(1)).record(eq(7L), eq("WAREHOUSE_ITEM_CREATE"), any(), eq("SUCCESS"));
+        verify(audit, times(2)).record(eq(7L), eq("WAREHOUSE_ITEM_UPDATE"), any(), eq("SUCCESS"));
+        verify(events, times(3)).publishEvent(any(com.internaladmin.module.warehouse.api.WarehouseItemChangedEvent.class));
+    }
+
+    @Test
+    void itemImportBatchRejectsChangedStockBeforeAnyWrite() {
+        ItemMapper items = mock(ItemMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        InventoryMovementMapper movements = mock(InventoryMovementMapper.class);
+        AuditRecordApi audit = mock(AuditRecordApi.class);
+        ItemDO existing = item(11L, "A100", "旧名");
+        existing.setBaseUnit("件"); existing.setEnabled(1); existing.setVersion(2);
+        when(items.selectByCodes(anyCollection())).thenReturn(List.of(existing));
+        StockBalanceDO stock = new StockBalanceDO(); stock.setItemId(11L); stock.setQuantityScaled(1L);
+        when(balances.selectByItemIds(anySet())).thenReturn(List.of(stock));
+        when(movements.selectByItemIds(anySet())).thenReturn(List.of());
+        WarehouseService service = new WarehouseService(items, mock(WarehouseMapper.class), mock(LocationMapper.class),
+                balances, mock(InventoryOperationMapper.class), movements, mock(IamActorApi.class),
+                mock(DepartmentQueryApi.class), audit, mock(PlatformTransactionManager.class));
+
+        assertThrows(WarehouseService.ItemImportPreconditionException.class, () -> service.executeItemImportBatch(7L,
+                List.of(new WarehouseService.ItemImportCommand("DISABLE", "A100", "旧名", "件", false, 2, 1))));
+
+        verify(items, never()).insert(any(ItemDO.class));
+        verify(items, never()).updateCas(any());
+        verifyNoInteractions(audit);
+    }
+
+    @Test
+    void itemImportBatchTreatsAnInsertThatDidNotAffectOneRowAsPreconditionFailure() {
+        ItemMapper items = mock(ItemMapper.class);
+        StockBalanceMapper balances = mock(StockBalanceMapper.class);
+        InventoryMovementMapper movements = mock(InventoryMovementMapper.class);
+        AuditRecordApi audit = mock(AuditRecordApi.class);
+        when(items.selectByCodes(anyCollection())).thenReturn(List.of());
+        when(items.insert(any(ItemDO.class))).thenReturn(0);
+        WarehouseService service = new WarehouseService(items, mock(WarehouseMapper.class), mock(LocationMapper.class),
+                balances, mock(InventoryOperationMapper.class), movements, mock(IamActorApi.class),
+                mock(DepartmentQueryApi.class), audit, mock(PlatformTransactionManager.class));
+
+        assertThrows(WarehouseService.ItemImportPreconditionException.class, () -> service.executeItemImportBatch(7L,
+                List.of(new WarehouseService.ItemImportCommand("CREATE", "C200", "新建", "件", true, null, null))));
+        verifyNoInteractions(audit);
     }
 
     private ItemDO item(Long id, String code, String name) {
