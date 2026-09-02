@@ -84,6 +84,12 @@ export const router = createRouter({
           name: 'ai-observability',
           component: () => import('../../modules/observability/pages/AiObservabilityPage.vue'),
           meta: { title: 'AI 观测', permission: 'ai:observability:view' }
+        },
+        {
+          path: 'ai-knowledge/drafts',
+          name: 'ai-knowledge-drafts',
+          component: () => import('../../modules/knowledge/pages/KnowledgeDraftManagePage.vue'),
+          meta: { title: '知识资料', permission: 'ai:knowledge:manage' }
         }
       ]
     },

@@ -196,6 +196,54 @@
         },
         "type": "object"
       },
+      "ApiResponseDraftPage": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftPage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ApiResponseDraftView": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ApiResponseEvaluationDetail": {
         "properties": {
           "code": {
@@ -1348,6 +1396,97 @@
         },
         "type": "object"
       },
+      "DraftPage": {
+        "properties": {
+          "page": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/DraftView"
+            },
+            "type": "array"
+          },
+          "size": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "DraftView": {
+        "properties": {
+          "characterCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "contentHash": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "documentCode": {
+            "type": "string"
+          },
+          "draftId": {
+            "type": "string"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ignoredCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "parserVersion": {
+            "type": "string"
+          },
+          "sectionCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/SectionView"
+            },
+            "type": "array"
+          },
+          "sourceType": {
+            "type": "string"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "versionCode": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "EvaluationDetail": {
         "properties": {
           "categories": {
@@ -2404,6 +2543,31 @@
         },
         "type": "object"
       },
+      "SectionView": {
+        "properties": {
+          "changeType": {
+            "type": "string"
+          },
+          "characterCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "content": {
+            "type": "string"
+          },
+          "heading": {
+            "type": "string"
+          },
+          "sectionKey": {
+            "type": "string"
+          },
+          "sectionNo": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "StartRequest": {
         "properties": {
           "clientRequestId": {
@@ -3199,6 +3363,179 @@
         },
         "tags": [
           "ai-feedback-controller"
+        ]
+      }
+    },
+    "/api/ai/knowledge/drafts": {
+      "get": {
+        "operationId": "list_2",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseDraftPage"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "knowledge-draft-controller"
+        ]
+      },
+      "post": {
+        "operationId": "submit_1",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "documentCode",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "versionCode",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "title",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "clientRequestId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseDraftView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "knowledge-draft-controller"
+        ]
+      }
+    },
+    "/api/ai/knowledge/drafts/{draftId}": {
+      "get": {
+        "operationId": "get_1",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draftId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseDraftView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "knowledge-draft-controller"
+        ]
+      }
+    },
+    "/api/ai/knowledge/drafts/{draftId}/source": {
+      "get": {
+        "operationId": "source",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draftId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "byte",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "tags": [
+          "knowledge-draft-controller"
         ]
       }
     },
@@ -4235,7 +4572,7 @@
     },
     "/api/system/configs": {
       "get": {
-        "operationId": "list_2",
+        "operationId": "list_3",
         "responses": {
           "200": {
             "content": {

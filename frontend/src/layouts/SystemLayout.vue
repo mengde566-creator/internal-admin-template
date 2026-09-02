@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { HomeFilled, User, Avatar, Picture, Setting, SwitchButton, OfficeBuilding, Box } from '@element-plus/icons-vue'
+import { HomeFilled, User, Avatar, Picture, Setting, SwitchButton, OfficeBuilding, Box, Document } from '@element-plus/icons-vue'
 import AdminShell from './AdminShell.vue'
 import AppTopbar from './AppTopbar.vue'
 import type { NavigationItem } from './types'
@@ -33,7 +33,8 @@ const navigation = computed<NavigationItem[]>(() => [
   ...(auth.hasPermission('warehouse:read') ? [{ key: 'warehouse', label: '仓储', icon: Box }] : []),
   ...(auth.hasPermission('iam:role:manage') ? [{ key: 'roles', label: '角色管理', icon: Avatar }] : []),
   ...(auth.hasPermission('system:config:manage') ? [{ key: 'system-config', label: '系统配置', icon: Setting }] : []),
-  ...(aiEnabled.value && auth.hasPermission('ai:observability:view') ? [{ key: 'ai-observability', label: 'AI 观测', icon: Setting }] : [])
+  ...(aiEnabled.value && auth.hasPermission('ai:observability:view') ? [{ key: 'ai-observability', label: 'AI 观测', icon: Setting }] : []),
+  ...(aiEnabled.value && auth.hasPermission('ai:knowledge:manage') ? [{ key: 'ai-knowledge-drafts', label: '知识资料', icon: Document }] : [])
 ])
 
 /** 当前激活的导航项 key（按路由名匹配） */

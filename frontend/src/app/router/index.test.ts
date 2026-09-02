@@ -74,4 +74,10 @@ describe('应用路由守卫', () => {
     expect(observation?.path).toBe('/ai-observability')
     expect(observation?.meta?.permission).toBe('ai:observability:view')
   })
+
+  it('知识资料入口使用知识管理权限', () => {
+    const drafts = router.getRoutes().find((route) => route.name === 'ai-knowledge-drafts')
+    expect(drafts?.path).toBe('/ai-knowledge/drafts')
+    expect(drafts?.meta?.permission).toBe('ai:knowledge:manage')
+  })
 })

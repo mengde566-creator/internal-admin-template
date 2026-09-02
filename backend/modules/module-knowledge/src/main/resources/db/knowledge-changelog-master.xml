@@ -66,4 +66,5 @@
             <column name="token_index"/>
         </createIndex>
     </changeSet>
+    <include file="db/knowledge-changelog-0004-drafts.xml"/>
 </databaseChangeLog>

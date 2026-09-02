@@ -31,6 +31,8 @@ import com.internaladmin.module.warehouse.service.WarehouseService;
 import com.internaladmin.module.warehouse.api.WarehouseItemImportApi;
 import com.internaladmin.module.iam.api.IamActorApi;
 import com.internaladmin.module.knowledge.api.AiProperties;
+import com.internaladmin.module.knowledge.api.KnowledgeDraftApi;
+import com.internaladmin.module.knowledge.controller.KnowledgeDraftController;
 import com.internaladmin.module.ai.observability.api.AiFeedbackApi;
 import com.internaladmin.module.ai.observability.api.AiEvaluationApi;
 import com.internaladmin.module.ai.observability.api.AiObservabilityQueryApi;
@@ -158,6 +160,9 @@ class NoDatabaseOpenApiContractTest {
         assertTrue(specification.path("paths").has("/api/ai/observability/evaluations/configs"));
         assertTrue(specification.path("paths").has("/api/ai/observability/evaluations/runs"));
         assertTrue(specification.path("paths").has("/api/ai/observability/evaluations/runs/{evaluationRunId}"));
+        assertTrue(specification.path("paths").has("/api/ai/knowledge/drafts"));
+        assertTrue(specification.path("paths").has("/api/ai/knowledge/drafts/{draftId}"));
+        assertTrue(specification.path("paths").has("/api/ai/knowledge/drafts/{draftId}/source"));
 
         writeRawSpecification(json);
     }
@@ -424,6 +429,16 @@ class NoDatabaseOpenApiContractTest {
         @Bean
         IamActorApi iamActorApi() {
             return mock(IamActorApi.class);
+        }
+
+        @Bean
+        KnowledgeDraftApi knowledgeDraftApi() {
+            return mock(KnowledgeDraftApi.class);
+        }
+
+        @Bean
+        KnowledgeDraftController knowledgeDraftController(KnowledgeDraftApi knowledgeDraftApi) {
+            return new KnowledgeDraftController(knowledgeDraftApi);
         }
 
         @Bean

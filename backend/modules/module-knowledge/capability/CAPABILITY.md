@@ -2,7 +2,7 @@
 
 ## 1. 定位与非目标
 
-为已开启的 Agent 提供固定合成 Markdown 的版本、切片、Embedding 与 PostgreSQL/pgvector 检索。对应 `FUN-00`、`SCN-CFG-01～04`、`SCN-K-01/02`。本模块不管理上传、OCR、实时库存、对话历史或知识管理页面。
+为已开启的 Agent 提供固定合成 Markdown 的版本、切片、Embedding 与 PostgreSQL/pgvector 检索，并拥有知识维护人员的受控文档草稿与确定性预览底座。对应 `FUN-00`、`SCN-CFG-01～04`、`SCN-K-01/02`。本模块不提供 OCR、实时库存、对话历史、知识发布或在线编辑器；管理页面由 app-server/frontend 组合。
 
 ## 2. 特有约束
 
@@ -13,15 +13,15 @@
 
 ## 3. 公开与跨模块契约
 
-`KnowledgeQueryApi` 仅返回 `FOUND`、`NO_EVIDENCE` 或 `UNAVAILABLE` 及带文档/版本/片段引用的受信结果；不暴露 DO、Mapper、JdbcTemplate 或数据库分页对象。固定样本导入入口只接受服务端登记的样本，不接受路径和正文。知识检索通过 `KnowledgeRetrievalEmbeddingClient` 区分 document/query；另以 `AiSearchInfrastructure` 提供受控 AI DataSource、JdbcTemplate 与旧的 1024 维 EmbeddingModel，供已授权的 Adapter 派生索引使用；不暴露知识表或内部 Bean 名称。
+`KnowledgeQueryApi` 仅返回 `FOUND`、`NO_EVIDENCE` 或 `UNAVAILABLE` 及带文档/版本/片段引用的受信结果；不暴露 DO、Mapper、JdbcTemplate 或数据库分页对象。固定样本导入入口只接受服务端登记的样本，不接受路径和正文。`KnowledgeDraftApi` 仅接受文档编码、版本、标题、幂等键和原始字节，由 module-file 校验并以 `USER_UPLOAD` 保存草稿，草稿不创建向量、不切换 ACTIVE。知识检索通过 `KnowledgeRetrievalEmbeddingClient` 区分 document/query；另以 `AiSearchInfrastructure` 提供受控 AI DataSource、JdbcTemplate 与旧的 1024 维 EmbeddingModel，供已授权的 Adapter 派生索引使用；不暴露知识表或内部 Bean 名称。
 
 ## 4. 数据所有权
 
-拥有 `ai_knowledge_document`、`ai_knowledge_version`、`ai_knowledge_vector` 及本模块 Liquibase 变更集。向量表字段与 PgVectorStore 兼容，版本表是 ACTIVE 状态唯一事实源。
+拥有 `ai_knowledge_document`、`ai_knowledge_version`、`ai_knowledge_vector`、`ai_knowledge_draft`、`ai_knowledge_draft_section` 及本模块 Liquibase 变更集。向量表字段与 PgVectorStore 兼容，版本表是 ACTIVE 状态唯一事实源；草稿表只保存受控预览和文件资产引用。
 
 ## 5. 依赖与组合
 
-仅依赖基础数据/Web 能力和 Spring AI OpenAI Embedding、PgVectorStore；`module-agent` 只依赖本模块公开类型，不反向访问内部表。
+仅依赖基础数据/Web 能力、module-file/module-iam 和 Spring AI OpenAI Embedding、PgVectorStore；`module-agent` 只依赖本模块公开类型，不反向访问内部表。
 
 ## 6. 装配与裁剪
 

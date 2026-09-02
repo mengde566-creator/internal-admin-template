@@ -84,6 +84,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ai/knowledge/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_2"];
+        put?: never;
+        post: operations["submit_1"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/knowledge/drafts/{draftId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_1"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/knowledge/drafts/{draftId}/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["source"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ai/observability/evaluations/configs": {
         parameters: {
             query?: never;
@@ -507,7 +555,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["list_2"];
+        get: operations["list_3"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1098,6 +1146,18 @@ export interface components {
             message?: string;
             success?: boolean;
         };
+        ApiResponseDraftPage: {
+            code?: string;
+            data?: components["schemas"]["DraftPage"] | null;
+            message?: string;
+            success?: boolean;
+        };
+        ApiResponseDraftView: {
+            code?: string;
+            data?: components["schemas"]["DraftView"] | null;
+            message?: string;
+            success?: boolean;
+        };
         ApiResponseEvaluationDetail: {
             code?: string;
             data?: components["schemas"]["EvaluationDetail"] | null;
@@ -1429,6 +1489,41 @@ export interface components {
             nodes?: components["schemas"]["DepartmentNodeDTO"][];
             /** Format: int32 */
             version?: number;
+        };
+        DraftPage: {
+            /** Format: int32 */
+            page?: number;
+            records?: components["schemas"]["DraftView"][];
+            /** Format: int32 */
+            size?: number;
+            /** Format: int64 */
+            total?: number;
+        };
+        DraftView: {
+            /** Format: int32 */
+            characterCount?: number;
+            contentHash?: string;
+            /** Format: date-time */
+            createdAt?: string;
+            documentCode?: string;
+            draftId?: string;
+            errorCode?: string;
+            /** Format: date-time */
+            expiresAt?: string;
+            /** Format: int32 */
+            ignoredCount?: number;
+            parserVersion?: string;
+            /** Format: int32 */
+            sectionCount?: number;
+            sections?: components["schemas"]["SectionView"][];
+            sourceType?: string;
+            stale?: boolean;
+            status?: string;
+            title?: string;
+            truncated?: boolean;
+            /** Format: date-time */
+            updatedAt?: string;
+            versionCode?: string;
         };
         EvaluationDetail: {
             categories?: {
@@ -1785,6 +1880,16 @@ export interface components {
             startedAt?: string;
             status?: string;
             steps?: components["schemas"]["StepTimeline"][];
+        };
+        SectionView: {
+            changeType?: string;
+            /** Format: int32 */
+            characterCount?: number;
+            content?: string;
+            heading?: string;
+            sectionKey?: string;
+            /** Format: int32 */
+            sectionNo?: number;
         };
         StartRequest: {
             clientRequestId: string;
@@ -2157,6 +2262,105 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseVoid"];
+                };
+            };
+        };
+    };
+    list_2: {
+        parameters: {
+            query?: {
+                page?: number;
+                size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseDraftPage"];
+                };
+            };
+        };
+    };
+    submit_1: {
+        parameters: {
+            query: {
+                documentCode: string;
+                versionCode: string;
+                title: string;
+                clientRequestId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseDraftView"];
+                };
+            };
+        };
+    };
+    get_1: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                draftId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseDraftView"];
+                };
+            };
+        };
+    };
+    source: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                draftId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
                 };
             };
         };
@@ -2869,7 +3073,7 @@ export interface operations {
             };
         };
     };
-    list_2: {
+    list_3: {
         parameters: {
             query?: never;
             header?: never;

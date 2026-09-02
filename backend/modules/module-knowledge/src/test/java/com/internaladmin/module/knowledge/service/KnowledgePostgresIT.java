@@ -2,12 +2,14 @@ package com.internaladmin.module.knowledge.service;
 
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.knowledge.mapper.KnowledgeMapper;
+import com.internaladmin.module.knowledge.mapper.KnowledgeDraftMapper;
 import liquibase.integration.spring.SpringLiquibase;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient;
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.RetrievalEmbedding;
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.SparseEntry;
+import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -110,17 +112,61 @@ class KnowledgePostgresIT {
             assertThat(embeddingCalls).hasValue(callsAfterFirst);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_knowledge.ai_knowledge_version WHERE status='ACTIVE'", Integer.class))
                     .isEqualTo(4);
-            assertThat(service.query("出库前要检查什么", 5).status())
+            assertThat(jdbc.queryForObject("SELECT d.title FROM ai_knowledge.ai_knowledge_document d "
+                            + "JOIN ai_knowledge.ai_knowledge_version v ON v.document_id=d.id "
+                            + "WHERE d.document_code='warehouse-rules' AND v.status='ACTIVE'", String.class))
+                    .isEqualTo("仓储操作规则（合成测试资料，当前版）");
+            KnowledgeQueryApi.Result activeQuery = service.query("出库前要检查什么", 5);
+            assertThat(activeQuery.status())
                     .isEqualTo(com.internaladmin.module.knowledge.api.KnowledgeQueryApi.Status.FOUND);
+            assertThat(activeQuery.citations()).allSatisfy(citation ->
+                    assertThat(citation.title()).isEqualTo("仓储操作规则（合成测试资料，当前版）"));
             assertThat(service.query("客户折扣", 5).status())
                     .isEqualTo(com.internaladmin.module.knowledge.api.KnowledgeQueryApi.Status.NO_EVIDENCE);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM knowledge_databasechangelog", Integer.class))
-                    .isGreaterThanOrEqualTo(3);
+                    .isGreaterThanOrEqualTo(4);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables "
                     + "WHERE table_schema='ai_knowledge' AND table_name='ai_knowledge_sparse_vector'", Integer.class))
                     .isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_knowledge.ai_knowledge_sparse_vector", Integer.class))
                     .isGreaterThan(0);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables "
+                    + "WHERE table_schema='ai_knowledge' AND table_name='ai_knowledge_draft'", Integer.class))
+                    .isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables "
+                    + "WHERE table_schema='ai_knowledge' AND table_name='ai_knowledge_draft_section'", Integer.class))
+                    .isEqualTo(1);
+            KnowledgeDraftMapper draftMapper = new KnowledgeDraftMapper(jdbc);
+            java.time.Instant draftNow = java.time.Instant.parse("2026-09-02T00:00:00Z");
+            KnowledgeDraftMapper.DraftRow draft = new KnowledgeDraftMapper.DraftRow(
+                    "draft-pg-1", "warehouse-rules", "v-draft", "草稿规则", 42L, "asset-pg-1", "USER_UPLOAD",
+                    "PREVIEW_READY", KnowledgeDocumentParser.PARSER_VERSION, "draft-hash", 10, 2, 1, false,
+                    "v2", "active-hash", null, draftNow, draftNow, draftNow.plusSeconds(3600));
+            assertThat(draftMapper.insertDraft(draft, "request-pg-1")).isEqualTo(1);
+            List<KnowledgeDraftMapper.SectionRow> draftSections = List.of(
+                    new KnowledgeDraftMapper.SectionRow("draft-section-pg-1", null, 1, "rule", "规则",
+                            "必须核对", 4, "section-hash-1", "ADDED"),
+                    new KnowledgeDraftMapper.SectionRow("draft-section-pg-2", null, 2, "more", "更多",
+                            "不得跳过", 4, "section-hash-2", "ADDED"));
+            assertThat(draftMapper.insertSections(draft.draftId(), draftSections)).hasSize(2);
+            assertThat(draftMapper.findByRequest(42L, "request-pg-1").draftId()).isEqualTo("draft-pg-1");
+            assertThat(draftMapper.findByDocumentVersion("warehouse-rules", "v-draft").draftId())
+                    .isEqualTo("draft-pg-1");
+            assertThat(draftMapper.findSections("draft-pg-1", 42L)).hasSize(2);
+            assertThat(draftMapper.findSections("draft-pg-1", 99L)).isEmpty();
+            assertThat(service.query("出库前要检查什么", 5).citations())
+                    .allSatisfy(citation -> assertThat(citation.versionCode()).isEqualTo("v2"));
+            org.springframework.transaction.support.TransactionTemplate rollback =
+                    new org.springframework.transaction.support.TransactionTemplate(tx);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> rollback.executeWithoutResult(status -> {
+                KnowledgeDraftMapper.DraftRow rolledBack = new KnowledgeDraftMapper.DraftRow(
+                        "draft-pg-rollback", "warehouse-rules", "v-rollback", "回滚", 42L, "asset-pg-rb", "USER_UPLOAD",
+                        "PREVIEW_READY", KnowledgeDocumentParser.PARSER_VERSION, "rollback-hash", 1, 1, 0, false,
+                        null, null, null, draftNow, draftNow, draftNow.plusSeconds(3600));
+                draftMapper.insertDraft(rolledBack, "request-pg-rollback");
+                throw new IllegalStateException("rollback-proof");
+            })).hasMessageContaining("rollback-proof");
+            assertThat(draftMapper.findByRequest(42L, "request-pg-rollback")).isNull();
             if ("true".equals(System.getProperty("RUN_KNOWLEDGE_TRGM_GATE"))) {
                 // The production pg_trgm changeSet is intentionally not adopted after a failed Gate.
                 // This explicit extension is scoped to the disposable evaluation database only.
