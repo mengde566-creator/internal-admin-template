@@ -1,6 +1,8 @@
 package com.internaladmin.module.warehouse.service;
 
 import com.internaladmin.module.file.api.*;
+import com.internaladmin.module.file.mapper.ControlledDocumentAssetMapper;
+import com.internaladmin.module.file.service.ControlledDocumentFileService;
 import com.internaladmin.module.iam.api.IamActorApi;
 import com.internaladmin.module.iam.api.IamActorDTO;
 import com.internaladmin.module.iam.api.PermissionCodes;
@@ -11,16 +13,25 @@ import com.internaladmin.module.warehouse.model.entity.ItemDO;
 import com.internaladmin.module.warehouse.model.entity.WarehouseItemImportJobDO;
 import com.internaladmin.module.warehouse.model.entity.WarehouseItemImportRowDO;
 import com.internaladmin.module.warehouse.model.dto.WarehouseItemImportRowCount;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.HexFormat;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -29,6 +40,9 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class WarehouseItemImportServiceTest {
+    @TempDir
+    Path fileStorageRoot;
+
     private final ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
     private final ItemMapper items = mock(ItemMapper.class);
     private final WarehouseService warehouse = mock(WarehouseService.class);
@@ -54,6 +68,160 @@ class WarehouseItemImportServiceTest {
             assertEquals(List.of("物品编码", "物品名称", "基本单位", "启用状态"),
                     java.util.stream.IntStream.range(0, 4).mapToObj(i -> sheet.getRow(0).getCell(i).getStringCellValue()).toList());
             assertTrue(java.util.stream.IntStream.range(0, 4).allMatch(i -> sheet.getRow(0).getCell(i).getCellComment() != null));
+        }
+    }
+
+    @Test
+    void generatedTemplatePassesControlledDocumentValidation() {
+        when(iamActor.resolve(7L)).thenReturn(actor(7L));
+        ControlledDocumentAssetMapper assetMapper = mock(ControlledDocumentAssetMapper.class);
+        when(assetMapper.insert(any(com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO.class))).thenReturn(1);
+        when(assetMapper.updateById(any(com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO.class))).thenReturn(1);
+        ControlledDocumentFileService documents = new ControlledDocumentFileService(assetMapper,
+                () -> new DocumentFileLimitSnapshot(10 * 1024 * 1024, 100_000, 1_000_000, 2_000, 7, 30),
+                fileStorageRoot.toString(), null);
+        try {
+            byte[] template = service.template(7L);
+            ControlledDocumentAsset stored = documents.store(new ControlledDocumentStoreRequest(7L,
+                    DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT, "物品导入模板.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    new java.io.ByteArrayInputStream(template)));
+            assertEquals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    stored.actualContentType());
+        } finally {
+            try {
+                var shutdown = ControlledDocumentFileService.class.getDeclaredMethod("shutdown");
+                shutdown.setAccessible(true);
+                shutdown.invoke(documents);
+            } catch (ReflectiveOperationException exception) {
+                throw new AssertionError("无法关闭测试文件处理执行器", exception);
+            }
+        }
+    }
+
+    @Test
+    void fixedBrowserFixturePassesControlledFileValidationAndWarehouseParsing() throws Exception {
+        byte[] fixture;
+        try (var input = getClass().getResourceAsStream("/fixtures/06F-ITEM-0908-POI.xlsx")) {
+            assertNotNull(input, "固定浏览器 fixture 必须存在");
+            fixture = input.readAllBytes();
+        }
+        assertEquals("2db6b5051fcb4fb48f42ca89dc6195e361ddac751ebee3c000146b005c762b6f", sha256(fixture));
+
+        ControlledDocumentAssetMapper assetMapper = mock(ControlledDocumentAssetMapper.class);
+        var persisted = new com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO[1];
+        when(assetMapper.insert(any(com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO.class)))
+                .thenAnswer(invocation -> { persisted[0] = invocation.getArgument(0); return 1; });
+        when(assetMapper.updateById(any(com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO.class)))
+                .thenAnswer(invocation -> { persisted[0] = invocation.getArgument(0); return 1; });
+        when(assetMapper.selectById(anyString())).thenAnswer(invocation -> persisted[0]);
+        ControlledDocumentFileService documents = new ControlledDocumentFileService(assetMapper,
+                () -> new DocumentFileLimitSnapshot(10 * 1024 * 1024, 100_000, 1_000_000, 2_000, 7, 30),
+                fileStorageRoot.toString(), null);
+        Logger logger = (Logger) LoggerFactory.getLogger(WarehouseItemImportService.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> logAppender = new ListAppender<>();
+        logAppender.start();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(logAppender);
+        try {
+            stubJob();
+            when(files.store(any(ControlledDocumentStoreRequest.class)))
+                    .thenAnswer(invocation -> documents.store(invocation.getArgument(0)));
+            when(files.read(anyString(), eq(7L), eq(DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT)))
+                    .thenAnswer(invocation -> documents.read(invocation.getArgument(0), 7L,
+                            DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT));
+            when(items.selectByCodes(anyCollection())).thenReturn(List.of());
+            when(warehouse.inspectItemImportFacts(anySet()))
+                    .thenReturn(new WarehouseService.ItemImportFacts(Set.of(), Set.of()));
+
+            var view = awaitTerminal(service.submit(7L, "fixed-browser-fixture", "06F-ITEM-0908-POI.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    new java.io.ByteArrayInputStream(fixture)).jobId());
+
+            assertEquals("NEEDS_ATTENTION", view.status(), view.errorCode());
+            assertEquals(2, view.totalRows());
+            assertEquals(1, view.createCount());
+            assertEquals(1, view.invalidCount());
+            assertEquals("2db6b5051fcb4fb48f42ca89dc6195e361ddac751ebee3c000146b005c762b6f", persisted[0].getSha256());
+            assertEquals("AVAILABLE", persisted[0].getStatus());
+            verify(files).read(eq(persisted[0].getAssetId()), eq(7L), eq(DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT));
+            @SuppressWarnings("rawtypes") ArgumentCaptor<List> capture = ArgumentCaptor.forClass(List.class);
+            verify(rows).insertBatch(capture.capture());
+            List<?> analyzed = capture.getValue();
+            WarehouseItemImportRowDO valid = analyzed.stream().map(WarehouseItemImportRowDO.class::cast)
+                    .filter(row -> "06F-ITEM-0908-090715".equals(row.getCode())).findFirst().orElseThrow();
+            assertEquals("06F验证物品", valid.getName());
+            assertEquals("件", valid.getBaseUnit());
+            assertEquals(1, valid.getEnabled());
+            assertEquals("CREATE", valid.getCategory());
+            assertNull(valid.getErrorCode());
+            WarehouseItemImportRowDO invalid = analyzed.stream().map(WarehouseItemImportRowDO.class::cast)
+                    .filter(row -> "BAD!".equals(row.getCode())).findFirst().orElseThrow();
+            assertEquals("明确问题行", invalid.getName());
+            assertEquals("件", invalid.getBaseUnit());
+            assertEquals(1, invalid.getEnabled());
+            assertEquals("INVALID", invalid.getCategory());
+            assertEquals("INVALID_ITEM_CODE", invalid.getErrorCode());
+            String logs = logAppender.list.stream().map(ILoggingEvent::getFormattedMessage).collect(java.util.stream.Collectors.joining("\n"));
+            assertTrue(logs.contains("stage=job_created"));
+            assertTrue(logs.contains("stage=analysis_queued"));
+            assertTrue(logs.contains("stage=analysis_started"));
+            assertTrue(logs.contains("stage=file_read"));
+            assertTrue(logs.contains("stage=header_mapped"));
+            assertTrue(logs.contains("stage=parsed"));
+            assertTrue(logs.contains("stage=classified"));
+            assertTrue(logs.contains("stage=preview_persisted"));
+            assertTrue(logs.indexOf("stage=classified") < logs.indexOf("stage=preview_persisted"));
+            assertTrue(logs.contains("format=XLSX"));
+            assertTrue(logs.contains("createCount=1"));
+            assertTrue(logs.contains("invalidCount=1"));
+            assertFalse(logs.contains("06F-ITEM-0908-090715"));
+            assertFalse(logs.contains("06F验证物品"));
+            assertFalse(logs.contains("BAD!"));
+            assertFalse(logs.contains("06F-ITEM-0908-POI.xlsx"));
+            assertFalse(logs.contains("2db6b5051fcb4fb48f42ca89dc6195e361ddac751ebee3c000146b005c762b6f"));
+            assertFalse(logs.contains(fileStorageRoot.toAbsolutePath().toString()));
+        } finally {
+            logger.detachAppender(logAppender);
+            logger.setLevel(previousLevel);
+            logAppender.stop();
+            try {
+                var shutdown = ControlledDocumentFileService.class.getDeclaredMethod("shutdown");
+                shutdown.setAccessible(true);
+                shutdown.invoke(documents);
+            } catch (ReflectiveOperationException exception) {
+                throw new AssertionError("无法关闭测试文件处理执行器", exception);
+            }
+        }
+    }
+
+    @Test
+    void parseFailureLogsActualStageAndStableCodeWithoutInputBody() {
+        stubJob();
+        String csv = "wrong,header\nSECRET-CODE,秘密物品\n";
+        when(files.read(anyString(), eq(7L), eq(DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT))).thenReturn(read(csv));
+        Logger logger = (Logger) LoggerFactory.getLogger(WarehouseItemImportService.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> logAppender = new ListAppender<>();
+        logAppender.start();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(logAppender);
+        try {
+            var view = awaitTerminal(service.submit(7L, "parse-failure-log", "items.csv", "text/csv",
+                    new java.io.ByteArrayInputStream(csv.getBytes(StandardCharsets.UTF_8))).jobId());
+            assertEquals("ANALYSIS_FAILED", view.status());
+            String logs = logAppender.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            assertTrue(logs.contains("failureStage=file_parse"));
+            assertTrue(logs.contains("errorCode=FILE_STRUCTURE_INVALID"));
+            assertFalse(logs.contains("SECRET-CODE"));
+            assertFalse(logs.contains("秘密物品"));
+            assertFalse(logs.contains("items.csv"));
+        } finally {
+            logger.detachAppender(logAppender);
+            logger.setLevel(previousLevel);
+            logAppender.stop();
         }
     }
 
@@ -106,6 +274,60 @@ class WarehouseItemImportServiceTest {
         assertEquals(1, view.createCount());
         assertEquals(1, view.invalidCount());
         verify(items, times(1)).selectByCodes(anyCollection());
+    }
+
+    @Test
+    void xlsxTemplateRowsAreParsedAndClassifiedWithoutLosingFieldValues() throws Exception {
+        stubJob();
+        when(items.selectByCodes(anyCollection())).thenReturn(List.of());
+        when(warehouse.inspectItemImportFacts(anySet())).thenReturn(new WarehouseService.ItemImportFacts(Set.of(), Set.of()));
+
+        byte[] xlsx;
+        try (var workbook = WorkbookFactory.create(new java.io.ByteArrayInputStream(service.template(7L)))) {
+            var sheet = workbook.getSheet("物品数据");
+            var valid = sheet.getRow(1);
+            valid.getCell(0).setCellValue("06F-ITEM-0908-090715");
+            valid.getCell(1).setCellValue("06F验证物品");
+            valid.getCell(2).setCellValue("件");
+            valid.getCell(3).setCellValue("启用");
+            var invalid = sheet.createRow(2);
+            invalid.createCell(0).setCellValue("BAD!");
+            invalid.createCell(1).setCellValue("明确问题行");
+            invalid.createCell(2).setCellValue("件");
+            invalid.createCell(3).setCellValue("启用");
+            try (var out = new java.io.ByteArrayOutputStream()) {
+                workbook.write(out);
+                xlsx = out.toByteArray();
+            }
+        }
+        when(files.read(eq("asset-1"), eq(7L), eq(DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT)))
+                .thenReturn(readBytes(xlsx));
+
+        var view = awaitTerminal(service.submit(7L, "xlsx-field-mapping", "items.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                new java.io.ByteArrayInputStream(xlsx)).jobId());
+
+        assertEquals("NEEDS_ATTENTION", view.status(), view.errorCode());
+        assertEquals(2, view.totalRows());
+        assertEquals(1, view.createCount());
+        assertEquals(1, view.invalidCount());
+        @SuppressWarnings("rawtypes") ArgumentCaptor<List> capture = ArgumentCaptor.forClass(List.class);
+        verify(rows).insertBatch(capture.capture());
+        List<?> analyzed = capture.getValue();
+        WarehouseItemImportRowDO valid = analyzed.stream().map(WarehouseItemImportRowDO.class::cast)
+                .filter(row -> "06F-ITEM-0908-090715".equals(row.getCode())).findFirst().orElseThrow();
+        assertEquals("06F验证物品", valid.getName());
+        assertEquals("件", valid.getBaseUnit());
+        assertEquals(1, valid.getEnabled());
+        assertEquals("CREATE", valid.getCategory());
+        assertNull(valid.getErrorCode());
+        WarehouseItemImportRowDO invalid = analyzed.stream().map(WarehouseItemImportRowDO.class::cast)
+                .filter(row -> "BAD!".equals(row.getCode())).findFirst().orElseThrow();
+        assertEquals("明确问题行", invalid.getName());
+        assertEquals("件", invalid.getBaseUnit());
+        assertEquals(1, invalid.getEnabled());
+        assertEquals("INVALID", invalid.getCategory());
+        assertEquals("INVALID_ITEM_CODE", invalid.getErrorCode());
     }
 
     @Test
@@ -589,6 +811,10 @@ class WarehouseItemImportServiceTest {
         when(rows.insertBatch(anyList())).thenAnswer(inv -> ((List<?>) inv.getArgument(0)).size());
     }
     private static ControlledDocumentRead read(String csv){return new ControlledDocumentRead(new ControlledDocumentAsset("asset-1", "items.csv", "text/csv", csv.length(), "hash", 7L, DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT, DocumentFileStatus.AVAILABLE, LocalDateTime.now(), LocalDateTime.now().plusDays(1), null), csv.getBytes(StandardCharsets.UTF_8));}
+    private static ControlledDocumentRead readBytes(byte[] bytes){return new ControlledDocumentRead(new ControlledDocumentAsset("asset-1", "items.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes.length, "hash", 7L, DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT, DocumentFileStatus.AVAILABLE, LocalDateTime.now(), LocalDateTime.now().plusDays(1), null), bytes);}
+    private static String sha256(byte[] bytes) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+    }
     private WarehouseItemImportApi.WarehouseItemImportJobView awaitTerminal(String jobId) {
         WarehouseItemImportApi.WarehouseItemImportJobView latest = null;
         for (int i = 0; i < 100; i++) {

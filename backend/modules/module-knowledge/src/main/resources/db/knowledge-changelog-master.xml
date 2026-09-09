@@ -69,4 +69,5 @@
     <include file="db/knowledge-changelog-0004-drafts.xml"/>
     <include file="db/knowledge-changelog-0005-publish-source.xml"/>
     <include file="db/knowledge-changelog-0006-publish-claim.xml"/>
+    <include file="db/knowledge-changelog-0007-maintenance-index.xml"/>
 </databaseChangeLog>

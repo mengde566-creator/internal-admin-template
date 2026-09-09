@@ -14,6 +14,7 @@ import {
   type Stock,
 } from '../api/warehouse'
 import { messageOf, useWarehouseReferences } from '../composables/useWarehouseReferences'
+import { formatTaskError } from '../../../shared/utils/taskError'
 
 type ActionKind = 'inbound' | 'outbound' | 'transfer' | 'stocktake'
 
@@ -235,11 +236,26 @@ onMounted(() => { void load() })
 <template>
   <section class="warehouse-view operations-view">
     <header class="view-heading">
-      <div><p class="view-kicker">办理库存业务</p><h2>库存操作</h2><p>选择一种业务后，只填写当前动作需要的信息。</p></div>
+      <div class="view-heading-main">
+        <h2>库存操作</h2>
+        <span class="view-subtitle">入库、出库、移库调拨与盘点调整</span>
+      </div>
       <el-button :icon="Refresh" :loading="loading" @click="load">重新加载</el-button>
     </header>
 
-    <el-alert v-if="error" type="error" :closable="false" show-icon class="state-alert"><template #title>操作未完成</template>{{ error }}</el-alert>
+    <el-alert
+      v-if="error"
+      type="error"
+      :closable="false"
+      show-icon
+      class="state-alert"
+    >
+      <template #title>{{ formatTaskError(error, '库存操作未完成').title }}</template>
+      <div class="task-error-body">
+        <p class="error-reason">{{ formatTaskError(error).reason }}</p>
+        <p class="error-action">{{ formatTaskError(error).action }}</p>
+      </div>
+    </el-alert>
     <el-alert v-if="successReference" type="success" :closable="false" show-icon class="state-alert"><template #title>{{ currentAction.label }}已完成</template>业务编号：{{ successReference }}，可在库存记录中查看。</el-alert>
 
     <div class="action-picker" role="tablist" aria-label="选择库存操作">
@@ -302,10 +318,10 @@ onMounted(() => { void load() })
 
 <style scoped>
 .warehouse-view { min-width: 0; }
-.view-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 20px; }
-.view-kicker { margin: 0 0 5px; color: var(--ui-primary); font-size: .75rem; font-weight: 700; letter-spacing: .06em; }
-.view-heading h2 { margin: 0; color: var(--ui-text-strong); font-size: 1.55rem; }
-.view-heading p:last-child { margin: 7px 0 0; color: var(--ui-text-muted); }
+.view-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 12px; }
+.view-heading-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.view-heading h2 { margin: 0; color: var(--ui-text-strong); font-size: 1.125rem; font-weight: 600; }
+.view-subtitle { color: var(--ui-text-muted); font-size: 0.8125rem; }
 .state-alert { margin-bottom: 18px; }
 .action-picker { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
 .action-card { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 10px; min-height: 76px; padding: 14px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); color: var(--ui-text); background: var(--ui-surface); text-align: left; cursor: pointer; transition: border-color var(--ui-enter) var(--ui-ease-out), background var(--ui-enter) var(--ui-ease-out); }

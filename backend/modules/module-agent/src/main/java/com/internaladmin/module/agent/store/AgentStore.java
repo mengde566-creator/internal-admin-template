@@ -603,8 +603,8 @@ public class AgentStore implements FeedbackEligibilityApi {
         int updated = jdbc.update("UPDATE ai_task SET status = ?, intent = ?, revision = revision + 1, "
                         + "missing_fields = NULL, candidates = NULL, updated_at = ? "
                         + "WHERE task_id = ? AND revision = ? AND status = ? AND scope_fingerprint = ?",
-                TASK_COMPLETED, taskIntent == null ? "MULTI_TOOL" : taskIntent,
-                Timestamp.from(Instant.now()), taskId, taskRevision, TASK_COLLECTING, effectiveScope);
+                    TASK_COMPLETED, taskIntent == null ? "MULTI_TOOL" : taskIntent,
+                    Timestamp.from(Instant.now()), taskId, taskRevision, TASK_COLLECTING, effectiveScope);
         if (updated != 1) {
             throw new IllegalStateException("任务完成CAS失败");
         }

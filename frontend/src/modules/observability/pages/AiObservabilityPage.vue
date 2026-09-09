@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { isAxiosError } from 'axios'
 import { useQuery } from '@tanstack/vue-query'
 import { fetchEvaluationConfigs, fetchEvaluationDatasets, fetchEvaluationRun, fetchEvaluationRuns, startEvaluation, fetchObservationOverview, fetchObservationRun, fetchObservationRuns, type ObservationFilter } from '../api'
+import { formatTaskError } from '../../../shared/utils/taskError'
 
 const page = ref(1)
 const size = 20
@@ -50,6 +51,44 @@ async function startOfflineEvaluation() {
   }
 }
 
+const showAdvanced = ref(false)
+
+const activeAdvancedCount = computed(() => {
+  let count = 0
+  if (toolName.value) count++
+  if (retrievalStage.value) count++
+  if (errorCode.value) count++
+  if (from.value) count++
+  if (to.value) count++
+  return count
+})
+
+const hasActiveFilters = computed(() => {
+  return Boolean(
+    status.value ||
+    businessOutcome.value ||
+    errorSource.value ||
+    provider.value ||
+    toolName.value ||
+    retrievalStage.value ||
+    errorCode.value ||
+    from.value ||
+    to.value
+  )
+})
+
+function clearAllFilters() {
+  status.value = ''
+  businessOutcome.value = ''
+  errorSource.value = ''
+  provider.value = ''
+  toolName.value = ''
+  retrievalStage.value = ''
+  errorCode.value = ''
+  from.value = ''
+  to.value = ''
+}
+
 const loadError = computed(() => {
   const error = overviewQuery.error.value || runsQuery.error.value || detailQuery.error.value
   if (!error) return ''
@@ -87,27 +126,75 @@ function openEvaluationRun(evaluationRunId: string) {
         <h1>AI 观测</h1>
         <p class="heading-copy">查看最近运行的结构化状态、步骤和错误，不展示问题或回答正文。</p>
       </div>
-      <div class="filter-row" aria-label="观测筛选">
-      <el-select v-model="status" clearable placeholder="全部状态" aria-label="Run 状态筛选" style="width: 150px">
-        <el-option label="成功" value="SUCCESS" />
-        <el-option label="部分成功" value="PARTIAL" />
-        <el-option label="失败" value="FAILED" />
-        <el-option label="已取消" value="CANCELLED" />
-      </el-select>
-      <el-select v-model="businessOutcome" clearable placeholder="业务结果" aria-label="业务结果筛选" style="width: 150px">
-        <el-option label="已回答" value="ANSWERED" /><el-option label="部分成功" value="PARTIAL" /><el-option label="无证据" value="NO_EVIDENCE" /><el-option label="降级" value="DEGRADED" />
-      </el-select>
-      <el-input v-model="errorSource" clearable placeholder="错误来源" aria-label="错误来源筛选" style="width: 140px" />
-      <el-input v-model="provider" clearable placeholder="Provider" aria-label="Provider筛选" style="width: 140px" />
-      <el-input v-model="toolName" clearable placeholder="工具" aria-label="工具筛选" style="width: 140px" />
-      <el-input v-model="retrievalStage" clearable placeholder="检索阶段" aria-label="检索阶段筛选" style="width: 140px" />
-      <el-input v-model="errorCode" clearable placeholder="错误码" aria-label="错误码筛选" style="width: 170px" />
-      <label class="date-filter">从 <input v-model="from" type="date" aria-label="开始日期筛选" /></label>
-      <label class="date-filter">至 <input v-model="to" type="date" aria-label="结束日期筛选" /></label>
-      </div>
     </header>
 
-    <p v-if="loadError" class="page-error" role="alert">{{ loadError }}</p>
+    <div class="filter-panel" aria-label="观测筛选">
+      <!-- 常用筛选行 -->
+      <div class="filter-row filter-row--primary">
+        <el-select v-model="status" clearable placeholder="全部状态" aria-label="Run 状态筛选" style="width: 130px">
+          <el-option label="成功" value="SUCCESS" />
+          <el-option label="部分成功" value="PARTIAL" />
+          <el-option label="失败" value="FAILED" />
+          <el-option label="已取消" value="CANCELLED" />
+        </el-select>
+        <el-select v-model="businessOutcome" clearable placeholder="业务结果" aria-label="业务结果筛选" style="width: 130px">
+          <el-option label="已回答" value="ANSWERED" />
+          <el-option label="部分成功" value="PARTIAL" />
+          <el-option label="无证据" value="NO_EVIDENCE" />
+          <el-option label="降级" value="DEGRADED" />
+        </el-select>
+        <el-input v-model="errorSource" clearable placeholder="错误来源" aria-label="错误来源筛选" style="width: 120px" />
+        <el-input v-model="provider" clearable placeholder="Provider" aria-label="Provider筛选" style="width: 120px" />
+
+        <div class="filter-controls">
+          <el-button link type="primary" @click="showAdvanced = !showAdvanced">
+            {{ showAdvanced ? '收起高级筛选' : '高级筛选' }}
+            <span v-if="activeAdvancedCount" class="advanced-count-badge">({{ activeAdvancedCount }})</span>
+          </el-button>
+          <el-button v-if="hasActiveFilters" link type="info" @click="clearAllFilters">
+            清除筛选
+          </el-button>
+        </div>
+      </div>
+
+      <!-- 高级筛选行（可收起展开） -->
+      <div v-show="showAdvanced" class="filter-row filter-row--advanced">
+        <el-input v-model="toolName" clearable placeholder="工具" aria-label="工具筛选" style="width: 120px" />
+        <el-input v-model="retrievalStage" clearable placeholder="检索阶段" aria-label="检索阶段筛选" style="width: 120px" />
+        <el-input v-model="errorCode" clearable placeholder="错误码" aria-label="错误码筛选" style="width: 130px" />
+        <label class="date-filter">从 <input v-model="from" type="date" aria-label="开始日期筛选" /></label>
+        <label class="date-filter">至 <input v-model="to" type="date" aria-label="结束日期筛选" /></label>
+      </div>
+
+      <!-- 已选条件摘要标签栏 -->
+      <div v-if="hasActiveFilters" class="active-filter-summary">
+        <span class="summary-label">已生效条件：</span>
+        <el-tag v-if="status" size="small" closable @close="status = ''">状态：{{ statusLabel(status) }}</el-tag>
+        <el-tag v-if="businessOutcome" size="small" closable @close="businessOutcome = ''">结果：{{ businessOutcome }}</el-tag>
+        <el-tag v-if="errorSource" size="small" closable @close="errorSource = ''">来源：{{ errorSource }}</el-tag>
+        <el-tag v-if="provider" size="small" closable @close="provider = ''">Provider：{{ provider }}</el-tag>
+        <el-tag v-if="toolName" size="small" closable @close="toolName = ''">工具：{{ toolName }}</el-tag>
+        <el-tag v-if="retrievalStage" size="small" closable @close="retrievalStage = ''">阶段：{{ retrievalStage }}</el-tag>
+        <el-tag v-if="errorCode" size="small" closable @close="errorCode = ''">错误码：{{ errorCode }}</el-tag>
+        <el-tag v-if="from" size="small" closable @close="from = ''">从：{{ from }}</el-tag>
+        <el-tag v-if="to" size="small" closable @close="to = ''">至：{{ to }}</el-tag>
+      </div>
+    </div>
+
+    <el-alert
+      v-if="loadError"
+      type="error"
+      :closable="false"
+      show-icon
+      class="state-alert page-error"
+      role="alert"
+      :title="formatTaskError(loadError, 'AI 观测暂时无法加载').title"
+    >
+      <div class="task-error-body">
+        <p class="error-reason">{{ formatTaskError(loadError).reason }}</p>
+        <p class="error-action">{{ formatTaskError(loadError).action }}</p>
+      </div>
+    </el-alert>
     <template v-else>
       <div v-if="overviewQuery.data.value" class="overview-grid" data-testid="observation-overview">
         <div class="overview-card"><span>运行总数</span><strong>{{ overviewQuery.data.value.totalRuns }}</strong></div>
@@ -214,11 +301,49 @@ function openEvaluationRun(evaluationRunId: string) {
 </template>
 
 <style scoped>
-.ai-observability-page { padding: 24px; }
-.page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.page-header h1 { margin: 4px 0; color: var(--ui-text-strong); }
-.filter-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
-.date-filter { display: inline-flex; align-items: center; gap: 4px; color: var(--ui-text-muted); font-size: .78rem; }
+.ai-observability-page { padding: 20px clamp(16px, 2vw, 28px); }
+.page-header { margin-bottom: 12px; }
+.page-header h1 { margin: 2px 0 4px; color: var(--ui-text-strong); font-size: 1.25rem; font-weight: 600; }
+.filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  box-shadow: var(--ui-shadow-soft);
+}
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.filter-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.advanced-count-badge {
+  font-weight: 600;
+  color: var(--ui-primary);
+}
+.active-filter-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--ui-border);
+}
+.summary-label {
+  font-size: 0.78rem;
+  color: var(--ui-text-muted);
+}
+.date-filter { display: inline-flex; align-items: center; gap: 4px; color: var(--ui-text-muted); font-size: .8125rem; }
 .date-filter input { width: 130px; padding: 6px 8px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); color: var(--ui-text); background: var(--ui-surface); }
 .eyebrow { margin: 0; color: var(--ui-primary); font-size: .78rem; font-weight: 700; }
 .heading-copy, .muted, .page-error { color: var(--ui-text-muted); }

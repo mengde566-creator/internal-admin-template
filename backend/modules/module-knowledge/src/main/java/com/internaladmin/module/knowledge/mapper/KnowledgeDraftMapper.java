@@ -14,6 +14,10 @@ import java.util.List;
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
 public class KnowledgeDraftMapper {
 
+    private static final String DRAFT_COLUMNS = "id,document_code,version_code,title,creator_user_id,file_asset_id,"
+            + "source_type,status,parser_version,content_hash,character_count,section_count,ignored_count,"
+            + "truncated,base_active_version_code,base_active_content_hash,error_code,created_at,updated_at,expires_at,revision,publish_client_request_id";
+
     private final JdbcTemplate jdbc;
 
     public KnowledgeDraftMapper(@Qualifier("knowledgeJdbcTemplate") JdbcTemplate jdbc) {
@@ -175,6 +179,150 @@ public class KnowledgeDraftMapper {
                         + "FROM ai_knowledge.ai_knowledge_draft WHERE id=? AND creator_user_id=?",
                 this::mapDraft, draftId, creatorUserId);
         return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    /**
+     * 有界读取陈旧的PUBLISHING草稿；调用方只允许标记失败，不得调用Embedding或自动发布。
+     *
+     * 方法：{@code pageStalePublishing}
+     *
+     * 执行链路（共 2 步）：
+     * 1. 在知识schema中筛选状态为PUBLISHING且更新时间不晚于陈旧上界的草稿。
+     * 2. 按更新时间和标识稳定排序，通过窗口行号限制返回数量并映射为 {@link DraftRow} 列表。
+     *
+     * @param staleBefore 被视为陈旧的更新时间上界
+     * @param limit 最大返回数量
+     * @return 陈旧发布草稿
+     */
+    public List<DraftRow> pageStalePublishing(Instant staleBefore, int limit) {
+        return jdbc.query("SELECT " + DRAFT_COLUMNS + " FROM (SELECT " + DRAFT_COLUMNS + ", "
+                        + "ROW_NUMBER() OVER (ORDER BY updated_at ASC,id ASC) AS row_num "
+                        + "FROM ai_knowledge.ai_knowledge_draft WHERE status='PUBLISHING' AND updated_at<=?) bounded "
+                        + "WHERE row_num<=? ORDER BY row_num",
+                this::mapDraft, Timestamp.from(staleBefore), limit);
+    }
+
+    /**
+     * 将陈旧发布CAS标记为用户可显式重试的PUBLISH_FAILED。
+     *
+     * 方法：{@code markPublishingInterrupted}
+     *
+     * 执行链路（共 2 步）：
+     * 1. 按草稿、所有者、预期修订号、PUBLISHING状态和陈旧时间上界执行条件更新，拒绝并发变化的事实。
+     * 2. 命中时写入PUBLISH_FAILED、稳定中断错误码、新修订号和维护时间，并返回实际更新行数。
+     *
+     * @param draftId 草稿标识
+     * @param creatorUserId 草稿所有者
+     * @param expectedRevision 预期修订号
+     * @param updatedAt 当前维护时间，同时作为陈旧上界
+     * @return 更新行数，1表示标记成功
+     */
+    public int markPublishingInterrupted(String draftId, long creatorUserId, int expectedRevision,
+                                         Timestamp updatedAt) {
+        return jdbc.update("UPDATE ai_knowledge.ai_knowledge_draft SET status='PUBLISH_FAILED',"
+                        + "error_code='KNOWLEDGE_PUBLISH_INTERRUPTED',revision=revision+1,updated_at=? "
+                        + "WHERE id=? AND creator_user_id=? AND revision=? AND status='PUBLISHING' AND updated_at<=?",
+                updatedAt, draftId, creatorUserId, expectedRevision, updatedAt);
+    }
+
+    /**
+     * 有界读取到期未发布草稿；已发布版本及其来源资产不在此处删除。
+     *
+     * 方法：{@code pageExpiredForMaintenance}
+     *
+     * 执行链路（共 2 步）：
+     * 1. 在知识schema中筛选到期时间不晚于当前维护时间且状态不是PUBLISHED的草稿。
+     * 2. 按到期时间、创建时间和标识稳定排序，通过窗口行号限制返回数量并映射为 {@link DraftRow} 列表。
+     *
+     * @param now 当前维护时间
+     * @param limit 最大返回数量
+     * @return 到期未发布草稿
+     */
+    public List<DraftRow> pageExpiredForMaintenance(Instant now, int limit) {
+        return jdbc.query("SELECT " + DRAFT_COLUMNS + " FROM (SELECT " + DRAFT_COLUMNS + ", "
+                        + "ROW_NUMBER() OVER (ORDER BY expires_at ASC,created_at ASC,id ASC) AS row_num "
+                        + "FROM ai_knowledge.ai_knowledge_draft WHERE expires_at<=? AND status<>'PUBLISHED') bounded "
+                        + "WHERE row_num<=? ORDER BY row_num",
+                this::mapDraft, Timestamp.from(now), limit);
+    }
+
+    /**
+     * 以修订号CAS将到期未发布草稿收口为不可继续消费的EXPIRED。
+     *
+     * 方法：{@code claimExpiredForMaintenance}
+     *
+     * 执行链路（共 2 步）：
+     * 1. 按草稿、所有者、预期修订号、到期边界和允许收口的未发布状态执行条件更新。
+     * 2. 命中时写入EXPIRED、新修订号和维护时间，并返回实际更新行数供调用方判断是否取得清理权。
+     *
+     * @param draftId 草稿标识
+     * @param creatorUserId 草稿所有者
+     * @param expectedRevision 预期修订号
+     * @param now 当前维护时间
+     * @return 更新行数，1表示领取成功
+     */
+    public int claimExpiredForMaintenance(String draftId, long creatorUserId, int expectedRevision,
+                                           Timestamp now) {
+        return jdbc.update("UPDATE ai_knowledge.ai_knowledge_draft SET status='EXPIRED',revision=revision+1,updated_at=? "
+                        + "WHERE id=? AND creator_user_id=? AND revision=? AND expires_at<=? AND status IN "
+                        + "('PREVIEW_READY','STALE','FAILED','CANCELLED','PUBLISHING','PUBLISH_FAILED','NEEDS_REPREVIEW','EXPIRED')",
+                now, draftId, creatorUserId, expectedRevision, now);
+    }
+
+    /**
+     * 保存来源资产释放失败诊断，保留到期草稿引用供下一轮维护重试。
+     *
+     * 方法：{@code markSourceReleaseFailed}
+     *
+     * 执行链路（共 2 步）：
+     * 1. 按草稿、所有者、预期修订号和EXPIRED状态执行条件更新，避免覆盖并发变化。
+     * 2. 命中时写入稳定来源释放失败码、新修订号和维护时间，并返回实际更新行数。
+     *
+     * @param draftId 草稿标识
+     * @param creatorUserId 草稿所有者
+     * @param expectedRevision 预期修订号
+     * @param updatedAt 当前维护时间
+     * @return 更新行数，1表示诊断状态已保存
+     */
+    public int markSourceReleaseFailed(String draftId, long creatorUserId, int expectedRevision,
+                                       Timestamp updatedAt) {
+        return jdbc.update("UPDATE ai_knowledge.ai_knowledge_draft SET error_code='KNOWLEDGE_SOURCE_RELEASE_FAILED',"
+                        + "revision=revision+1,updated_at=? WHERE id=? AND creator_user_id=? AND revision=? AND status='EXPIRED'",
+                updatedAt, draftId, creatorUserId, expectedRevision);
+    }
+
+    /**
+     * 删除草稿章节；必须在删除草稿主记录前调用并置于同一事务。
+     *
+     * 方法：{@code deleteSections}
+     *
+     * 执行链路（共 1 步）：
+     * 1. 按草稿标识删除知识schema中的全部草稿章节，并返回删除数量供同一事务的主记录清理继续执行。
+     *
+     * @param draftId 草稿标识
+     * @return 删除的章节数量
+     */
+    public int deleteSections(String draftId) {
+        return jdbc.update("DELETE FROM ai_knowledge.ai_knowledge_draft_section WHERE draft_id=?", draftId);
+    }
+
+    /**
+     * 删除已经确认无资产引用的到期草稿。
+     *
+     * 方法：{@code deleteExpiredDraft}
+     *
+     * 执行链路（共 2 步）：
+     * 1. 按草稿、所有者、预期修订号和EXPIRED状态执行条件删除，拒绝删除并发变化或非到期事实。
+     * 2. 返回实际删除行数，供调用方在同一事务内判断主记录是否成功清理。
+     *
+     * @param draftId 草稿标识
+     * @param creatorUserId 草稿所有者
+     * @param expectedRevision 预期修订号
+     * @return 删除行数，1表示删除成功
+     */
+    public int deleteExpiredDraft(String draftId, long creatorUserId, int expectedRevision) {
+        return jdbc.update("DELETE FROM ai_knowledge.ai_knowledge_draft WHERE id=? AND creator_user_id=? "
+                        + "AND revision=? AND status='EXPIRED'", draftId, creatorUserId, expectedRevision);
     }
 
     private DraftRow mapDraft(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {

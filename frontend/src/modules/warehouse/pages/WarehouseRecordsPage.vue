@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router'
 import { fetchOperation, fetchOperationMovements, fetchRecentMovements, fetchRecentOperations, type Movement, type Operation } from '../api/warehouse'
 import { itemLabel, locationLabel, messageOf, useWarehouseReferences, warehouseLabel } from '../composables/useWarehouseReferences'
 import { formatDateTime } from '../../../shared/utils/dateTime'
+import { formatTaskError } from '../../../shared/utils/taskError'
 
 const { items, warehouseOptions, locations, loading, error, loadReferences } = useWarehouseReferences()
 const route = useRoute()
@@ -27,7 +28,7 @@ let resizeObserver: ResizeObserver | null = null
 
 function checkFixAction() {
   if (tableWrapperRef.value) {
-    canFixAction.value = tableWrapperRef.value.clientWidth >= 1160
+    canFixAction.value = tableWrapperRef.value.clientWidth >= 1100
   } else if (typeof window !== 'undefined') {
     canFixAction.value = window.innerWidth >= 1440
   }
@@ -182,17 +183,25 @@ onBeforeUnmount(() => {
 <template>
   <section class="warehouse-view records-view">
     <header class="view-heading">
-      <div>
-        <p class="view-kicker">追溯库存变化</p>
+      <div class="view-heading-main">
         <h2>库存记录</h2>
-        <p>入库、出库、调拨和盘点都会在这里留下不可修改的记录。</p>
+        <span class="view-subtitle">追溯每一次入库、出库、调拨与盘点历史</span>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="load">刷新记录</el-button>
     </header>
-    <el-alert v-if="error" type="error" :closable="false" show-icon class="state-alert">
-      <template #title>库存记录加载失败</template>
-      {{ error }}
-      <el-button link type="primary" @click="load">重新加载</el-button>
+    <el-alert
+      v-if="error"
+      type="error"
+      :closable="false"
+      show-icon
+      class="state-alert"
+    >
+      <template #title>{{ formatTaskError(error, '库存记录加载失败').title }}</template>
+      <div class="task-error-body">
+        <p class="error-reason">{{ formatTaskError(error).reason }}</p>
+        <p class="error-action">{{ formatTaskError(error).action }}</p>
+        <el-button link type="primary" @click="load">重新加载</el-button>
+      </div>
     </el-alert>
     <el-card shadow="never" class="data-card">
       <div class="filter-bar" data-testid="records-filter-bar" data-mobile-layout="single-column">
@@ -238,17 +247,17 @@ onBeforeUnmount(() => {
       </div>
       <div v-else ref="tableWrapperRef" class="records-table-wrapper">
         <el-table class="desktop-records-table" :data="visibleOperations" stripe>
-          <el-table-column label="记录编号" min-width="210">
+          <el-table-column label="记录编号" min-width="155">
             <template #default="scope">
               <span class="record-no" tabindex="0" :aria-label="`记录编号：${scope.row.operationNo}`">{{ scope.row.operationNo }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="业务类型" min-width="95">
+          <el-table-column label="业务类型" width="75">
             <template #default="scope">
               <el-tag :type="typeTag(scope.row.type)">{{ typeName(scope.row.type) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="物品" min-width="220">
+          <el-table-column label="物品" min-width="150">
             <template #default="scope">
               <div class="records-item-cell cell-entity-group">
                 <template v-if="operationItemRows(scope.row.id).length">
@@ -262,7 +271,7 @@ onBeforeUnmount(() => {
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="位置" min-width="240">
+          <el-table-column label="位置" min-width="155">
             <template #default="scope">
               <div class="records-location-cell cell-entity-group">
                 <template v-if="operationLocationInfo(scope.row).isTransfer">
@@ -282,7 +291,7 @@ onBeforeUnmount(() => {
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="数量变化" min-width="130">
+          <el-table-column label="数量变化" min-width="95">
             <template #default="scope">
               <div class="records-qty-cell">
                 <span
@@ -296,12 +305,12 @@ onBeforeUnmount(() => {
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="发生时间" min-width="165">
+          <el-table-column label="发生时间" min-width="180">
             <template #default="scope">
               <span class="records-time-cell" :aria-label="`发生时间：${formatDateTime(scope.row.occurredAt)}`">{{ formatDateTime(scope.row.occurredAt) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" :fixed="canFixAction ? 'right' : false" min-width="100">
+          <el-table-column label="操作" :fixed="canFixAction ? 'right' : false" width="105">
             <template #default="scope"><el-button link type="primary" @click="openDetail(scope.row)">查看详情</el-button></template>
           </el-table-column>
         </el-table>
@@ -409,10 +418,10 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .warehouse-view { min-width: 0; }
-.view-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 20px; }
-.view-kicker { margin: 0 0 5px; color: var(--ui-primary); font-size: .75rem; font-weight: 700; letter-spacing: .06em; }
-.view-heading h2 { margin: 0; color: var(--ui-text-strong); font-size: 1.55rem; }
-.view-heading p:last-child { margin: 7px 0 0; color: var(--ui-text-muted); }
+.view-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 12px; }
+.view-heading-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.view-heading h2 { margin: 0; color: var(--ui-text-strong); font-size: 1.125rem; font-weight: 600; }
+.view-subtitle { color: var(--ui-text-muted); font-size: 0.8125rem; }
 .state-alert { margin-bottom: 18px; }
 .data-card { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface); box-shadow: var(--ui-shadow-soft); }
 .filter-bar { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center; gap: 8px; margin-bottom: 18px; }
@@ -436,7 +445,7 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 .desktop-records-table {
-  min-width: 1160px;
+  min-width: 900px;
   width: 100%;
 }
 .drawer-movements-table {

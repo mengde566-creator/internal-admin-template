@@ -11,6 +11,7 @@ import {
   updateSystemConfigApi,
   type UpdateImportLimits
 } from '../api/systemConfig'
+import { formatTaskError } from '../../../shared/utils/taskError'
 
 const queryClient = useQueryClient()
 
@@ -84,44 +85,57 @@ function saveImportLimits() {
 </script>
 
 <template>
-  <section class="system-config">
-    <header class="page-header">
-      <h1>系统配置</h1>
+  <section class="system-config ui-page-shell">
+    <header class="ui-page-header-compact">
+      <div class="header-left">
+        <h1>系统配置</h1>
+        <p class="header-hint">系统全局参数设置与受控文件导入限制快照</p>
+      </div>
     </header>
 
-    <el-alert
-      v-if="configsQuery.isError.value || importLimitsQuery.isError.value"
-      title="系统配置读取失败，请稍后重试"
-      type="error"
-      :closable="false"
-      show-icon
-    />
+    <div class="ui-data-card">
+      <el-alert
+        v-if="configsQuery.isError.value || importLimitsQuery.isError.value"
+        type="error"
+        :closable="false"
+        show-icon
+        class="state-alert"
+        style="margin-bottom: 1rem;"
+      >
+        <template #title>{{ formatTaskError(configsQuery.error.value || importLimitsQuery.error.value, '系统配置读取失败').title }}</template>
+        <div class="task-error-body">
+          <p class="error-reason">{{ formatTaskError(configsQuery.error.value || importLimitsQuery.error.value, '系统配置读取失败').reason }}</p>
+          <p class="error-action">{{ formatTaskError(configsQuery.error.value || importLimitsQuery.error.value, '系统配置读取失败').action }}</p>
+          <el-button link type="primary" @click="() => { void configsQuery.refetch(); void importLimitsQuery.refetch() }">重新加载</el-button>
+        </div>
+      </el-alert>
 
-    <el-table v-loading="configsQuery.isLoading.value" :data="configsQuery.data.value ?? []" border>
-      <el-table-column prop="name" label="参数名称" min-width="200" />
-      <el-table-column prop="paramKey" label="参数键" min-width="200" />
-      <el-table-column label="参数值" min-width="200">
-        <template #default="{ row }">
-          <!-- 强制首次登录改密：布尔开关 -->
-          <el-switch
-            v-if="row.paramKey === 'force_password_change'"
-            :model-value="row.paramValue === 'true'"
-            :loading="updateMutation.isPending.value"
-            @change="(v: string | number | boolean) => onChangeForcePassword(v === true)"
-          />
-          <span v-else>{{ row.paramValue }}</span>
-        </template>
-      </el-table-column>
-    </el-table>
-    <p class="hint">强制首次登录修改密码：开启后，尚未改密的用户（含管理员创建的新用户）首次登录必须修改密码；关闭后直接可用。</p>
+      <el-table v-loading="configsQuery.isLoading.value" :data="configsQuery.data.value ?? []" border>
+        <el-table-column prop="name" label="参数名称" min-width="200" />
+        <el-table-column prop="paramKey" label="参数键" min-width="200" />
+        <el-table-column label="参数值" min-width="200">
+          <template #default="{ row }">
+            <!-- 强制首次登录改密：布尔开关 -->
+            <el-switch
+              v-if="row.paramKey === 'force_password_change'"
+              :model-value="row.paramValue === 'true'"
+              :loading="updateMutation.isPending.value"
+              @change="(v: string | number | boolean) => onChangeForcePassword(v === true)"
+            />
+            <span v-else>{{ row.paramValue }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <p class="hint">强制首次登录修改密码：开启后，尚未改密的用户（含管理员创建的新用户）首次登录必须修改密码；关闭后直接可用。</p>
+    </div>
 
-    <section class="import-limits" aria-labelledby="import-limits-title">
+    <section class="import-limits ui-data-card" aria-labelledby="import-limits-title">
       <header class="section-header">
         <h2 id="import-limits-title">受控文件导入限制</h2>
         <p>这些值会随新建文件保存为不可变快照，修改不会追溯影响已有文件。系统只进行格式与结构安全校验，不提供病毒扫描。</p>
       </header>
       <el-form label-position="top" class="limit-form" @submit.prevent="saveImportLimits">
-      <el-form-item label="单文件最大字节数">
+        <el-form-item label="单文件最大字节数">
           <el-input-number v-model="importForm.maxFileBytes" :min="1024" :max="10 * 1024 * 1024" :step="1024" :disabled="importLimitsQuery.isLoading.value || importLimitsQuery.isError.value" />
           <span class="unit">字节</span>
         </el-form-item>
@@ -159,23 +173,12 @@ function saveImportLimits() {
 </template>
 
 <style scoped>
-.system-config {
-  padding: 1.5rem 2rem;
-}
-.page-header {
-  margin-bottom: 1rem;
-}
-.page-header h1 {
-  margin: 0;
-  font-size: 1.25rem;
-}
 .hint {
-  margin-top: 1rem;
+  margin-top: 0.75rem;
   color: var(--ui-text-muted);
   font-size: 0.875rem;
 }
 .import-limits {
-  margin-top: 2rem;
   max-width: 62rem;
 }
 .section-header h2 {
@@ -185,6 +188,7 @@ function saveImportLimits() {
 .section-header p {
   color: var(--ui-text-muted);
   font-size: 0.875rem;
+  margin: 0.25rem 0 0.75rem;
 }
 .limit-form {
   display: grid;
@@ -197,9 +201,10 @@ function saveImportLimits() {
 }
 .form-actions {
   grid-column: 1 / -1;
+  padding-top: 0.5rem;
 }
 .limit-definitions {
-  margin: 0.5rem 0 0;
+  margin: 0.75rem 0 0;
   padding-left: 1.25rem;
   color: var(--ui-text-muted);
   font-size: 0.8125rem;

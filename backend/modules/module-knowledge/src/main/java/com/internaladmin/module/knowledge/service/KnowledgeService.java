@@ -12,6 +12,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.json.JsonMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -31,6 +33,8 @@ import java.util.Objects;
 @Service
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
 public class KnowledgeService implements KnowledgeQueryApi {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(KnowledgeService.class);
 
     /** Versioned storage profile for asymmetric document embeddings. */
     public static final String EMBEDDING_PROFILE = "dashscope-dense-sparse-document-v1";
@@ -207,6 +211,9 @@ public class KnowledgeService implements KnowledgeQueryApi {
     private KnowledgeQueryApi.Result queryInternal(String query, int limit, int stageTopK) {
         validateQuery(query, limit);
         Instant queriedAt = Instant.now();
+        long startedAt = System.nanoTime();
+        String strategy = "sparse";
+        LOGGER.info("knowledge_query stage=query_started limit={}", limit);
         try {
             int boundedLimit = Math.min(limit, MAX_QUERY_LIMIT);
             stageTopK = Math.min(stageTopK, boundedLimit);
@@ -221,6 +228,7 @@ public class KnowledgeService implements KnowledgeQueryApi {
             if (rows != null && !rows.isEmpty()) {
                 // A sparse hit short-circuits the dense stage.
             } else {
+                strategy = "dense";
                 rows = mapper.findActiveDenseChunks(new PGvector(queryEmbedding.denseVector()),
                         SIMILARITY_THRESHOLD, stageTopK + 1, EMBEDDING_PROFILE, 1024);
             }
@@ -244,11 +252,17 @@ public class KnowledgeService implements KnowledgeQueryApi {
                 }
             }
             if (citations.isEmpty()) {
+                LOGGER.info("knowledge_query stage=query_result outcome=NO_EVIDENCE count=0 strategy={} elapsedMs={}",
+                        strategy, elapsedMs(startedAt));
                 return KnowledgeQueryApi.Result.noEvidence(queriedAt);
             }
+            LOGGER.info("knowledge_query stage=query_result outcome=FOUND count={} strategy={} elapsedMs={}",
+                    citations.size(), strategy, elapsedMs(startedAt));
             return KnowledgeQueryApi.Result.found(citations, queriedAt,
                     rows.size() > stageTopK);
         } catch (RuntimeException exception) {
+            LOGGER.warn("knowledge_query stage=query_failed outcome=UNAVAILABLE errorCode=KNOWLEDGE_QUERY_UNAVAILABLE exceptionClass={} elapsedMs={}",
+                    exception.getClass().getSimpleName(), elapsedMs(startedAt));
             return KnowledgeQueryApi.Result.unavailable(queriedAt);
         }
     }
@@ -256,6 +270,8 @@ public class KnowledgeService implements KnowledgeQueryApi {
     @Override
     public KnowledgeQueryApi.CatalogResult listActiveDocuments() {
         Instant queriedAt = Instant.now();
+        long startedAt = System.nanoTime();
+        LOGGER.info("knowledge_catalog stage=catalog_started");
         try {
             List<KnowledgeMapper.ActiveDocumentRow> rows = mapper.findActiveDocuments(20, EMBEDDING_PROFILE, 1024);
             List<KnowledgeQueryApi.ActiveDocument> documents = rows == null ? List.of() : rows.stream()
@@ -267,14 +283,18 @@ public class KnowledgeService implements KnowledgeQueryApi {
                     .map(row -> new KnowledgeQueryApi.ActiveDocument(row.documentCode(), row.title(), row.versionCode(),
                             row.versionUpdatedAt(), row.indexedAt(), row.synthetic(), row.sourceType())).toList();
             if (documents.isEmpty()) {
+                LOGGER.info("knowledge_catalog stage=catalog_result outcome=NO_EVIDENCE count=0 elapsedMs={}", elapsedMs(startedAt));
                 return KnowledgeQueryApi.CatalogResult.noEvidence(queriedAt);
             }
             documents = documents.stream().sorted(java.util.Comparator
                     .comparingInt((KnowledgeQueryApi.ActiveDocument document) -> catalogOrder(document.documentCode()))
                     .thenComparing(KnowledgeQueryApi.ActiveDocument::documentCode)
                     .thenComparing(KnowledgeQueryApi.ActiveDocument::versionCode)).toList();
+            LOGGER.info("knowledge_catalog stage=catalog_result outcome=FOUND count={} elapsedMs={}", documents.size(), elapsedMs(startedAt));
             return KnowledgeQueryApi.CatalogResult.found(documents, queriedAt, rows.size() > documents.size());
         } catch (RuntimeException exception) {
+            LOGGER.warn("knowledge_catalog stage=catalog_failed outcome=UNAVAILABLE errorCode=KNOWLEDGE_CATALOG_UNAVAILABLE exceptionClass={} elapsedMs={}",
+                    exception.getClass().getSimpleName(), elapsedMs(startedAt));
             return KnowledgeQueryApi.CatalogResult.unavailable(queriedAt);
         }
     }
@@ -288,10 +308,15 @@ public class KnowledgeService implements KnowledgeQueryApi {
             throw new IllegalArgumentException("知识文档读取边界无效");
         }
         Instant queriedAt = Instant.now();
+        long startedAt = System.nanoTime();
+        LOGGER.info("knowledge_read stage=read_started maxChunks={} maxChars={}", maxChunks, maxChars);
         try {
             List<KnowledgeMapper.DocumentChunkRow> rows = mapper.readActiveDocument(documentCode, maxChunks + 1,
                     EMBEDDING_PROFILE, 1024);
-            if (rows == null || rows.isEmpty()) return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
+            if (rows == null || rows.isEmpty()) {
+                LOGGER.info("knowledge_read stage=read_result outcome=NO_EVIDENCE count=0 elapsedMs={}", elapsedMs(startedAt));
+                return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
+            }
             rows = rows.stream().filter(Objects::nonNull)
                     .filter(row -> row.chunkNo() != null && row.chunkNo() >= 1
                             && row.content() != null && !row.content().isBlank()
@@ -301,7 +326,10 @@ public class KnowledgeService implements KnowledgeQueryApi {
                             && row.versionUpdatedAt() != null && row.indexedAt() != null)
                     .sorted(java.util.Comparator.comparing(row -> row.chunkNo() == null ? Integer.MAX_VALUE : row.chunkNo()))
                     .toList();
-            if (rows.isEmpty()) return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
+            if (rows.isEmpty()) {
+                LOGGER.info("knowledge_read stage=read_result outcome=NO_EVIDENCE count=0 elapsedMs={}", elapsedMs(startedAt));
+                return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
+            }
             KnowledgeMapper.DocumentChunkRow first = rows.getFirst();
             for (KnowledgeMapper.DocumentChunkRow row : rows) {
                 if (!Objects.equals(first.versionCode(), row.versionCode())
@@ -309,6 +337,7 @@ public class KnowledgeService implements KnowledgeQueryApi {
                         || !Objects.equals(first.versionUpdatedAt(), row.versionUpdatedAt())
                         || !Objects.equals(first.indexedAt(), row.indexedAt())
                         || !Objects.equals(first.sourceType(), row.sourceType())) {
+                    LOGGER.info("knowledge_read stage=read_result outcome=NO_EVIDENCE count=0 elapsedMs={}", elapsedMs(startedAt));
                     return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
                 }
             }
@@ -331,9 +360,15 @@ public class KnowledgeService implements KnowledgeQueryApi {
                         "knowledge://" + row.documentCode() + "/" + row.versionCode() + "#" + row.chunkNo(),
                         row.versionUpdatedAt(), row.indexedAt(), row.sourceType()));
             }
-            if (citations.isEmpty()) return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
+            if (citations.isEmpty()) {
+                LOGGER.info("knowledge_read stage=read_result outcome=NO_EVIDENCE count=0 elapsedMs={}", elapsedMs(startedAt));
+                return KnowledgeQueryApi.DocumentResult.noEvidence(queriedAt);
+            }
+            LOGGER.info("knowledge_read stage=read_result outcome=FOUND count={} elapsedMs={}", citations.size(), elapsedMs(startedAt));
             return KnowledgeQueryApi.DocumentResult.found(document, citations, queriedAt, truncated);
         } catch (RuntimeException exception) {
+            LOGGER.warn("knowledge_read stage=read_failed outcome=UNAVAILABLE errorCode=KNOWLEDGE_READ_UNAVAILABLE exceptionClass={} elapsedMs={}",
+                    exception.getClass().getSimpleName(), elapsedMs(startedAt));
             return KnowledgeQueryApi.DocumentResult.unavailable(queriedAt);
         }
     }
@@ -504,6 +539,10 @@ public class KnowledgeService implements KnowledgeQueryApi {
 
     private static Timestamp timestampNow() {
         return Timestamp.from(Instant.now());
+    }
+
+    private static long elapsedMs(long startedAt) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
     public record ImportSummary(int documentsCreated, int documentsSkipped, int versionsCreated, int versionsSkipped,

@@ -103,6 +103,7 @@ class ControlledDocumentLiquibaseTest {
                 "unconfirmed_retention_days", "result_retention_days")));
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wh_item_import_job'", Integer.class));
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wh_item_import_row'", Integer.class));
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_wh_item_import_job_maintenance'", Integer.class));
         assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM pragma_table_info('wh_item_import_row') WHERE name='excluded'", Integer.class));
         assertEquals(3, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM databasechangelog WHERE id IN ('2026-09-01-0001-create-item-import-preview','2026-09-01-0002-add-item-import-row-excluded','2026-09-01-0003-add-item-import-confirmation')", Integer.class),
                 "06B作业/行表与06C确认字段变更集均已登记");

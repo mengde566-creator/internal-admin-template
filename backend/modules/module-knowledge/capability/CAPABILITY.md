@@ -10,7 +10,7 @@
 - 知识检索模型固定 `qwen3.7-text-embedding`、1024 维；document/query 文本类型分开并请求 `dense&sparse`，每次请求不超过 20 条，只发送片段或原始问题，响应逐条校验 dense 维度与 sparse 项；全批次成功后才提交版本，知识索引 profile 为 `dashscope-dense-sparse-document-v1`。
 - 独立知识 PostgreSQL 配置优先；三项缺失时仅在业务数据源为 PostgreSQL 时复用；部分配置或非 PostgreSQL 业务库明确启动失败。
 - 知识结构归 `ai_knowledge` schema，Spring AI 自动建表关闭；导入在外部调用完成后以短事务幂等写入并切换 ACTIVE 版本。
-- 草稿发布只接受服务端确认的草稿修订；发布前先以草稿修订和 `publish_client_request_id` 做一次知识库 CAS 领取，只有领取者才可在知识事务外按 20 条分批完成 Embedding。所有 dense+sparse 结果合法后才在一个短事务中创建 `USER_UPLOAD` 版本、写入向量并切换 ACTIVE；新鲜的 `PUBLISHING` 只返回进行中状态，超过固定短阈值后必须由用户显式以最新修订重领。发布失败不改变旧 ACTIVE；文件保留在发布事务提交后单独执行，失败只形成可见来源保留警告。
+- 草稿发布只接受服务端确认的草稿修订；发布前先以草稿修订和 `publish_client_request_id` 做一次知识库 CAS 领取，只有领取者才可在知识事务外按 20 条分批完成 Embedding。所有 dense+sparse 结果合法后才在一个短事务中创建 `USER_UPLOAD` 版本、写入向量并切换 ACTIVE；新鲜的 `PUBLISHING` 只返回进行中状态，超过固定短阈值后必须由用户显式以最新修订重领。发布失败不改变旧 ACTIVE；文件保留在发布事务提交后单独执行，失败只形成可见来源保留警告。06F应用维护入口按固定周期有界标记陈旧 `PUBLISHING` 为 `PUBLISH_FAILED`，只允许维护人员显式重试；它不会自动调用Provider或发布。到期未发布草稿先由知识库CAS收口，再通过06A公开接口释放来源文件，释放失败保留草稿和稳定诊断码供下一轮有界维护处理。
 
 ## 3. 公开与跨模块契约
 

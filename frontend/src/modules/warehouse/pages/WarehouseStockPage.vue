@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchStockPage, type StockPageItem } from '../api/warehouse'
+import { formatTaskError } from '../../../shared/utils/taskError'
 import {
   itemLabel,
   locationLabel,
@@ -201,10 +202,9 @@ watch(() => [route?.query?.item, route?.query?.keyword, route?.query?.warehouse,
 <template>
   <section class="warehouse-view stock-view">
     <header class="view-heading">
-      <div>
-        <p class="view-kicker">查询当前库存</p>
+      <div class="view-heading-main">
         <h2>库存查询</h2>
-        <p>按物品、仓库和库位查看当前可用数量。</p>
+        <span class="view-subtitle">按物品、仓库和库位查看当前可用数量</span>
       </div>
       <div class="view-actions">
         <el-button class="mobile-filter-trigger" :icon="Search" @click="filtersOpen = true">筛选</el-button>
@@ -212,10 +212,19 @@ watch(() => [route?.query?.item, route?.query?.keyword, route?.query?.warehouse,
       </div>
     </header>
 
-    <el-alert v-if="error" type="error" :closable="false" show-icon class="state-alert">
-      <template #title>库存加载失败</template>
-      <span>{{ error }}</span>
-      <el-button link type="primary" @click="load">重新加载</el-button>
+    <el-alert
+      v-if="error"
+      type="error"
+      :closable="false"
+      show-icon
+      class="state-alert"
+    >
+      <template #title>{{ formatTaskError(error, '库存加载失败').title }}</template>
+      <div class="task-error-body">
+        <p class="error-reason">{{ formatTaskError(error).reason }}</p>
+        <p class="error-action">{{ formatTaskError(error).action }}</p>
+        <el-button link type="primary" @click="load">重新加载</el-button>
+      </div>
     </el-alert>
 
     <div class="filter-panel desktop-filter">
@@ -360,25 +369,25 @@ watch(() => [route?.query?.item, route?.query?.keyword, route?.query?.warehouse,
 .view-heading {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 20px;
-  margin-bottom: 20px;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
 }
-.view-kicker {
-  margin: 0 0 5px;
-  color: var(--ui-primary);
-  font-size: .75rem;
-  font-weight: 700;
-  letter-spacing: .06em;
+.view-heading-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .view-heading h2 {
   margin: 0;
   color: var(--ui-text-strong);
-  font-size: 1.55rem;
+  font-size: 1.125rem;
+  font-weight: 600;
 }
-.view-heading p:last-child {
-  margin: 7px 0 0;
+.view-subtitle {
   color: var(--ui-text-muted);
+  font-size: 0.8125rem;
 }
 .view-actions {
   display: flex;

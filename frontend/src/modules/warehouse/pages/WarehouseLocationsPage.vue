@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Edit, Plus, Refresh, SwitchButton } from '@element-plus/icons-vue'
+import { ElMessageBox } from 'element-plus'
 import {
   createLocation,
   createWarehouse,
@@ -10,6 +11,8 @@ import {
   type Warehouse,
 } from '../api/warehouse'
 import { messageOf, useWarehouseReferences } from '../composables/useWarehouseReferences'
+import { formatTaskError } from '../../../shared/utils/taskError'
+import { confirmDiscardChanges } from '../../../shared/utils/formLeaveGuard'
 
 const {
   warehouses,
@@ -55,37 +58,83 @@ function selectWarehouse(warehouseId: string) {
   selectedWarehouseId.value = warehouseId
   void loadWarehouseLocations(warehouseId)
 }
+let initialSnapshot = ''
+const saveLoading = ref(false)
+const drawerError = ref('')
+const confirmingWarehouseToggle = ref(false)
+const confirmingLocationToggle = ref(false)
+
 function openCreateWarehouse() {
   editing.value = false
+  drawerError.value = ''
   drawerKind.value = 'warehouse'
   warehouseForm.value = { id: '', code: '', name: '', departmentId: enabledDepartments.value[0]?.id ?? '', enabled: true, version: 0 }
+  initialSnapshot = JSON.stringify(warehouseForm.value)
   drawerOpen.value = true
 }
 function openEditWarehouse(warehouse: Warehouse) {
   editing.value = true
+  drawerError.value = ''
   drawerKind.value = 'warehouse'
   warehouseForm.value = { id: warehouse.id, code: warehouse.code, name: warehouse.name, departmentId: warehouse.departmentId, enabled: warehouse.enabled, version: warehouse.version }
+  initialSnapshot = JSON.stringify(warehouseForm.value)
   drawerOpen.value = true
 }
 function openCreateLocation() {
   if (!selectedWarehouseId.value) return
   editing.value = false
+  drawerError.value = ''
   drawerKind.value = 'location'
   locationForm.value = { id: '', warehouseId: selectedWarehouseId.value, code: '', name: '', enabled: true, version: 0 }
+  initialSnapshot = JSON.stringify(locationForm.value)
   drawerOpen.value = true
 }
 function openEditLocation(location: Location) {
   editing.value = true
+  drawerError.value = ''
   drawerKind.value = 'location'
   locationForm.value = { id: location.id, warehouseId: location.warehouseId, code: location.code, name: location.name, enabled: location.enabled, version: location.version }
+  initialSnapshot = JSON.stringify(locationForm.value)
   drawerOpen.value = true
 }
+
+const isDirty = () => {
+  if (drawerKind.value === 'warehouse') {
+    return JSON.stringify(warehouseForm.value) !== initialSnapshot
+  } else {
+    return JSON.stringify(locationForm.value) !== initialSnapshot
+  }
+}
+
+async function handleBeforeClose(done: () => void) {
+  if (isDirty()) {
+    const confirmed = await confirmDiscardChanges()
+    if (confirmed) {
+      done()
+    }
+  } else {
+    done()
+  }
+}
+
+async function requestClose() {
+  if (isDirty()) {
+    const confirmed = await confirmDiscardChanges()
+    if (confirmed) {
+      drawerOpen.value = false
+    }
+  } else {
+    drawerOpen.value = false
+  }
+}
+
 async function saveWarehouse() {
-  error.value = ''
+  drawerError.value = ''
   if (!warehouseForm.value.name.trim() || !warehouseForm.value.departmentId || (!editing.value && !warehouseForm.value.code.trim())) {
-    error.value = '请填写仓库名称、所属部门和仓库编码'
+    drawerError.value = '请填写仓库名称、所属部门和仓库编码'
     return
   }
+  saveLoading.value = true
   try {
     if (editing.value) await updateWarehouse(warehouseForm.value.id, { name: warehouseForm.value.name, departmentId: warehouseForm.value.departmentId, version: warehouseForm.value.version, enabled: warehouseForm.value.enabled })
     else {
@@ -94,23 +143,91 @@ async function saveWarehouse() {
     }
     drawerOpen.value = false
     await load()
-  } catch (cause: any) { error.value = messageOf(cause, '仓库编码冲突或保存失败，请刷新后重试') }
+  } catch (cause: any) {
+    drawerError.value = messageOf(cause, '仓库编码冲突或保存失败，请刷新后重试')
+  } finally {
+    saveLoading.value = false
+  }
 }
+
 async function saveLocation() {
-  error.value = ''
+  drawerError.value = ''
   if (!locationForm.value.name.trim() || (!editing.value && !locationForm.value.code.trim())) {
-    error.value = '请填写库位名称和库位编码'
+    drawerError.value = '请填写库位名称和库位编码'
     return
   }
+  saveLoading.value = true
   try {
     if (editing.value) await updateLocation(locationForm.value.id, { name: locationForm.value.name, version: locationForm.value.version, enabled: locationForm.value.enabled })
     else await createLocation({ warehouseId: selectedWarehouseId.value, code: locationForm.value.code, name: locationForm.value.name })
     drawerOpen.value = false
     await loadWarehouseLocations(selectedWarehouseId.value)
-  } catch (cause: any) { error.value = messageOf(cause, '库位编码冲突或保存失败，请刷新后重试') }
+  } catch (cause: any) {
+    drawerError.value = messageOf(cause, '库位编码冲突或保存失败，请刷新后重试')
+  } finally {
+    saveLoading.value = false
+  }
 }
-async function toggleWarehouse(row: Warehouse) { try { await updateWarehouse(row.id, { name: row.name, departmentId: row.departmentId, version: row.version, enabled: !row.enabled }); await load() } catch (cause: any) { error.value = messageOf(cause, '仓库停用被拒绝或数据已被其他人更新') } }
-async function toggleLocation(row: Location) { try { await updateLocation(row.id, { name: row.name, version: row.version, enabled: !row.enabled }); await loadWarehouseLocations(selectedWarehouseId.value) } catch (cause: any) { error.value = messageOf(cause, '库位停用被拒绝或数据已被其他人更新') } }
+
+async function toggleWarehouse(row: Warehouse) {
+  if (confirmingWarehouseToggle.value) return
+  confirmingWarehouseToggle.value = true
+  if (row.enabled) {
+    try {
+      await ElMessageBox.confirm(
+        `确定要停用仓库“${row.name}（${row.code}）”吗？停用后该仓库将无法进行入库等新业务操作，但保留历史记录。`,
+        '停用仓库',
+        {
+          type: 'warning',
+          confirmButtonText: '确认停用',
+          cancelButtonText: '取消'
+        }
+      )
+    } catch (error) {
+      confirmingWarehouseToggle.value = false
+      if (error !== 'cancel' && error !== 'close') throw error
+      return
+    }
+  }
+  try {
+    await updateWarehouse(row.id, { name: row.name, departmentId: row.departmentId, version: row.version, enabled: !row.enabled })
+    await load()
+  } catch (cause: any) {
+    error.value = messageOf(cause, '仓库停用被拒绝或数据已被其他人更新')
+  } finally {
+    confirmingWarehouseToggle.value = false
+  }
+}
+
+async function toggleLocation(row: Location) {
+  if (confirmingLocationToggle.value) return
+  confirmingLocationToggle.value = true
+  if (row.enabled) {
+    try {
+      await ElMessageBox.confirm(
+        `确定要停用库位“${row.name}（${row.code}）”吗？停用后该库位将无法存放新入库物品，但保留历史记录。`,
+        '停用库位',
+        {
+          type: 'warning',
+          confirmButtonText: '确认停用',
+          cancelButtonText: '取消'
+        }
+      )
+    } catch (error) {
+      confirmingLocationToggle.value = false
+      if (error !== 'cancel' && error !== 'close') throw error
+      return
+    }
+  }
+  try {
+    await updateLocation(row.id, { name: row.name, version: row.version, enabled: !row.enabled })
+    await loadWarehouseLocations(selectedWarehouseId.value)
+  } catch (cause: any) {
+    error.value = messageOf(cause, '库位停用被拒绝或数据已被其他人更新')
+  } finally {
+    confirmingLocationToggle.value = false
+  }
+}
 
 onMounted(() => {
   checkFixAction()
@@ -134,17 +251,29 @@ onBeforeUnmount(() => {
 <template>
   <section class="warehouse-view locations-view">
     <header class="view-heading">
-      <div>
-        <p class="view-kicker">仓库和库位</p>
+      <div class="view-heading-main">
         <h2>仓库与库位</h2>
-        <p>先选择仓库，再查看和维护仓内库位。所属部门使用当前可用的部门选项。</p>
+        <span class="view-subtitle">选择仓库并维护库位编码与可用状态</span>
       </div>
       <div class="view-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">重新加载</el-button>
         <el-button type="primary" :icon="Plus" @click="openCreateWarehouse">添加仓库</el-button>
       </div>
     </header>
-    <el-alert v-if="error" type="error" :closable="false" show-icon class="state-alert">{{ error }}</el-alert>
+    <el-alert
+      v-if="error"
+      type="error"
+      :closable="false"
+      show-icon
+      class="state-alert"
+    >
+      <template #title>{{ formatTaskError(error, '仓库与库位加载失败').title }}</template>
+      <div class="task-error-body">
+        <p class="error-reason">{{ formatTaskError(error).reason }}</p>
+        <p class="error-action">{{ formatTaskError(error).action }}</p>
+        <el-button link type="primary" @click="load">重新加载</el-button>
+      </div>
+    </el-alert>
     <div class="master-layout">
       <el-card class="warehouse-list-card" shadow="never">
         <div class="card-heading">
@@ -202,7 +331,7 @@ onBeforeUnmount(() => {
             <el-table-column label="操作" min-width="160" :fixed="canFixAction ? 'right' : false">
               <template #default="scope">
                 <el-button link type="primary" :icon="Edit" @click="openEditLocation(scope.row)">编辑</el-button>
-                <el-button link :type="scope.row.enabled ? 'danger' : 'success'" :icon="SwitchButton" @click="toggleLocation(scope.row)">
+                <el-button link :type="scope.row.enabled ? 'danger' : 'success'" :icon="SwitchButton" :disabled="confirmingLocationToggle" @click="toggleLocation(scope.row)">
                   {{ scope.row.enabled ? '停用' : '启用' }}
                 </el-button>
               </template>
@@ -230,14 +359,33 @@ onBeforeUnmount(() => {
           <el-button link type="primary" :icon="Edit" @click="selectedWarehouse && openEditWarehouse(selectedWarehouse)">
             编辑仓库
           </el-button>
-          <el-button link :type="selectedWarehouse?.enabled ? 'danger' : 'success'" :icon="SwitchButton" @click="selectedWarehouse && toggleWarehouse(selectedWarehouse)">
+          <el-button link :type="selectedWarehouse?.enabled ? 'danger' : 'success'" :icon="SwitchButton" :disabled="confirmingWarehouseToggle" @click="selectedWarehouse && toggleWarehouse(selectedWarehouse)">
             {{ selectedWarehouse?.enabled ? '停用仓库' : '启用仓库' }}
           </el-button>
         </div>
       </div>
       <p>所属部门：{{ departmentOptions.find((department) => department.id === selectedWarehouse?.departmentId)?.name ?? '当前部门' }}</p>
     </el-card>
-    <el-drawer v-model="drawerOpen" :title="drawerKind === 'warehouse' ? (editing ? '编辑仓库' : '添加仓库') : (editing ? '编辑库位' : '添加库位')" size="min(100%, 560px)">
+    <el-drawer
+      v-model="drawerOpen"
+      :title="drawerKind === 'warehouse' ? (editing ? '编辑仓库' : '添加仓库') : (editing ? '编辑库位' : '添加库位')"
+      size="min(100%, 560px)"
+      class="ui-managed-dialog"
+      :before-close="handleBeforeClose"
+    >
+      <el-alert
+        v-if="drawerError"
+        type="error"
+        :closable="false"
+        show-icon
+        class="drawer-error-alert"
+        :title="formatTaskError(drawerError, drawerKind === 'warehouse' ? '保存仓库失败' : '保存库位失败').title"
+      >
+        <div class="task-error-body">
+          <p class="error-reason">{{ formatTaskError(drawerError).reason }}</p>
+          <p class="error-action">{{ formatTaskError(drawerError).action }}</p>
+        </div>
+      </el-alert>
       <el-form v-if="drawerKind === 'warehouse'" label-position="top">
         <el-form-item label="仓库编码" required><el-input v-model="warehouseForm.code" :disabled="editing" /></el-form-item>
         <el-form-item label="仓库名称" required><el-input v-model="warehouseForm.name" /></el-form-item>
@@ -248,8 +396,8 @@ onBeforeUnmount(() => {
         </el-form-item>
         <el-form-item v-if="editing" label="状态"><el-switch v-model="warehouseForm.enabled" active-text="启用" inactive-text="停用" /></el-form-item>
         <div class="drawer-actions">
-          <el-button @click="drawerOpen = false">取消</el-button>
-          <el-button type="primary" @click="saveWarehouse">保存仓库</el-button>
+          <el-button @click="requestClose">取消</el-button>
+          <el-button type="primary" :loading="saveLoading" @click="saveWarehouse">保存仓库</el-button>
         </div>
       </el-form>
       <el-form v-else label-position="top">
@@ -258,8 +406,8 @@ onBeforeUnmount(() => {
         <el-form-item label="库位名称" required><el-input v-model="locationForm.name" /></el-form-item>
         <el-form-item v-if="editing" label="状态"><el-switch v-model="locationForm.enabled" active-text="启用" inactive-text="停用" /></el-form-item>
         <div class="drawer-actions">
-          <el-button @click="drawerOpen = false">取消</el-button>
-          <el-button type="primary" @click="saveLocation">保存库位</el-button>
+          <el-button @click="requestClose">取消</el-button>
+          <el-button type="primary" :loading="saveLoading" @click="saveLocation">保存库位</el-button>
         </div>
       </el-form>
     </el-drawer>
@@ -268,12 +416,13 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .warehouse-view { min-width: 0; }
-.view-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 20px; }
-.view-kicker { margin: 0 0 5px; color: var(--ui-primary); font-size: .75rem; font-weight: 700; letter-spacing: .06em; }
-.view-heading h2 { margin: 0; color: var(--ui-text-strong); font-size: 1.55rem; }
-.view-heading p:last-child { max-width: 660px; margin: 7px 0 0; color: var(--ui-text-muted); }
+.view-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 12px; }
+.view-heading-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.view-heading h2 { margin: 0; color: var(--ui-text-strong); font-size: 1.125rem; font-weight: 600; }
+.view-subtitle { color: var(--ui-text-muted); font-size: 0.8125rem; }
 .view-actions, .drawer-actions, .summary-actions { display: flex; align-items: center; gap: 8px; }
 .state-alert { margin-bottom: 18px; }
+.drawer-error-alert { margin-bottom: 16px; }
 .master-layout { display: grid; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); gap: 16px; }
 .warehouse-list-card, .location-card, .warehouse-summary { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface); box-shadow: var(--ui-shadow-soft); }
 .card-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }

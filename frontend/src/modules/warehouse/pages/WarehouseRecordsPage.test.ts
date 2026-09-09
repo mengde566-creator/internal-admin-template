@@ -183,6 +183,11 @@ describe('WarehouseRecordsPage', () => {
     expect(timeCell.exists()).toBe(true)
     expect(timeCell.text()).toBe('2026-08-26 16:10:32')
     expect(wrapper.text()).not.toContain('2026-08-26T16:10:32.767688')
+
+    // 发生时间列宽至少 180px，保障 19 位等宽日期时间完整展示不截断
+    const timeColumn = wrapper.findAllComponents({ name: 'ElTableColumn' }).find(c => c.props('label') === '发生时间')
+    expect(timeColumn?.exists()).toBe(true)
+    expect(Number(timeColumn?.props('minWidth'))).toBeGreaterThanOrEqual(180)
   })
 
   it('调拨记录分别清晰展示来源与目标位置', async () => {

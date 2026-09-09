@@ -591,13 +591,11 @@ public class ControlledDocumentFileService implements ControlledDocumentFileApi 
         entries.forEach((name, content) -> {
             String lower = name.toLowerCase(Locale.ROOT);
             String xml = new String(content, StandardCharsets.UTF_8);
-            String lowerXml = xml.toLowerCase(Locale.ROOT);
-            if (lower.endsWith(".rels") && (lowerXml.contains("targetmode=\"external\"")
-                    || lowerXml.contains("http://") || lowerXml.contains("https://"))) {
-                throw reject("不支持外部关系");
-            }
             if (lower.endsWith(".xml") || lower.endsWith(".rels")) {
                 validateXml(content);
+            }
+            if (lower.endsWith(".rels")) {
+                validateRelationships(content);
             }
             if (!docx && lower.startsWith("xl/worksheets/") && xml.matches("(?s).*<f(?:\\s|>).*") ) {
                 throw reject("不支持包含公式的电子表格");
@@ -607,6 +605,48 @@ public class ControlledDocumentFileService implements ControlledDocumentFileApi 
             throw reject("电子表格行数限制无效");
         }
         return new ValidationResult(expectedType, bytes.length, sha256(bytes));
+    }
+
+    /**
+     * 只依据 Relationship 的 Target/TargetMode 属性判断外部关系。
+     * Relationship Type 本身按 OOXML 合同是 URI，不能因为其中包含 http(s)
+     * 就把合法的内部关系误判为外部链接。
+     */
+    private void validateRelationships(byte[] xml) {
+        try {
+            Document document = secureDocument(xml);
+            var relationships = document.getElementsByTagNameNS("*", "Relationship");
+            // Some producers emit relationship XML without a namespace.  The
+            // namespace-aware lookup above intentionally does not rely on a
+            // namespace being present, so retain a local-name fallback for
+            // those valid OOXML files and for malformed test fixtures.
+            if (relationships.getLength() == 0) {
+                relationships = document.getElementsByTagName("Relationship");
+            }
+            for (int i = 0; i < relationships.getLength(); i++) {
+                var relationship = (org.w3c.dom.Element) relationships.item(i);
+                String targetMode = relationship.getAttribute("TargetMode").trim();
+                String target = relationship.getAttribute("Target");
+                if ("external".equalsIgnoreCase(targetMode) || isExternalRelationshipTarget(target)) {
+                    throw reject("不支持外部关系");
+                }
+            }
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw reject("OOXML XML 结构损坏或不安全");
+        }
+    }
+
+    private boolean isExternalRelationshipTarget(String target) {
+        if (target == null) {
+            return false;
+        }
+        String value = target.trim();
+        if (value.isEmpty() || value.startsWith("//")) {
+            return value.startsWith("//");
+        }
+        return value.matches("(?i)^[a-z][a-z0-9+.-]*:.*");
     }
 
     private Map<String, byte[]> inspectZip(byte[] bytes) throws IOException {

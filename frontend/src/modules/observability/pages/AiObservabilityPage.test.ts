@@ -82,4 +82,38 @@ describe('AI观测页面', () => {
     expect(wrapper.get('[data-testid="offline-evaluation"]').text()).toContain('未评估')
     expect(wrapper.get('[data-testid="offline-evaluation"]').text()).not.toContain('0/24 通过')
   })
+
+  it('支持展开/收起高级筛选，且支持一键清除全部筛选与条件摘要', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+
+    // 默认高级筛选行隐藏 (v-show)
+    const advRow = wrapper.find('.filter-row--advanced')
+    expect(advRow.attributes('style')).toContain('display: none')
+
+    // 点击“高级筛选”展开
+    const toggleBtn = wrapper.findAllComponents({ name: 'ElButton' }).find(b => b.text().includes('高级筛选'))
+    expect(toggleBtn?.exists()).toBe(true)
+    await toggleBtn?.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.filter-row--advanced').attributes('style')).not.toContain('display: none')
+    expect(toggleBtn?.text()).toContain('收起高级筛选')
+
+    // 输入筛选条件后显示摘要
+    const providerInput = wrapper.find('input[aria-label="Provider筛选"]')
+    await providerInput.setValue('openai')
+    await flushPromises()
+
+    expect(wrapper.find('.active-filter-summary').exists()).toBe(true)
+    expect(wrapper.find('.active-filter-summary').text()).toContain('Provider：openai')
+
+    // 点击“清除筛选”重置
+    const clearBtn = wrapper.findAllComponents({ name: 'ElButton' }).find(b => b.text().includes('清除筛选'))
+    expect(clearBtn?.exists()).toBe(true)
+    await clearBtn?.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.active-filter-summary').exists()).toBe(false)
+    expect((wrapper.find('input[aria-label="Provider筛选"]').element as HTMLInputElement).value).toBe('')
+  })
 })

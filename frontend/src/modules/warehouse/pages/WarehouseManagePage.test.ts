@@ -575,7 +575,14 @@ describe('真实父子组件组合回归测试', () => {
       await flushPromises()
     }
 
-    // 1. 断点往返模拟：1400px (宽屏 DOCKED) -> 1230px (中屏 OVERLAY) -> 1245px (DOCKED) -> 1235px (OVERLAY)
+    // 1. 默认进入时为最小化状态 COMPACT
+    expect(wrapper.find('[data-testid="warehouse-agent"]').attributes('data-mode')).toBe('COMPACT')
+
+    // 点击启动器展开助手
+    await wrapper.find('[data-testid="agent-launcher"]').trigger('click')
+    await flushPromises()
+
+    // 断点往返模拟：1400px (宽屏 DOCKED) -> 1230px (中屏 OVERLAY) -> 1245px (DOCKED) -> 1235px (OVERLAY)
     await pushWidth(1400)
     expect(wrapper.find('[data-testid="warehouse-agent"]').attributes('data-mode')).toBe('DOCKED')
 

@@ -1,0 +1,145 @@
+/**
+ * 管理端轻量页面骨架与布局通用样式类。
+ * 严格使用 tokens.css 现有语义令牌，不增加第二套主题或运行时组件。
+ */
+
+/* 统一页面容器与首屏留白 */
+.ui-page-shell {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 100%;
+}
+
+/* 紧凑页头：标题与右侧主操作同行 */
+.ui-page-header-compact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 2.25rem;
+  gap: 1rem;
+}
+
+.ui-page-header-compact .header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.ui-page-header-compact h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--ui-text-strong);
+  line-height: 1.4;
+}
+
+.ui-page-header-compact .header-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--ui-text-muted);
+}
+
+.ui-page-header-compact .header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* 业务数据卡片：包裹表格、树形结构，形成清晰边界 */
+.ui-data-card {
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  padding: 1rem;
+  box-shadow: var(--ui-shadow-soft);
+  transition: border-color var(--ui-enter) var(--ui-ease-out);
+}
+
+/* 工具栏/筛选区：收敛输入框与按钮间距 */
+.ui-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.875rem;
+}
+
+.ui-toolbar-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* 统一分页容器 */
+.ui-pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 1rem;
+}
+
+/* 统一文件选择器卡片容器 */
+.ui-file-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.375rem 0.75rem;
+  background: var(--ui-surface-muted);
+  border: 1px dashed var(--ui-border-strong);
+  border-radius: var(--ui-radius-sm);
+  transition: border-color var(--ui-enter) var(--ui-ease-out), background-color var(--ui-enter) var(--ui-ease-out);
+}
+
+.ui-file-picker:hover {
+  border-color: var(--ui-primary);
+  background: var(--ui-surface-hover);
+}
+
+.ui-file-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  color: var(--ui-text-strong);
+  max-width: 320px;
+}
+
+.ui-file-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-file-clear-btn {
+  flex-shrink: 0;
+}
+
+.ui-file-placeholder {
+  font-size: 0.8125rem;
+  color: var(--ui-text-muted);
+}
+
+/* 统一任务化错误提示展示 */
+.task-error-body {
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.task-error-body p {
+  margin: 0.125rem 0;
+}
+
+.error-reason {
+  color: var(--ui-text-strong);
+}
+
+.error-action {
+  color: var(--ui-primary);
+  font-weight: 500;
+}

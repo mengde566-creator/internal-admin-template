@@ -26,6 +26,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -52,6 +54,8 @@ import tools.jackson.databind.json.JsonMapper;
 @Service
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
 public class KnowledgeDraftService implements KnowledgeDraftApi {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(KnowledgeDraftService.class);
 
     private static final int MAX_PAGE = 50;
     private static final int MAX_SOURCE_BYTES = 10 * 1024 * 1024;
@@ -159,12 +163,27 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
         }
 
         ControlledDocumentAsset asset = null;
+        String assetId = null;
+        String draftId = UUID.randomUUID().toString();
+        String stage = "file_store";
+        long startedAt = System.nanoTime();
         try {
             asset = files.store(new ControlledDocumentStoreRequest(userId, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT,
                     originalFilename, declaredType(originalFilename), new ByteArrayInputStream(bytes)));
+            assetId = asset.assetId();
+            LOGGER.info("knowledge_draft stage=file_stored draftId={} assetId={} format={} byteSize={}",
+                    draftId, assetId, extension(originalFilename).toUpperCase(Locale.ROOT), bytes.length);
+            stage = "file_read";
             ControlledDocumentRead read = files.read(asset.assetId(), userId, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
+            LOGGER.info("knowledge_draft stage=file_read draftId={} assetId={} format={} byteSize={}",
+                    draftId, assetId, extension(originalFilename).toUpperCase(Locale.ROOT), read.content().length);
+            stage = "document_parse";
             KnowledgeDocumentParser.ParsedDocument parsed = parser.parse(read.content(), originalFilename, asset.limits());
+            LOGGER.info("knowledge_draft stage=document_parsed draftId={} assetId={} format={} parserVersion={} byteSize={} sectionCount={} characterCount={} ignoredCount={} truncated={}",
+                    draftId, assetId, extension(originalFilename).toUpperCase(Locale.ROOT), KnowledgeDocumentParser.PARSER_VERSION,
+                    read.content().length, parsed.sections().size(), parsed.characterCount(), parsed.ignoredCount(), parsed.truncated());
             String contentHash = hashSections(parsed.sections());
+            stage = "version_recheck";
             // The business content hash is the normalized parsed section content,
             // so equivalent DOCX containers remain idempotent; the raw byte hash
             // remains owned by the 06A file asset for storage/audit purposes.
@@ -177,15 +196,19 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
                 discardAsset(loser, userId, conflict("KNOWLEDGE_DRAFT_CONFLICT: 草稿已存在，返回已有草稿"));
                 return toView(userId, racedVersion);
             }
+            stage = "active_snapshot";
             ActiveSnapshot active = activeSnapshot(request.documentCode());
+            stage = "diff_calculated";
             List<KnowledgeDraftMapper.SectionRow> sectionRows = diffRows(parsed.sections(), active.sections());
+            logDiffCalculated(draftId, assetId, sectionRows, startedAt);
             Instant now = clock.instant();
             KnowledgeDraftMapper.DraftRow row = new KnowledgeDraftMapper.DraftRow(
-                    java.util.UUID.randomUUID().toString(), request.documentCode(), request.versionCode(), request.title(),
+                    draftId, request.documentCode(), request.versionCode(), request.title(),
                     userId, asset.assetId(), "USER_UPLOAD", KnowledgeDraftStatus.PREVIEW_READY.name(),
                     KnowledgeDocumentParser.PARSER_VERSION, contentHash, parsed.characterCount(), parsed.sections().size(),
                     parsed.ignoredCount(), parsed.truncated(), active.versionCode(), active.contentHash(), null,
                     now, now, asset.expiresAt().toInstant(java.time.ZoneOffset.UTC));
+            stage = "draft_persistence";
             KnowledgeDraftMapper.DraftRow persisted;
             try {
                 persisted = transaction.execute(status -> {
@@ -203,11 +226,15 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
                 return toView(userId, winner);
             }
             if (persisted == null) throw new IllegalStateException("KNOWLEDGE_DRAFT_PERSISTENCE_FAILED: 草稿未提交");
+            LOGGER.info("knowledge_draft stage=draft_persisted draftId={} assetId={} sectionCount={} characterCount={} elapsedMs={}",
+                    persisted.draftId(), assetId, persisted.sectionCount(), persisted.characterCount(), elapsedMs(startedAt));
             DraftView result = toView(userId, persisted, sectionRows, active);
             // The source remains on its creation-time unconfirmed TTL. 06E may
             // retain it after a successful publish; 06D never changes retention.
             return result;
         } catch (RuntimeException failure) {
+            LOGGER.warn("knowledge_draft stage=draft_failed draftId={} assetId={} failureStage={} errorCode={} exceptionClass={} elapsedMs={}",
+                    draftId, assetId, stage, draftErrorCode(failure, stage), failure.getClass().getSimpleName(), elapsedMs(startedAt));
             if (asset != null) {
                 ControlledDocumentAsset loser = asset;
                 asset = null;
@@ -264,84 +291,144 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
         validatePublishRequest(draftId, request);
         KnowledgeDraftMapper.DraftRow draft = drafts.findOwned(draftId, userId);
         if (draft == null) throw new BusinessException(ErrorCode.NOT_FOUND, "知识草稿不存在");
+        long publishStartedAt = System.nanoTime();
+        String publishAssetId = draft.fileAssetId();
+        LOGGER.info("knowledge_publish stage=publish_started draftId={} assetId={} revision={}",
+                draftId, publishAssetId, draft.revision());
         if (KnowledgeDraftStatus.PUBLISHED.name().equals(draft.status())) {
-            return toView(userId, draft);
+            try {
+                DraftView result = toView(userId, draft);
+                return publishFinished(result, publishAssetId, "ALREADY_PUBLISHED", publishStartedAt);
+            } catch (RuntimeException failure) {
+                throw publishFailure(draft, "already_published_view", failure, publishStartedAt);
+            }
         }
         Instant now = clock.instant();
         if (KnowledgeDraftStatus.PUBLISHING.name().equals(draft.status())) {
             if (isFreshPublishing(draft, now)) {
                 if (!Objects.equals(draft.publishClientRequestId(), request.clientRequestId())) {
-                    throw conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿正在由其他发布请求处理");
+                    throw publishFailure(draft, "precondition", conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿正在由其他发布请求处理"), publishStartedAt);
                 }
-                return toView(userId, draft);
+                try {
+                    return publishFinished(toView(userId, draft), publishAssetId, "PUBLISHING", publishStartedAt);
+                } catch (RuntimeException failure) {
+                    throw publishFailure(draft, "in_progress_view", failure, publishStartedAt);
+                }
             }
             if (!Objects.equals(request.revision(), draft.revision())) {
-                throw conflict("KNOWLEDGE_PUBLISH_CONFLICT: 发布已中断，请刷新后使用最新修订重试");
+                throw publishFailure(draft, "precondition", conflict("KNOWLEDGE_PUBLISH_CONFLICT: 发布已中断，请刷新后使用最新修订重试"), publishStartedAt);
             }
         }
         if (embeddingClient == null || knowledgeMapper == null) {
-            throw new IllegalStateException("KNOWLEDGE_PUBLISH_UNAVAILABLE: 发布能力未装配");
+            throw publishFailure(draft, "precondition",
+                    new IllegalStateException("KNOWLEDGE_PUBLISH_UNAVAILABLE: 发布能力未装配"), publishStartedAt);
         }
         if (!Objects.equals(request.revision(), draft.revision())) {
-            throw conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿修订已变化，请刷新后重试");
+            throw publishFailure(draft, "precondition",
+                    conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿修订已变化，请刷新后重试"), publishStartedAt);
         }
         if (!USER_SOURCE_TYPE.equals(draft.sourceType())) {
-            throw conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿来源不受信");
+            throw publishFailure(draft, "precondition", conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿来源不受信"), publishStartedAt);
         }
         if ((!isPublishable(draft) && !KnowledgeDraftStatus.PUBLISHING.name().equals(draft.status()))
                 || !draft.expiresAt().isAfter(clock.instant())) {
-            throw conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿已失效或不可发布");
+            throw publishFailure(draft, "precondition", conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿已失效或不可发布"), publishStartedAt);
         }
         if (!KnowledgeDocumentParser.PARSER_VERSION.equals(draft.parserVersion())) {
-            markNeedsRepreview(draft, "KNOWLEDGE_PUBLISH_REPREVIEW_REQUIRED: 解析器版本已变化，请重新预览");
-            throw conflict("KNOWLEDGE_PUBLISH_REPREVIEW_REQUIRED: 解析器版本已变化，请重新预览");
+            try {
+                markNeedsRepreview(draft, "KNOWLEDGE_PUBLISH_REPREVIEW_REQUIRED: 解析器版本已变化，请重新预览");
+            } catch (RuntimeException failure) {
+                throw publishFailure(draft, "precondition", failure, publishStartedAt);
+            }
+            throw publishFailure(draft, "precondition",
+                    conflict("KNOWLEDGE_PUBLISH_REPREVIEW_REQUIRED: 解析器版本已变化，请重新预览"), publishStartedAt);
         }
 
-        ControlledDocumentRead source = files.read(draft.fileAssetId(), userId,
-                DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
-        KnowledgeDocumentParser.ParsedDocument parsed = parser.parse(source.content(),
-                source.metadata().originalFilename(), source.metadata().limits());
-        String contentHash = hashSections(parsed.sections());
-        if (parsed.truncated() || !contentHash.equals(draft.contentHash())) {
-            markNeedsRepreview(draft, "KNOWLEDGE_PUBLISH_CONTENT_CHANGED: 草稿内容已变化，请重新预览");
-            throw conflict("KNOWLEDGE_PUBLISH_CONTENT_CHANGED: 草稿内容已变化，请重新预览");
+        String validationStage = "source_read";
+        KnowledgeDocumentParser.ParsedDocument parsed;
+        String contentHash;
+        ActiveSnapshot baseline;
+        try {
+            ControlledDocumentRead source = files.read(draft.fileAssetId(), userId,
+                    DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
+            validationStage = "source_parse";
+            parsed = parser.parse(source.content(), source.metadata().originalFilename(), source.metadata().limits());
+            validationStage = "source_hash_validation";
+            contentHash = hashSections(parsed.sections());
+            if (parsed.truncated() || !contentHash.equals(draft.contentHash())) {
+                markNeedsRepreview(draft, "KNOWLEDGE_PUBLISH_CONTENT_CHANGED: 草稿内容已变化，请重新预览");
+                throw conflict("KNOWLEDGE_PUBLISH_CONTENT_CHANGED: 草稿内容已变化，请重新预览");
+            }
+            validationStage = "active_snapshot";
+            baseline = activeSnapshot(draft.documentCode());
+            validationStage = "active_validation";
+            if (!Objects.equals(draft.baseActiveVersionCode(), baseline.versionCode())
+                    || !Objects.equals(draft.baseActiveContentHash(), baseline.contentHash())) {
+                markNeedsRepreview(draft, "KNOWLEDGE_PUBLISH_ACTIVE_CHANGED: 当前生效资料已变化，请重新预览");
+                throw conflict("KNOWLEDGE_PUBLISH_ACTIVE_CHANGED: 当前生效资料已变化，请重新预览");
+            }
+        } catch (RuntimeException failure) {
+            logPublishFailure(draft, validationStage, failure, publishStartedAt);
+            throw failure;
         }
-        ActiveSnapshot baseline = activeSnapshot(draft.documentCode());
-        if (!Objects.equals(draft.baseActiveVersionCode(), baseline.versionCode())
-                || !Objects.equals(draft.baseActiveContentHash(), baseline.contentHash())) {
-            markNeedsRepreview(draft, "KNOWLEDGE_PUBLISH_ACTIVE_CHANGED: 当前生效资料已变化，请重新预览");
-            throw conflict("KNOWLEDGE_PUBLISH_ACTIVE_CHANGED: 当前生效资料已变化，请重新预览");
-        }
+        LOGGER.info("knowledge_publish stage=source_verified draftId={} assetId={} sectionCount={} characterCount={} truncated={}",
+                draftId, publishAssetId, parsed.sections().size(), parsed.characterCount(), parsed.truncated());
 
-        ClaimResult claim = claimPublishing(draft, request);
+        ClaimResult claim;
+        try {
+            claim = claimPublishing(draft, request);
+        } catch (RuntimeException failure) {
+            throw publishFailure(draft, "claim", failure, publishStartedAt);
+        }
         if (!claim.claimed()) {
             KnowledgeDraftMapper.DraftRow current = claim.row();
             if (current != null && KnowledgeDraftStatus.PUBLISHED.name().equals(current.status())) {
-                return toView(userId, current);
+                try {
+                    return publishFinished(toView(userId, current), current.fileAssetId(), "ALREADY_PUBLISHED", publishStartedAt);
+                } catch (RuntimeException failure) {
+                    throw publishFailure(current, "claim_result_view", failure, publishStartedAt);
+                }
             }
             if (current != null && KnowledgeDraftStatus.PUBLISHING.name().equals(current.status())) {
                 if (!Objects.equals(current.publishClientRequestId(), request.clientRequestId())) {
-                    throw conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿正在由其他发布请求处理");
+                    throw publishFailure(current, "claim", conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿正在由其他发布请求处理"), publishStartedAt);
                 }
-                return toView(userId, current);
+                try {
+                    return publishFinished(toView(userId, current), current.fileAssetId(), "PUBLISHING", publishStartedAt);
+                } catch (RuntimeException failure) {
+                    throw publishFailure(current, "claim_result_view", failure, publishStartedAt);
+                }
             }
-            throw conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿已被其他发布操作占用");
+            throw publishFailure(draft, "claim", conflict("KNOWLEDGE_PUBLISH_CONFLICT: 草稿已被其他发布操作占用"), publishStartedAt);
         }
         KnowledgeDraftMapper.DraftRow claimed = claim.row();
         if (claimed == null || !KnowledgeDraftStatus.PUBLISHING.name().equals(claimed.status())) {
-            throw conflict("KNOWLEDGE_PUBLISH_CONFLICT: 发布领取失败");
+            throw publishFailure(draft, "claim", conflict("KNOWLEDGE_PUBLISH_CONFLICT: 发布领取失败"), publishStartedAt);
         }
+        LOGGER.info("knowledge_publish stage=publish_claimed draftId={} assetId={} revision={}",
+                claimed.draftId(), claimed.fileAssetId(), claimed.revision());
 
-        PublishCommit existingCommit = completeExistingPublication(claimed, request.clientRequestId(),
-                parsed.sections(), contentHash, baseline);
+        PublishCommit existingCommit;
+        try {
+            existingCommit = completeExistingPublication(claimed, request.clientRequestId(),
+                    parsed.sections(), contentHash, baseline);
+        } catch (RuntimeException failure) {
+            throw publishFailure(claimed, "existing_publication_check", failure, publishStartedAt);
+        }
         if (existingCommit != null) {
-            return retainAndView(userId, existingCommit);
+            LOGGER.info("knowledge_publish stage=publication_persisted draftId={} assetId={} reused=true", claimed.draftId(), claimed.fileAssetId());
+            return retainAndView(userId, existingCommit, publishStartedAt);
         }
 
         List<RetrievalEmbedding> vectors;
         try {
-            vectors = embedDraft(parsed.sections());
+            LOGGER.info("knowledge_publish stage=embedding_started draftId={} assetId={} sectionCount={}",
+                    claimed.draftId(), claimed.fileAssetId(), parsed.sections().size());
+            vectors = embedDraft(parsed.sections(), claimed.draftId(), claimed.fileAssetId(), publishStartedAt);
+            LOGGER.info("knowledge_publish stage=embedding_finished draftId={} assetId={} vectorCount={} elapsedMs={}",
+                    claimed.draftId(), claimed.fileAssetId(), vectors.size(), elapsedMs(publishStartedAt));
         } catch (RuntimeException failure) {
+            logPublishFailure(claimed, "embedding", failure, publishStartedAt);
             DraftView resolved = markFailureOrResolve(userId, claimed, request.clientRequestId(), failure);
             if (resolved != null) return resolved;
             throw failure;
@@ -351,7 +438,11 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
             commit = transaction.execute(status -> persistPublication(claimed, request.clientRequestId(),
                     parsed.sections(), contentHash, vectors));
             if (commit == null) throw new IllegalStateException("KNOWLEDGE_PUBLISH_FAILED: 发布事务未提交");
+            LOGGER.info("knowledge_publish stage=publication_persisted draftId={} assetId={} sectionCount={}",
+                    claimed.draftId(), claimed.fileAssetId(), parsed.sections().size());
+            LOGGER.info("knowledge_publish stage=active_switched draftId={} assetId={} status=PUBLISHED", claimed.draftId(), claimed.fileAssetId());
         } catch (RuntimeException failure) {
+            logPublishFailure(claimed, "publication_persistence", failure, publishStartedAt);
             DraftView resolved;
             if (failure.getMessage() != null && failure.getMessage().startsWith("KNOWLEDGE_PUBLISH_ACTIVE_CHANGED")) {
                 resolved = markRepreviewOrResolve(userId, claimed, request.clientRequestId(), failure.getMessage());
@@ -363,7 +454,7 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
             if (resolved != null) return resolved;
             throw failure;
         }
-        return retainAndView(userId, commit);
+        return retainAndView(userId, commit, publishStartedAt);
     }
 
     private ClaimResult claimPublishing(KnowledgeDraftMapper.DraftRow draft, PublishRequest request) {
@@ -553,11 +644,14 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
                 : fallback;
     }
 
-    private DraftView retainAndView(Long userId, PublishCommit commit) {
+    private DraftView retainAndView(Long userId, PublishCommit commit, long startedAt) {
         KnowledgeDraftMapper.DraftRow resultRow = commit.row();
         try {
             files.retain(resultRow.fileAssetId(), userId, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
         } catch (RuntimeException retainFailure) {
+            LOGGER.warn("knowledge_publish stage=retain_warning draftId={} assetId={} errorCode={} exceptionClass={} elapsedMs={}",
+                    resultRow.draftId(), resultRow.fileAssetId(), SOURCE_RETENTION_WARNING,
+                    retainFailure.getClass().getSimpleName(), elapsedMs(startedAt));
             int warningRevision = resultRow.revision();
             int updated;
             try {
@@ -572,15 +666,18 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
             } else {
                 KnowledgeDraftMapper.DraftRow current = drafts.findOwned(resultRow.draftId(), userId);
                 if (current != null && KnowledgeDraftStatus.PUBLISHED.name().equals(current.status())) {
-                    return toView(userId, current, commit.sectionRows(), commit.active(), SOURCE_RETENTION_UNKNOWN);
+                    DraftView result = toView(userId, current, commit.sectionRows(), commit.active(), SOURCE_RETENTION_UNKNOWN);
+                    return publishFinished(result, resultRow.fileAssetId(), "PUBLISHED_WITH_RETENTION_UNKNOWN", startedAt);
                 }
-                throw retainFailure;
+                throw publishFailure(resultRow, "source_retention", retainFailure, startedAt);
             }
         }
-        return toView(userId, resultRow, commit.sectionRows(), commit.active());
+        DraftView result = toView(userId, resultRow, commit.sectionRows(), commit.active());
+        return publishFinished(result, resultRow.fileAssetId(), "PUBLISHED", startedAt);
     }
 
-    private List<RetrievalEmbedding> embedDraft(List<KnowledgeDocumentParser.Section> sections) {
+    private List<RetrievalEmbedding> embedDraft(List<KnowledgeDocumentParser.Section> sections,
+                                                String draftId, String assetId, long startedAt) {
         List<RetrievalEmbedding> vectors = new ArrayList<>(sections.size());
         for (int from = 0; from < sections.size(); from += 20) {
             List<KnowledgeDocumentParser.Section> batch = sections.subList(from, Math.min(from + 20, sections.size()));
@@ -597,6 +694,8 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
                 validateEmbedding(vector);
                 vectors.add(vector);
             }
+            LOGGER.debug("knowledge_publish stage=embedding_batch_completed draftId={} assetId={} batchStart={} batchCount={} totalCount={} elapsedMs={}",
+                    draftId, assetId, from, batch.size(), vectors.size(), elapsedMs(startedAt));
         }
         return vectors;
     }
@@ -680,6 +779,75 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
         return "KNOWLEDGE_PUBLISH_FAILED";
     }
 
+    private static void logPublishFailure(KnowledgeDraftMapper.DraftRow draft, String stage,
+                                          RuntimeException failure, long startedAt) {
+        LOGGER.warn("knowledge_publish stage=publish_failed draftId={} assetId={} failureStage={} errorCode={} exceptionClass={} elapsedMs={}",
+                draft.draftId(), draft.fileAssetId(), stage, publishErrorCode(failure, stage),
+                failure.getClass().getSimpleName(), elapsedMs(startedAt));
+    }
+
+    private static RuntimeException publishFailure(KnowledgeDraftMapper.DraftRow draft, String stage,
+                                                   RuntimeException failure, long startedAt) {
+        logPublishFailure(draft, stage, failure, startedAt);
+        return failure;
+    }
+
+    private static DraftView publishFinished(DraftView result, String assetId, String outcome, long startedAt) {
+        LOGGER.info("knowledge_publish stage=publish_finished draftId={} assetId={} status={} outcome={} elapsedMs={}",
+                result.draftId(), assetId, result.status(), outcome, elapsedMs(startedAt));
+        return result;
+    }
+
+    private static String publishErrorCode(RuntimeException failure, String stage) {
+        String message = failure.getMessage();
+        if ("active_snapshot".equals(stage)) return "KNOWLEDGE_PUBLISH_ACTIVE_UNAVAILABLE";
+        if (message != null && message.startsWith("KNOWLEDGE_")) {
+            int colon = message.indexOf(':');
+            return message.substring(0, colon > 0 ? Math.min(colon, 100) : Math.min(message.length(), 100));
+        }
+        if (message != null && message.startsWith("AI_")) {
+            int colon = message.indexOf(':');
+            return message.substring(0, colon > 0 ? Math.min(colon, 100) : Math.min(message.length(), 100));
+        }
+        return switch (stage) {
+            case "source_read" -> "KNOWLEDGE_PUBLISH_SOURCE_UNAVAILABLE";
+            case "source_parse" -> "KNOWLEDGE_PUBLISH_PARSE_FAILED";
+            case "source_hash_validation" -> "KNOWLEDGE_PUBLISH_CONTENT_CHANGED";
+            case "active_snapshot" -> "KNOWLEDGE_PUBLISH_ACTIVE_UNAVAILABLE";
+            case "active_validation" -> "KNOWLEDGE_PUBLISH_ACTIVE_CHANGED";
+            default -> publishErrorCode(failure);
+        };
+    }
+
+    private static void logDiffCalculated(String draftId, String assetId, List<KnowledgeDraftMapper.SectionRow> rows, long startedAt) {
+        Map<String, Long> counts = rows.stream().collect(java.util.stream.Collectors.groupingBy(
+                KnowledgeDraftMapper.SectionRow::changeType, LinkedHashMap::new, java.util.stream.Collectors.counting()));
+        LOGGER.info("knowledge_draft stage=diff_calculated draftId={} assetId={} addedCount={} modifiedCount={} removedCount={} unchangedCount={} elapsedMs={}",
+                draftId, assetId, counts.getOrDefault(KnowledgeDraftChangeType.ADDED.name(), 0L),
+                counts.getOrDefault(KnowledgeDraftChangeType.MODIFIED.name(), 0L),
+                counts.getOrDefault(KnowledgeDraftChangeType.REMOVED.name(), 0L),
+                counts.getOrDefault(KnowledgeDraftChangeType.UNCHANGED.name(), 0L), elapsedMs(startedAt));
+    }
+
+    private static String draftErrorCode(RuntimeException failure, String stage) {
+        String message = failure.getMessage();
+        if (message != null && message.startsWith("KNOWLEDGE_")) {
+            int colon = message.indexOf(':');
+            return message.substring(0, colon > 0 ? Math.min(colon, 100) : Math.min(message.length(), 100));
+        }
+        return switch (stage) {
+            case "file_store", "file_read" -> "KNOWLEDGE_DRAFT_FILE_UNAVAILABLE";
+            case "document_parse" -> "KNOWLEDGE_DRAFT_PARSE_FAILED";
+            case "active_snapshot", "diff_calculated" -> "KNOWLEDGE_DRAFT_ACTIVE_UNAVAILABLE";
+            case "draft_persistence" -> "KNOWLEDGE_DRAFT_PERSISTENCE_FAILED";
+            default -> "KNOWLEDGE_DRAFT_FAILED";
+        };
+    }
+
+    private static long elapsedMs(long startedAt) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+    }
+
     private static boolean isPublishable(KnowledgeDraftMapper.DraftRow draft) {
         return KnowledgeDraftStatus.PREVIEW_READY.name().equals(draft.status())
                 || KnowledgeDraftStatus.PUBLISH_FAILED.name().equals(draft.status());
@@ -744,6 +912,97 @@ public class KnowledgeDraftService implements KnowledgeDraftApi {
     private boolean activeChanged(KnowledgeDraftMapper.DraftRow row, ActiveSnapshot current) {
         return !Objects.equals(row.baseActiveVersionCode(), current.versionCode())
                 || !Objects.equals(row.baseActiveContentHash(), current.contentHash());
+    }
+
+    /**
+     * 执行一次06F知识草稿维护。
+     *
+     * 方法：{@code maintainOnce}
+     *
+     * 执行链路（共 7 步）：
+     * 1. 校验维护时间存在且批次大小处于1至100；非法输入抛出 {@link BusinessException}，不扫描知识库。
+     * 2. 调用 {@link KnowledgeDraftMapper#pageStalePublishing(Instant, int)} 有界读取陈旧PUBLISHING草稿，并调用
+     *    {@link KnowledgeDraftMapper#markPublishingInterrupted(String, long, int, Timestamp)} CAS标记为可显式重试的失败；
+     *    该路径不调用Embedding、不自动发布，也不改变当前ACTIVE。
+     * 3. 调用 {@link KnowledgeDraftMapper#pageExpiredForMaintenance(Instant, int)} 多读取一条前瞻记录，
+     *    判断本批之后是否仍有到期未发布草稿。
+     * 4. 逐项重新读取所有者草稿并复核到期时间和PUBLISHED状态；事实缺失或变化时记录所有权不确定并跳过。
+     * 5. 调用 {@link KnowledgeDraftMapper#claimExpiredForMaintenance(String, long, int, Timestamp)} CAS收口为EXPIRED；
+     *    领取竞争失败时不释放来源资产。
+     * 6. 调用 {@link ControlledDocumentFileApi#discard(String, Long, DocumentFilePurpose)} 释放未发布草稿的来源文件；
+     *    失败时调用 {@link KnowledgeDraftMapper#markSourceReleaseFailed(String, long, int, Timestamp)} 保留草稿引用和诊断，
+     *    供后续轮次重试。
+     * 7. 来源释放成功后，在知识事务中依次调用 {@link KnowledgeDraftMapper#deleteSections(String)} 和
+     *    {@link KnowledgeDraftMapper#deleteExpiredDraft(String, long, int)} 删除章节及草稿，最后返回脱敏维护计数。
+     *
+     * @param now 维护时钟
+     * @param batchSize 本轮最多处理的草稿数，范围1..100
+     * @return 陈旧发布标记数、删除草稿数和资产释放失败数
+     * @throws BusinessException 维护时间为空或批次大小超出1至100时抛出
+     * @throws IllegalStateException 已释放来源资产的草稿在删除事务中发生并发变化时抛出
+     */
+    public MaintenanceResult maintainOnce(Instant now, int batchSize) {
+        if (now == null || batchSize < 1 || batchSize > 100) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "知识维护批次必须在1至100之间");
+        }
+        int interrupted = 0;
+        for (KnowledgeDraftMapper.DraftRow row : drafts.pageStalePublishing(now.minus(PUBLISHING_STALE_AFTER), batchSize)) {
+            if (row != null && drafts.markPublishingInterrupted(row.draftId(), row.creatorUserId(), row.revision(),
+                    Timestamp.from(now)) == 1) interrupted++;
+        }
+        int deleted = 0;
+        int releaseFailures = 0;
+        List<KnowledgeDraftMapper.DraftRow> expired = drafts.pageExpiredForMaintenance(now, Math.min(101, batchSize + 1));
+        boolean moreExpired = expired.size() > batchSize;
+        boolean ownershipUncertain = false;
+        for (KnowledgeDraftMapper.DraftRow row : expired) {
+            if (deleted + releaseFailures >= batchSize) break;
+            if (row == null || row.draftId() == null || row.expiresAt() == null || row.expiresAt().isAfter(now)) {
+                ownershipUncertain = true;
+                continue;
+            }
+            KnowledgeDraftMapper.DraftRow current = drafts.findOwned(row.draftId(), row.creatorUserId());
+            if (current == null || current.expiresAt() == null || current.expiresAt().isAfter(now)
+                    || KnowledgeDraftStatus.PUBLISHED.name().equals(current.status())) {
+                ownershipUncertain = true;
+                continue;
+            }
+            if (drafts.claimExpiredForMaintenance(current.draftId(), current.creatorUserId(), current.revision(),
+                    Timestamp.from(now)) != 1) {
+                ownershipUncertain = true;
+                continue;
+            }
+            int cleanupRevision = current.revision() + 1;
+            try {
+                files.discard(current.fileAssetId(), current.creatorUserId(), DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
+            } catch (RuntimeException releaseFailure) {
+                releaseFailures++;
+                try {
+                    drafts.markSourceReleaseFailed(current.draftId(), current.creatorUserId(), cleanupRevision,
+                            Timestamp.from(now));
+                } catch (RuntimeException markFailure) {
+                    releaseFailure.addSuppressed(markFailure);
+                }
+                // Keep the EXPIRED draft and its asset reference for the next bounded cycle.
+                continue;
+            }
+            transaction.executeWithoutResult(status -> {
+                drafts.deleteSections(current.draftId());
+                if (drafts.deleteExpiredDraft(current.draftId(), current.creatorUserId(), cleanupRevision) != 1) {
+                    throw new IllegalStateException("知识过期草稿删除竞争失败");
+                }
+            });
+            deleted++;
+        }
+        return new MaintenanceResult(interrupted, deleted, releaseFailures, moreExpired, ownershipUncertain);
+    }
+
+    /** 06F知识维护一轮的脱敏计数。 */
+    public record MaintenanceResult(int interrupted, int deleted, int releaseFailures, boolean moreExpired,
+                                    boolean ownershipUncertain) {
+        public MaintenanceResult(int interrupted, int deleted, int releaseFailures, boolean moreExpired) {
+            this(interrupted, deleted, releaseFailures, moreExpired, false);
+        }
     }
 
     private ActiveSnapshot activeSnapshot(String documentCode) {

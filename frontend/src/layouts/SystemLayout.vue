@@ -37,11 +37,19 @@ const navigation = computed<NavigationItem[]>(() => [
   ...(aiEnabled.value && auth.hasPermission('ai:knowledge:manage') ? [{ key: 'ai-knowledge-drafts', label: '知识资料', icon: Document }] : [])
 ])
 
-/** 当前激活的导航项 key（按路由名匹配） */
-const activeKey = computed(() => String(route.name ?? ''))
+/** 当前激活的导航项 key（按路由名匹配，仓储各子页统一高亮仓储主导航） */
+const activeKey = computed(() => {
+  const name = String(route.name ?? '')
+  if (name.startsWith('warehouse')) return 'warehouse'
+  return name
+})
 
 function onNavigate(key: string) {
-  void router.push({ name: key })
+  if (key === 'warehouse') {
+    void router.push({ name: 'warehouse-stock' })
+  } else {
+    void router.push({ name: key })
+  }
 }
 
 async function onLogout() {

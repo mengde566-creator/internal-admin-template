@@ -10,7 +10,9 @@ const doubles = vi.hoisted(() => ({
   withdrawApi: vi.fn(),
   uploadImageApi: vi.fn(),
   success: vi.fn(),
-  error: vi.fn()
+  error: vi.fn(),
+  confirm: vi.fn(),
+  hasPermission: vi.fn(() => false)
 }))
 
 vi.mock('../api/site', () => ({
@@ -24,7 +26,7 @@ vi.mock('../api/site', () => ({
 
 vi.mock('../../auth/store/auth', () => ({
   useAuthStore: () => ({
-    hasPermission: () => false
+    hasPermission: doubles.hasPermission
   })
 }))
 
@@ -36,6 +38,9 @@ vi.mock('element-plus', async (importOriginal) => {
       success: doubles.success,
       error: doubles.error,
       warning: vi.fn()
+    },
+    ElMessageBox: {
+      confirm: doubles.confirm
     }
   }
 })
@@ -90,6 +95,8 @@ describe('主页内容管理', () => {
     doubles.uploadImageApi.mockReset()
     doubles.success.mockReset()
     doubles.error.mockReset()
+    doubles.confirm.mockReset()
+    doubles.hasPermission.mockReset().mockReturnValue(false)
     doubles.fetchDraftApi.mockResolvedValue({ data: { data: draft } })
   })
 
@@ -132,5 +139,138 @@ describe('主页内容管理', () => {
 
     expect(doubles.error).toHaveBeenCalledWith('草稿版本已冲突')
     expect(invalidateQueries).not.toHaveBeenCalled()
+  })
+
+  it('已配置主图时渲染更换按钮与清除操作，清除后重置状态', async () => {
+    const { wrapper } = mountPage()
+    await waitForDraftHydration(wrapper)
+
+    const clearBtn = wrapper.find('.ui-file-clear-btn')
+    expect(clearBtn.exists()).toBe(true)
+    expect(clearBtn.attributes('aria-label')).toBe('清除主图')
+    expect(wrapper.text()).toContain('更换主图')
+
+    await clearBtn.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('选择图片上传')
+    expect(wrapper.text()).toContain('支持 jpg/png/webp，≤10MB')
+  })
+
+  it('发布主页时弹出高影响确认，确认后发起请求，取消时不发起请求', async () => {
+    doubles.hasPermission.mockReturnValue(true)
+    doubles.publishApi.mockResolvedValue({ data: { success: true } })
+    const { wrapper } = mountPage()
+    await waitForDraftHydration(wrapper)
+
+    const publishBtn = wrapper.findAll('button').find((b) => b.text().includes('发布'))
+    expect(publishBtn).toBeDefined()
+
+    // 1. 取消时
+    doubles.confirm.mockRejectedValueOnce('cancel')
+    await publishBtn!.trigger('click')
+    await flushPromises()
+    expect(doubles.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('已加载草稿'),
+      '发布主页内容',
+      expect.objectContaining({
+        confirmButtonText: '确认发布并公开',
+        cancelButtonText: '取消'
+      })
+    )
+    expect(doubles.publishApi).not.toHaveBeenCalled()
+
+    // 2. 确认时
+    doubles.confirm.mockResolvedValueOnce('confirm')
+    await publishBtn!.trigger('click')
+    await flushPromises()
+    expect(doubles.publishApi).toHaveBeenCalledTimes(1)
+  })
+
+  it('撤回主页时弹出高影响确认，确认后发起请求，取消时不发起请求', async () => {
+    doubles.hasPermission.mockReturnValue(true)
+    doubles.withdrawApi.mockResolvedValue({ data: { success: true } })
+    const { wrapper } = mountPage()
+    await waitForDraftHydration(wrapper)
+
+    const withdrawBtn = wrapper.findAll('button').find((b) => b.text().includes('撤回'))
+    expect(withdrawBtn).toBeDefined()
+
+    // 1. 取消时
+    doubles.confirm.mockRejectedValueOnce('cancel')
+    await withdrawBtn!.trigger('click')
+    await flushPromises()
+    expect(doubles.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('已加载草稿'),
+      '撤回主页内容',
+      expect.objectContaining({
+        confirmButtonText: '确认撤回并下线',
+        cancelButtonText: '取消'
+      })
+    )
+    expect(doubles.withdrawApi).not.toHaveBeenCalled()
+
+    // 2. 确认时
+    doubles.confirm.mockResolvedValueOnce('confirm')
+    await withdrawBtn!.trigger('click')
+    await flushPromises()
+    expect(doubles.withdrawApi).toHaveBeenCalledTimes(1)
+  })
+
+  it('表单修改未保存时点击发布：确认弹窗展示已保存草稿名称并明确警告未保存修改', async () => {
+    doubles.hasPermission.mockReturnValue(true)
+    doubles.publishApi.mockResolvedValue({ data: { success: true } })
+    const { wrapper } = mountPage()
+    await waitForDraftHydration(wrapper)
+
+    const input = wrapper.get('input[placeholder="站点名称"]')
+    await input.setValue('本地未保存的新名称')
+
+    const publishBtn = wrapper.findAll('button').find((b) => b.text().includes('发布'))
+    expect(publishBtn).toBeDefined()
+
+    doubles.confirm.mockResolvedValueOnce('confirm')
+    await publishBtn!.trigger('click')
+    await flushPromises()
+
+    // 验证弹窗显示的是已加载草稿名称，且包含未保存修改的明确警示
+    expect(doubles.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('已保存的主页草稿“已加载草稿”'),
+      '发布主页内容',
+      expect.anything()
+    )
+    expect(doubles.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('注意：当前表单存在未保存的修改，发布仅生效服务端已保存的草稿'),
+      '发布主页内容',
+      expect.anything()
+    )
+    expect(doubles.publishApi).toHaveBeenCalledTimes(1)
+  })
+
+  it('发布与撤回操作具有确认中互斥锁，快速重复点击不会重复弹出确认框或重复发请求', async () => {
+    doubles.hasPermission.mockReturnValue(true)
+    let resolveConfirm: (val: string) => void = () => {}
+    doubles.confirm.mockImplementation(() => new Promise((resolve) => { resolveConfirm = resolve }))
+    doubles.publishApi.mockResolvedValue({ data: { success: true } })
+
+    const { wrapper } = mountPage()
+    await waitForDraftHydration(wrapper)
+
+    const publishBtn = wrapper.findAll('button').find((b) => b.text().includes('发布'))
+    expect(publishBtn).toBeDefined()
+
+    // 快速连续点击两次
+    const firstClick = publishBtn!.trigger('click')
+    const secondClick = publishBtn!.trigger('click')
+    await Promise.all([firstClick, secondClick])
+
+    // 确认框应该只弹出一次
+    expect(doubles.confirm).toHaveBeenCalledTimes(1)
+
+    // 完成确认
+    resolveConfirm('confirm')
+    await flushPromises()
+
+    expect(doubles.publishApi).toHaveBeenCalledTimes(1)
   })
 })

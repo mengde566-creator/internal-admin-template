@@ -38,6 +38,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -91,19 +92,40 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
     private final TransactionTemplate transactionTemplate;
     private final ThreadPoolExecutor analysisExecutor;
 
+    @Autowired
     public WarehouseItemImportService(ControlledDocumentFileApi files, ItemMapper items,
                                       WarehouseService warehouse,
                                       WarehouseItemImportJobMapper jobs, WarehouseItemImportRowMapper rows,
                                       IamActorApi iamActorApi, PlatformTransactionManager transactionManager) {
+        this(files, items, warehouse, jobs, rows, iamActorApi, transactionManager, null);
+    }
+
+    /**
+     * 使用可控执行器装配与生产同形的服务，供队列饱和回归测试使用。
+     *
+     * @param files 受控文件接口
+     * @param items 物品Mapper
+     * @param warehouse 仓储业务服务
+     * @param jobs 导入作业Mapper
+     * @param rows 导入行Mapper
+     * @param iamActorApi 可信操作者接口
+     * @param transactionManager 业务事务管理器
+     * @param analysisExecutor 测试提供的分析执行器；为空时创建生产执行器
+     */
+    WarehouseItemImportService(ControlledDocumentFileApi files, ItemMapper items,
+                                WarehouseService warehouse,
+                                WarehouseItemImportJobMapper jobs, WarehouseItemImportRowMapper rows,
+                                IamActorApi iamActorApi, PlatformTransactionManager transactionManager,
+                                ThreadPoolExecutor analysisExecutor) {
         this.files = files; this.items = items; this.warehouse = warehouse;
         this.jobs = jobs; this.rows = rows; this.iamActorApi = iamActorApi;
         this.transactionTemplate = transactionManager == null ? null : new TransactionTemplate(transactionManager);
-        this.analysisExecutor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        this.analysisExecutor = analysisExecutor == null ? new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(ANALYSIS_QUEUE_CAPACITY), runnable -> {
                     Thread thread = new Thread(runnable, "warehouse-item-import-analysis");
                     thread.setDaemon(true);
                     return thread;
-                }, new ThreadPoolExecutor.AbortPolicy());
+                }, new ThreadPoolExecutor.AbortPolicy()) : analysisExecutor;
     }
 
     @Override
@@ -140,6 +162,8 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
             files.discard(asset.assetId(), userId, DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT);
             throw failure;
         }
+        LOGGER.info("warehouse_item_import stage=job_created jobId={} revision={} assetId={} format={} byteSize={}",
+                job.getJobId(), job.getRevision(), asset.assetId(), formatOf(asset.actualContentType()), asset.byteSize());
         LocalDateTime claimedAt = LocalDateTime.now();
         int claimedRevision = job.getRevision() + 1;
         if (jobs.claimAnalysis(job.getJobId(), userId, job.getRevision(), claimedAt) == 1) {
@@ -147,19 +171,28 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
             // so an in-process test double and the real re-read observe the same claimed token.
             job.setStatus(WarehouseItemImportStatus.ANALYZING.name());
             job.setRevision(claimedRevision);
-            enqueueAnalysis(userId, job.getJobId(), claimedRevision);
+            if (enqueueAnalysis(userId, job.getJobId(), claimedRevision)) {
+                LOGGER.info("warehouse_item_import stage=analysis_queued jobId={} revision={} assetId={}",
+                        job.getJobId(), claimedRevision, asset.assetId());
+            }
         }
         return view(jobs.findOwned(job.getJobId(), userId));
     }
 
-    private void enqueueAnalysis(Long userId, String jobId, int revision) {
+    private boolean enqueueAnalysis(Long userId, String jobId, int revision) {
         try {
             analysisExecutor.execute(() -> analyze(userId, jobId, revision));
+            return true;
         } catch (RejectedExecutionException ex) {
-            // Queue pressure is recoverable. Return the claim to RECEIVED so the
-            // owner can explicitly retry it; only validation/fact failures become
-            // ANALYSIS_FAILED.
-            jobs.releaseAnalysisClaim(jobId, userId, revision, LocalDateTime.now());
+            // Queue pressure is recoverable. Return the claim to RECEIVED so a later
+            // bounded maintenance pass or the owner can retry it; only validation/fact
+            // failures become ANALYSIS_FAILED.
+            if (jobs.releaseAnalysisClaimAfterQueueRejection(jobId, userId, revision, LocalDateTime.now()) != 1) {
+                throw conflict("分析队列状态已变化，请刷新后重试");
+            }
+            LOGGER.warn("warehouse_item_import stage=analysis_enqueue_rejected jobId={} revision={} errorCode={} exceptionClass={}",
+                    jobId, revision, "IMPORT_ANALYSIS_QUEUE_FULL", ex.getClass().getSimpleName());
+            return false;
         }
     }
 
@@ -202,7 +235,10 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
             throw conflict("作业状态已变化，请刷新后重试");
         }
         int runningRevision = claimRevision + 1;
-        enqueueAnalysis(userId, jobId, runningRevision);
+        if (enqueueAnalysis(userId, jobId, runningRevision)) {
+            LOGGER.info("warehouse_item_import stage=analysis_queued jobId={} revision={} assetId={}",
+                    jobId, runningRevision, job.getFileAssetId());
+        }
         return view(jobs.findOwned(jobId, userId));
     }
 
@@ -213,6 +249,8 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         if (request == null || !request.confirmed()) throw bad("请确认导入摘要");
         if (request.revision() < 0) throw bad("作业版本不合法");
         String confirmRequestId = normalizeRequestId(request.clientRequestId());
+        long confirmationStartedAt = System.nanoTime();
+        LOGGER.info("warehouse_item_import stage=confirmation_started jobId={} revision={}", jobId, request.revision());
         try {
             WarehouseItemImportJobView result = transactionTemplate == null
                     ? confirmInTransaction(userId, jobId, request, confirmRequestId)
@@ -220,6 +258,8 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
             if (result == null) throw new IllegalStateException("确认结果为空");
             // Response serialization happens after commit.  No post-commit
             // failure is allowed to mutate a completed job.
+            LOGGER.info("warehouse_item_import stage=confirmation_finished jobId={} revision={} status={} elapsedMs={}",
+                    jobId, result.revision(), result.status(), elapsedMs(confirmationStartedAt));
             return result;
         } catch (ConfirmationClaimLostException race) {
             return resolveConfirmationCompetition(userId, jobId, request.revision(), confirmRequestId);
@@ -339,7 +379,11 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         LocalDateTime now = LocalDateTime.now();
         int updated = jobs.markConfirmationFailure(jobId, userId, revision, confirmRequestId, status, now, errorCode);
         WarehouseItemImportJobDO current = jobs.findOwned(jobId, userId);
-        if (updated == 1) return view(current);
+        if (updated == 1) {
+            LOGGER.warn("warehouse_item_import stage=confirmation_failed jobId={} revision={} status={} errorCode={}",
+                    jobId, revision, status, errorCode);
+            return view(current);
+        }
         if (current != null && WarehouseItemImportStatus.COMPLETED.name().equals(current.getStatus())) {
             // Another executor committed successfully; never overwrite it with
             // a late failure from this request.
@@ -380,31 +424,45 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
     }
 
     private void analyze(Long userId, String jobId, int revision) {
+        long startedAt = System.nanoTime();
+        String assetId = null;
+        String format = "UNKNOWN";
+        String analysisStage = "job_state";
         List<SourceRow> source;
         try {
             WarehouseItemImportJobDO job = jobs.findOwned(jobId, userId);
             if (job == null || !WarehouseItemImportStatus.ANALYZING.name().equals(job.getStatus()) || job.getRevision() != revision) return;
+            assetId = job.getFileAssetId();
+            LOGGER.info("warehouse_item_import stage=analysis_started jobId={} revision={} assetId={}", jobId, revision, assetId);
+            analysisStage = "authorization";
             try {
                 // The creator's persisted identity is not an authorization
                 // snapshot. Re-resolve IAM immediately before reading the file
                 // and again no later than the next business-fact boundary.
                 requireManager(userId);
             } catch (BusinessException revoked) {
-                markAnalysisFailure(jobId, userId, revision, "IMPORT_PERMISSION_REVOKED");
+                markAnalysisFailure(jobId, userId, revision, assetId, "authorization", "IMPORT_PERMISSION_REVOKED", revoked, startedAt);
                 return;
             } catch (RuntimeException iamFailure) {
-                markAnalysisFailure(jobId, userId, revision, "IMPORT_PERMISSION_UNAVAILABLE");
+                markAnalysisFailure(jobId, userId, revision, assetId, "authorization", "IMPORT_PERMISSION_UNAVAILABLE", iamFailure, startedAt);
                 return;
             }
-            ControlledDocumentRead read = files.read(job.getFileAssetId(), userId, DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT);
-            source = read.metadata().originalFilename().toLowerCase(Locale.ROOT).endsWith(".csv")
-                    ? parseCsv(read.content()) : parseXlsx(read.content());
+            analysisStage = "file_read";
+            ControlledDocumentRead read = files.read(assetId, userId, DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT);
+            format = read.metadata().originalFilename().toLowerCase(Locale.ROOT).endsWith(".csv") ? "CSV" : "XLSX";
+            LOGGER.info("warehouse_item_import stage=file_read jobId={} revision={} assetId={} format={} byteSize={}",
+                    jobId, revision, assetId, format, read.content().length);
+            analysisStage = "file_parse";
+            source = "CSV".equals(format)
+                    ? parseCsv(read.content(), jobId, revision, assetId) : parseXlsx(read.content(), jobId, revision, assetId);
             if (source.isEmpty()) throw bad("文件没有可分析的数据行");
+            LOGGER.info("warehouse_item_import stage=parsed jobId={} revision={} assetId={} format={} totalRows={} elapsedMs={}",
+                    jobId, revision, assetId, format, source.size(), elapsedMs(startedAt));
         } catch (DataAccessException ex) {
-            markAnalysisFailure(jobId, userId, revision, "IMPORT_DATABASE_UNAVAILABLE");
+            markAnalysisFailure(jobId, userId, revision, assetId, analysisStage, "IMPORT_DATABASE_UNAVAILABLE", ex, startedAt);
             return;
         } catch (RuntimeException ex) {
-            markAnalysisFailure(jobId, userId, revision, analysisErrorCode("FILE", ex));
+            markAnalysisFailure(jobId, userId, revision, assetId, analysisStage, analysisErrorCode("FILE", ex), ex, startedAt);
             return;
         }
         List<WarehouseItemImportRowDO> analyzed;
@@ -413,28 +471,33 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
             // stock or movement facts until the current actor is still valid.
             requireManager(userId);
         } catch (BusinessException revoked) {
-            markAnalysisFailure(jobId, userId, revision, "IMPORT_PERMISSION_REVOKED");
+            markAnalysisFailure(jobId, userId, revision, assetId, "authorization", "IMPORT_PERMISSION_REVOKED", revoked, startedAt);
             return;
         } catch (RuntimeException ex) {
-            markAnalysisFailure(jobId, userId, revision, "IMPORT_PERMISSION_UNAVAILABLE");
+            markAnalysisFailure(jobId, userId, revision, assetId, "authorization", "IMPORT_PERMISSION_UNAVAILABLE", ex, startedAt);
             return;
         }
         try {
             analyzed = classify(jobId, userId, source);
         } catch (DataAccessException ex) {
-            markAnalysisFailure(jobId, userId, revision, "IMPORT_DATABASE_UNAVAILABLE");
+            markAnalysisFailure(jobId, userId, revision, assetId, "classification", "IMPORT_DATABASE_UNAVAILABLE", ex, startedAt);
             return;
         } catch (RuntimeException ex) {
-            markAnalysisFailure(jobId, userId, revision, "IMPORT_FACTS_UNAVAILABLE");
+            markAnalysisFailure(jobId, userId, revision, assetId, "classification", "IMPORT_FACTS_UNAVAILABLE", ex, startedAt);
             return;
         }
         try {
             Counts c = Counts.of(analyzed);
+            LOGGER.info("warehouse_item_import stage=classified jobId={} revision={} assetId={} totalRows={} createCount={} updateCount={} disableCount={} unchangedCount={} invalidCount={} conflictCount={} elapsedMs={}",
+                    jobId, revision, assetId, analyzed.size(), c.create, c.update, c.disable, c.unchanged, c.invalid, c.conflict, elapsedMs(startedAt));
+            String status = c.invalid + c.conflict > 0 ? WarehouseItemImportStatus.NEEDS_ATTENTION.name() : WarehouseItemImportStatus.PREVIEW_READY.name();
             persistAnalysis(jobId, userId, revision, analyzed, c);
+            LOGGER.info("warehouse_item_import stage=preview_persisted jobId={} revision={} assetId={} status={} totalRows={} createCount={} updateCount={} disableCount={} unchangedCount={} invalidCount={} conflictCount={} elapsedMs={}",
+                    jobId, revision, assetId, status, analyzed.size(), c.create, c.update, c.disable, c.unchanged, c.invalid, c.conflict, elapsedMs(startedAt));
         } catch (DataAccessException ex) {
-            markAnalysisFailure(jobId, userId, revision, "IMPORT_DATABASE_UNAVAILABLE");
+            markAnalysisFailure(jobId, userId, revision, assetId, "preview_persistence", "IMPORT_DATABASE_UNAVAILABLE", ex, startedAt);
         } catch (RuntimeException ex) {
-            markAnalysisFailure(jobId, userId, revision, "IMPORT_PERSISTENCE_FAILED");
+            markAnalysisFailure(jobId, userId, revision, assetId, "preview_persistence", "IMPORT_PERSISTENCE_FAILED", ex, startedAt);
         }
     }
 
@@ -456,7 +519,11 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         else transactionTemplate.executeWithoutResult(status -> persist.run());
     }
 
-    private void markAnalysisFailure(String jobId, Long userId, int revision, String code) {
+    private void markAnalysisFailure(String jobId, Long userId, int revision, String assetId, String stage,
+                                     String code, Throwable failure, long startedAt) {
+        LOGGER.warn("warehouse_item_import stage=analysis_failed jobId={} revision={} assetId={} failureStage={} errorCode={} exceptionClass={} elapsedMs={} stateUpdate=attempted",
+                jobId, revision, assetId, stage, code,
+                failure == null ? "Unknown" : failure.getClass().getSimpleName(), elapsedMs(startedAt));
         if (jobs.markAnalysisFailed(jobId, userId, revision, LocalDateTime.now(), code) == 1) {
             releaseAssetAfterFailure(userId, jobId);
         }
@@ -478,7 +545,8 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         } catch (RuntimeException releaseFailure) {
             // The job remains terminal and keeps its asset reference. The
             // failure is deliberately visible in logs; 06F owns any retry.
-            LOGGER.error("物品导入资产释放失败，保留作业与资产引用供06F处理 jobId={}", jobId, releaseFailure);
+            LOGGER.error("物品导入资产释放失败，保留作业与资产引用供06F处理 jobId={} exceptionClass={}",
+                    jobId, releaseFailure.getClass().getSimpleName());
         }
     }
 
@@ -540,7 +608,7 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
     }
 
     private static boolean same(SourceRow r, ItemDO old) { return old != null && r.name.equals(old.getName()) && r.unit.equals(old.getBaseUnit()) && r.enabled == (old.getEnabled() == null ? 1 : old.getEnabled()); }
-    private List<SourceRow> parseCsv(byte[] bytes) {
+    private List<SourceRow> parseCsv(byte[] bytes, String jobId, int revision, String assetId) {
         String text = decodeUtf8(bytes); List<SourceRow> out = new ArrayList<>();
         try (CSVParser parser = CSVFormat.RFC4180.builder().setHeader().setSkipHeaderRecord(true)
                 .setDuplicateHeaderMode(DuplicateHeaderMode.DISALLOW).build()
@@ -548,6 +616,7 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
             Map<String,String> mapped = headers(parser.getHeaderMap().keySet());
             Map<String,Integer> indices = new HashMap<>();
             for (Map.Entry<String,String> e : mapped.entrySet()) indices.put(e.getKey(), parser.getHeaderMap().entrySet().stream().filter(x -> norm(x.getKey()).equals(e.getValue())).map(Map.Entry::getValue).findFirst().orElseThrow());
+            logHeaderMapping(jobId, revision, assetId, indices);
             for (CSVRecord r : parser) {
                 boolean blank = true;
                 for (String value : r) {
@@ -561,7 +630,7 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         } catch (IOException | IllegalArgumentException ex) { throw bad("CSV结构无效"); }
         return out;
     }
-    private List<SourceRow> parseXlsx(byte[] bytes) {
+    private List<SourceRow> parseXlsx(byte[] bytes, String jobId, int revision, String assetId) {
         try (Workbook wb = new XSSFWorkbook(new ByteArrayInputStream(bytes))) {
             if (wb.getNumberOfSheets() != 1) throw bad("XLSX只能包含一个数据Sheet");
             Sheet s = wb.getSheetAt(0); if (wb.getSheetVisibility(0) != org.apache.poi.ss.usermodel.SheetVisibility.VISIBLE) throw bad("数据Sheet不可见");
@@ -578,7 +647,14 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
                 if (s.isColumnHidden(columnIndex)) throw bad("不允许隐藏列");
             }
             for (Cell c : head) { if (s.isColumnHidden(c.getColumnIndex())) throw bad("不允许隐藏列"); if (c.getCellType() == CellType.FORMULA) throw bad("表头不能是公式"); String n = norm(c.getStringCellValue()); if (!n.isBlank()) { if (h.put(n, c.getColumnIndex()) != null) throw bad("表头重复"); } }
-            Map<String,String> mapped = headers(h.keySet()); List<SourceRow> out = new ArrayList<>(); DataFormatter f = new DataFormatter();
+            Map<String,String> mapped = headers(h.keySet());
+            Map<String,Integer> canonicalIndices = new HashMap<>();
+            for (Map.Entry<String,String> entry : mapped.entrySet()) {
+                Integer index = h.get(entry.getValue());
+                if (index != null) canonicalIndices.put(entry.getKey(), index);
+            }
+            logHeaderMapping(jobId, revision, assetId, canonicalIndices);
+            List<SourceRow> out = new ArrayList<>(); DataFormatter f = new DataFormatter();
             for (int i=1;i<=s.getLastRowNum();i++) {
                 Row r=s.getRow(i);
                 if(r==null) continue;
@@ -596,6 +672,11 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         catch (BusinessException ex) { throw ex; }
         catch (RuntimeException ex) { throw bad("XLSX结构无效"); }
     }
+    private static void logHeaderMapping(String jobId, int revision, String assetId, Map<String,Integer> indices) {
+        LOGGER.debug("warehouse_item_import stage=header_mapped jobId={} revision={} assetId={} mapping={}",
+                jobId, revision, assetId, indices.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                        .map(e -> e.getKey() + "->" + e.getValue()).collect(Collectors.joining(",")));
+    }
     private static Map<String,String> headers(Collection<String> input) {
         Map<String,String> result = new HashMap<>();
         for (String raw : input) { String n=norm(raw); String field = HEADER_CODE.contains(n)?"code":HEADER_NAME.contains(n)?"name":HEADER_UNIT.contains(n)?"unit":HEADER_ENABLED.contains(n)?"enabled":null; if(field!=null && result.put(field,n)!=null) throw bad("列映射有歧义"); }
@@ -603,7 +684,17 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         return result;
     }
     private static SourceRow sourceCsv(int no, CSVRecord r, Map<String,Integer> indices) { return source(no, x -> { Integer i=indices.get(x); return i != null && i < r.size() ? r.get(i) : ""; }, Map.of("code","code","name","name","unit","unit","enabled","enabled")); }
-    private static SourceRow source(int no, Row r, Map<String,Integer> raw, Map<String,String> h, DataFormatter f) { return source(no, x -> { Integer i=raw.entrySet().stream().filter(e->e.getKey().equals(h.get(x))).map(Map.Entry::getValue).findFirst().orElse(null); return i==null?"":f.formatCellValue(r.getCell(i)); }, h); }
+    private static SourceRow source(int no, Row r, Map<String,Integer> raw, Map<String,String> h, DataFormatter f) {
+        Map<String,Integer> fieldIndices = new HashMap<>();
+        for (Map.Entry<String,String> entry : h.entrySet()) {
+            Integer index = raw.get(entry.getValue());
+            if (index != null) fieldIndices.put(entry.getKey(), index);
+        }
+        return source(no, x -> {
+            Integer i = fieldIndices.get(x);
+            return i == null ? "" : f.formatCellValue(r.getCell(i));
+        }, Map.of("code", "code", "name", "name", "unit", "unit", "enabled", "enabled"));
+    }
     private interface Value { String get(String name); }
     private static SourceRow source(int no, Value v, Map<String,String> h) {
         String rawCode=v.get(h.get("code")), rawName=v.get(h.get("name")), rawUnit=v.get(h.get("unit")), rawState=v.get(h.get("enabled"));
@@ -662,7 +753,8 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
             int marked = jobs.markFileReleaseFailed(jobId, userId, cancelledRevision,
                     LocalDateTime.now(), "IMPORT_FILE_RELEASE_FAILED");
             if (marked != 1) {
-                LOGGER.error("取消作业后资产释放失败且无法记录稳定错误码 jobId={}", jobId, releaseFailure);
+                LOGGER.error("取消作业后资产释放失败且无法记录稳定错误码 jobId={} exceptionClass={}",
+                        jobId, releaseFailure.getClass().getSimpleName());
                 throw new BusinessException(ErrorCode.INTERNAL_ERROR, "文件释放失败，作业状态请稍后刷新");
             }
             return view(owned(userId, jobId));
@@ -739,6 +831,16 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
         if (message.contains("文件") || message.contains("XLSX") || message.contains("CSV")) return "FILE_CONTENT_INVALID";
         return "FILE_READ_FAILED";
     }
+    private static long elapsedMs(long startedAt) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+    }
+    private static String formatOf(String contentType) {
+        if (contentType == null) return "UNKNOWN";
+        String type = contentType.toLowerCase(Locale.ROOT);
+        if (type.contains("spreadsheet") || type.contains("excel")) return "XLSX";
+        if (type.contains("csv") || type.contains("comma-separated")) return "CSV";
+        return "UNKNOWN";
+    }
     private static void zeroCounts(WarehouseItemImportJobDO j){j.setCreateCount(0);j.setUpdateCount(0);j.setDisableCount(0);j.setUnchangedCount(0);j.setInvalidCount(0);j.setConflictCount(0);}
     private WarehouseItemImportJobView view(WarehouseItemImportJobDO j){
         if(j==null) throw new BusinessException(ErrorCode.NOT_FOUND,"导入作业不存在");
@@ -793,6 +895,223 @@ public class WarehouseItemImportService implements WarehouseItemImportApi {
             return new Counts(c[0],c[1],c[2],c[3],c[4],c[5]);
         }
     }
+
+    /**
+     * 执行一次06F有界仓储导入维护。
+     *
+     * 方法：{@code maintainOnce}
+     *
+     * 执行链路（共 4 步）：
+     * 1. 校验维护时间存在且批次大小处于1至100；非法输入抛出 {@link BusinessException}，不扫描数据。
+     * 2. 调用 {@link #recoverPending(LocalDateTime, int)} 有界领取待处理或陈旧分析作业，并将解析交给既有单线程队列。
+     * 3. 调用 {@link #cleanupExpiredJobs(LocalDateTime, int)} 以修订号CAS收口到期作业、释放未确认资产并删除作业事实。
+     * 4. 汇总恢复数、删除数、释放失败数、剩余到期事实及所有权不确定状态并返回，不扩展跨实例治理。
+     *
+     * @param now 维护时钟
+     * @param batchSize 本轮最多扫描的作业数，范围1..100
+     * @return 本轮领取分析数、清理作业数及失败释放数
+     * @throws BusinessException 维护时间为空或批次大小超出1至100时抛出
+     */
+    public MaintenanceResult maintainOnce(LocalDateTime now, int batchSize) {
+        if (now == null || batchSize < 1 || batchSize > 100) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "维护批次必须在1至100之间");
+        }
+        int recovered = recoverPending(now, batchSize);
+        CleanupCounts cleanup = cleanupExpiredJobs(now, batchSize);
+        return new MaintenanceResult(recovered, cleanup.deleted(), cleanup.releaseFailures(), cleanup.moreExpired(),
+                cleanup.ownershipUncertain());
+    }
+
+    /**
+     * 有界恢复待处理及陈旧分析作业。
+     *
+     * 方法：{@code recoverPending}
+     *
+     * 执行链路（共 4 步）：
+     * 1. 调用 {@link WarehouseItemImportJobMapper#pageMaintenanceCandidates(LocalDateTime, LocalDateTime, int)}
+     *    按创建顺序读取本批候选，不读取文件或物品事实。
+     * 2. 跳过缺少标识、所有者或修订号的异常投影；陈旧ANALYZING候选先调用
+     *    {@link WarehouseItemImportJobMapper#recoverStaleAnalysis(String, Long, int, LocalDateTime, LocalDateTime)}
+     *    CAS恢复为RECEIVED，其他非RECEIVED状态直接跳过。
+     * 3. 调用 {@link WarehouseItemImportJobMapper#claimAnalysis(String, Long, int, LocalDateTime)} 领取仍有效的作业，
+     *    成功后调用 {@link #enqueueAnalysis(Long, String, int)} 提交既有异步解析；队列拒绝时作业恢复为可重试事实。
+     * 4. 仅统计成功领取且成功入队的作业并返回。
+     *
+     * @param now 当前维护时间，用于到期和陈旧边界判断
+     * @param batchSize 本轮最多读取的候选数
+     * @return 成功领取并提交异步解析的作业数
+     * @throws BusinessException 队列拒绝后的作业状态已并发变化、无法恢复为可重试状态时抛出
+     */
+    private int recoverPending(LocalDateTime now, int batchSize) {
+        List<WarehouseItemImportJobDO> candidates = jobs.pageMaintenanceCandidates(now,
+                now.minus(ANALYSIS_STALE_AFTER), batchSize);
+        int recovered = 0;
+        for (WarehouseItemImportJobDO candidate : candidates) {
+            if (candidate == null || candidate.getJobId() == null || candidate.getCreatorUserId() == null
+                    || candidate.getRevision() == null) continue;
+            int expectedRevision = candidate.getRevision();
+            if (WarehouseItemImportStatus.ANALYZING.name().equals(candidate.getStatus())) {
+                if (jobs.recoverStaleAnalysis(candidate.getJobId(), candidate.getCreatorUserId(), expectedRevision,
+                        now, now.minus(ANALYSIS_STALE_AFTER)) != 1) continue;
+                expectedRevision++;
+            } else if (!WarehouseItemImportStatus.RECEIVED.name().equals(candidate.getStatus())) {
+                continue;
+            }
+            if (jobs.claimAnalysis(candidate.getJobId(), candidate.getCreatorUserId(), expectedRevision, now) == 1
+                    && enqueueAnalysis(candidate.getCreatorUserId(), candidate.getJobId(), expectedRevision + 1)) {
+                recovered++;
+            }
+        }
+        return recovered;
+    }
+
+    /**
+     * 有界清理到期仓储导入作业及其未确认资产。
+     *
+     * 方法：{@code cleanupExpiredJobs}
+     *
+     * 执行链路（共 6 步）：
+     * 1. 调用 {@link WarehouseItemImportJobMapper#pageExpiredForMaintenance(LocalDateTime, int)} 多读取一条前瞻记录，
+     *    判断本批结束后是否仍有到期所有者事实。
+     * 2. 逐项重新读取所有者作业并复核标识、所有者和到期时间；事实缺失或变化时记录所有权不确定并跳过。
+     * 3. COMPLETED作业调用 {@link #deleteCompletedExpired(WarehouseItemImportJobDO, LocalDateTime)} 仅删除预览行和作业，
+     *    保留已转为结果资产的原文件。
+     * 4. 其他到期作业调用 {@link WarehouseItemImportJobMapper#claimExpiredForMaintenance(String, Long, int, LocalDateTime)}
+     *    CAS收口为EXPIRED；领取竞争失败时不释放资产。
+     * 5. 领取成功后调用 {@link #releaseAsset(Long, String)} 释放未确认资产；失败时调用
+     *    {@link WarehouseItemImportJobMapper#markMaintenanceReleaseFailed(String, Long, int, LocalDateTime)}
+     *    保留引用和稳定诊断，供后续轮次重试。
+     * 6. 资产释放成功后调用 {@link #deleteExpiredJob(WarehouseItemImportJobDO, int)} 删除预览行和作业，
+     *    最终返回删除数、释放失败数、前瞻状态和所有权不确定状态。
+     *
+     * @param now 当前维护时间，用于到期复核和CAS
+     * @param batchSize 本轮最多处理的到期作业数
+     * @return 本轮清理计数及是否仍有未收口所有者事实
+     * @throws IllegalStateException 已领取作业在同一删除事务中发生并发变化时抛出
+     */
+    private CleanupCounts cleanupExpiredJobs(LocalDateTime now, int batchSize) {
+        int deleted = 0;
+        int releaseFailures = 0;
+        boolean ownershipUncertain = false;
+        // Read one bounded look-ahead row so the app layer can avoid file-module
+        // cleanup while an expired job still owns an asset outside this batch.
+        List<WarehouseItemImportJobDO> candidates = jobs.pageExpiredForMaintenance(now, Math.min(101, batchSize + 1));
+        boolean moreExpired = candidates.size() > batchSize;
+        for (WarehouseItemImportJobDO candidate : candidates) {
+            if (deleted + releaseFailures >= batchSize) break;
+            if (candidate == null || candidate.getJobId() == null || candidate.getCreatorUserId() == null) {
+                ownershipUncertain = true;
+                continue;
+            }
+            WarehouseItemImportJobDO current = jobs.findOwned(candidate.getJobId(), candidate.getCreatorUserId());
+            if (current == null || current.getExpiresAt() == null || current.getExpiresAt().isAfter(now)) {
+                ownershipUncertain = true;
+                continue;
+            }
+            if (WarehouseItemImportStatus.COMPLETED.name().equals(current.getStatus())) {
+                if (deleteCompletedExpired(current, now)) deleted++;
+                else ownershipUncertain = true;
+                continue;
+            }
+            if (current.getRevision() == null || jobs.claimExpiredForMaintenance(current.getJobId(),
+                    current.getCreatorUserId(), current.getRevision(), now) != 1) {
+                ownershipUncertain = true;
+                continue;
+            }
+            int cleanupRevision = current.getRevision() + 1;
+            try {
+                releaseAsset(current.getCreatorUserId(), current.getJobId());
+            } catch (RuntimeException releaseFailure) {
+                releaseFailures++;
+                try {
+                    jobs.markMaintenanceReleaseFailed(current.getJobId(), current.getCreatorUserId(),
+                            cleanupRevision, now);
+                } catch (RuntimeException markFailure) {
+                    releaseFailure.addSuppressed(markFailure);
+                }
+                LOGGER.error("06F仓储导入过期资产释放失败，保留作业引用供下一轮诊断 jobId={} exceptionClass={}",
+                        current.getJobId(), releaseFailure.getClass().getSimpleName());
+                continue;
+            }
+            if (deleteExpiredJob(current, cleanupRevision)) deleted++;
+        }
+        return new CleanupCounts(deleted, releaseFailures, moreExpired, ownershipUncertain);
+    }
+
+    /**
+     * 在业务事务中删除已完成且到期的作业事实。
+     *
+     * 方法：{@code deleteCompletedExpired}
+     *
+     * 执行链路（共 3 步）：
+     * 1. 调用 {@link WarehouseItemImportRowMapper#deleteByJobId(String)} 删除该作业的预览行。
+     * 2. 调用 {@link WarehouseItemImportJobMapper#deleteCompletedExpired(String, Long, LocalDateTime)} 删除仍为COMPLETED且到期的作业；
+     *    删除竞争失败时抛出异常并回滚预览行删除。
+     * 3. 有事务管理器时通过 {@link TransactionTemplate#executeWithoutResult(java.util.function.Consumer)} 执行同一事务，
+     *    无事务测试装配时同步执行，并在成功后返回true。
+     *
+     * @param job 已重新读取并确认到期的COMPLETED作业
+     * @param now 当前维护时间，用于删除条件复核
+     * @return 删除事务完成时返回true
+     * @throws IllegalStateException 作业状态或到期事实并发变化导致主记录未删除时抛出
+     */
+    private boolean deleteCompletedExpired(WarehouseItemImportJobDO job, LocalDateTime now) {
+        Runnable delete = () -> {
+            rows.deleteByJobId(job.getJobId());
+            if (jobs.deleteCompletedExpired(job.getJobId(), job.getCreatorUserId(), now) != 1) {
+                throw new IllegalStateException("过期导入作业删除竞争失败");
+            }
+        };
+        if (transactionTemplate == null) {
+            delete.run();
+        } else {
+            transactionTemplate.executeWithoutResult(status -> delete.run());
+        }
+        return true;
+    }
+
+    /**
+     * 在业务事务中删除已释放资产的EXPIRED作业事实。
+     *
+     * 方法：{@code deleteExpiredJob}
+     *
+     * 执行链路（共 3 步）：
+     * 1. 调用 {@link WarehouseItemImportRowMapper#deleteByJobId(String)} 删除该作业的预览行。
+     * 2. 调用 {@link WarehouseItemImportJobMapper#deleteExpiredForMaintenance(String, Long, int)} 按所有者、修订号和EXPIRED状态删除作业；
+     *    删除竞争失败时抛出异常并回滚预览行删除。
+     * 3. 有事务管理器时通过 {@link TransactionTemplate#executeWithoutResult(java.util.function.Consumer)} 执行同一事务，
+     *    无事务测试装配时同步执行，并在成功后返回true。
+     *
+     * @param job 已完成资产释放的到期作业
+     * @param revision 资产释放前CAS领取产生的预期修订号
+     * @return 删除事务完成时返回true
+     * @throws IllegalStateException 作业状态或修订号并发变化导致主记录未删除时抛出
+     */
+    private boolean deleteExpiredJob(WarehouseItemImportJobDO job, int revision) {
+        Runnable delete = () -> {
+            rows.deleteByJobId(job.getJobId());
+            if (jobs.deleteExpiredForMaintenance(job.getJobId(), job.getCreatorUserId(), revision) != 1) {
+                throw new IllegalStateException("过期导入作业删除竞争失败");
+            }
+        };
+        if (transactionTemplate == null) {
+            delete.run();
+        } else {
+            transactionTemplate.executeWithoutResult(status -> delete.run());
+        }
+        return true;
+    }
+
+    /** 06F维护一轮的脱敏计数。 */
+    public record MaintenanceResult(int recovered, int deleted, int releaseFailures, boolean moreExpired,
+                                    boolean ownershipUncertain) {
+        public MaintenanceResult(int recovered, int deleted, int releaseFailures, boolean moreExpired) {
+            this(recovered, deleted, releaseFailures, moreExpired, false);
+        }
+    }
+
+    private record CleanupCounts(int deleted, int releaseFailures, boolean moreExpired, boolean ownershipUncertain) { }
+
     @PreDestroy
     void shutdown(){ analysisExecutor.shutdownNow(); }
 }

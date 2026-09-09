@@ -107,6 +107,19 @@ class ControlledDocumentFileServiceTest {
     }
 
     @Test
+    void acceptsInternalOoxmlRelationshipWhoseTypeIsAnHttpUri() {
+        byte[] xlsx = zip(Map.of(
+                "[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/></Types>",
+                "xl/workbook.xml", "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"/>",
+                "xl/_rels/workbook.xml.rels", "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/></Relationships>"));
+
+        assertEquals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                service.store(request("internal-relationship.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", xlsx))
+                        .actualContentType());
+    }
+
+    @Test
     void representativeFiveFormatBatchFitsTheTenSecondProcessingBudget() {
         assertTimeout(Duration.ofSeconds(10), () -> {
             service.store(request("baseline.md", "text/markdown", "合成资料基准"));
@@ -140,6 +153,10 @@ class ControlledDocumentFileServiceTest {
                 "[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/></Types>",
                 "word/document.xml", "<document xmlns=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>",
                 "word/_rels/document.xml.rels", "<Relationships><Relationship TargetMode=\"External\" Target=\"https://example.invalid\"/></Relationships>"))));
+        assertRejected(request("rules.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", zip(Map.of(
+                "[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>",
+                "word/document.xml", "<document xmlns=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>",
+                "word/_rels/document.xml.rels", "<Relationships><Relationship Target=\"https://example.invalid\"/></Relationships>"))));
         byte[] embeddedDocx = zip(Map.of("[Content_Types].xml",
                 "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>",
                 "word/document.xml", "<document xmlns=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>",

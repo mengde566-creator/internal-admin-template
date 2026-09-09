@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/vue-query'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { isAxiosError } from 'axios'
 import { siteQueryKeys } from '../query-keys'
@@ -18,6 +18,7 @@ import {
 } from '../api/site'
 import HomepageShowcase from '../components/HomepageShowcase.vue'
 import { useAuthStore } from '../../auth/store/auth'
+import { Close, Picture, Upload } from '@element-plus/icons-vue'
 
 const queryClient = useQueryClient()
 const auth = useAuthStore()
@@ -45,6 +46,9 @@ const formRules: FormRules = {
 
 /** 保存前先执行前端校验，未通过不发起请求（必填错误就地标红显示） */
 const handleSave = async () => {
+  if (saveMutation.isPending.value) {
+    return
+  }
   const valid = await formRef.value?.validate().catch(() => false)
   if (valid === false) {
     return
@@ -252,6 +256,75 @@ const withdrawMutation = useMutation({
   }
 })
 
+const isDirty = () => {
+  const draft = draftQuery.data.value
+  if (!draft) {
+    return !!(form.siteName || form.introduction || form.heroFileId || form.contactText || form.sections.length > 0)
+  }
+  return (
+    form.siteName !== (draft.siteName ?? '') ||
+    form.introduction !== (draft.introduction ?? '') ||
+    form.heroFileId !== (draft.heroFileId ?? '') ||
+    form.contactText !== (draft.contactText ?? '') ||
+    form.colorScheme !== (draft.colorScheme ?? 'GRAPHITE') ||
+    form.layoutCode !== (draft.layoutCode ?? 'GRID_SPLIT') ||
+    JSON.stringify(form.sections) !== JSON.stringify(draft.sections ?? [])
+  )
+}
+
+const isPublishConfirming = ref(false)
+const isWithdrawConfirming = ref(false)
+
+const handlePublish = async () => {
+  if (isPublishConfirming.value || publishMutation.isPending.value) return
+  isPublishConfirming.value = true
+  try {
+    const draft = draftQuery.data.value
+    const targetDraftName = draft?.siteName || form.siteName || '主页'
+    const dirty = isDirty()
+    const message = dirty
+      ? `确定要发布已保存的主页草稿“${targetDraftName}”吗？\n\n注意：当前表单存在未保存的修改，发布仅生效服务端已保存的草稿。若需发布最新修改，请先保存草稿。`
+      : `确定要发布已保存的主页草稿“${targetDraftName}”吗？公开主页将立即展示最新保存内容。`
+
+    await ElMessageBox.confirm(
+      message,
+      '发布主页内容',
+      {
+        confirmButtonText: '确认发布并公开',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    publishMutation.mutate()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
+  } finally {
+    isPublishConfirming.value = false
+  }
+}
+
+const handleWithdraw = async () => {
+  if (isWithdrawConfirming.value || withdrawMutation.isPending.value) return
+  isWithdrawConfirming.value = true
+  try {
+    const targetName = draftQuery.data.value?.siteName || form.siteName || '主页'
+    await ElMessageBox.confirm(
+      `确定要撤回站点“${targetName}”吗？撤回后公开主页将停止对外访问。`,
+      '撤回主页内容',
+      {
+        confirmButtonText: '确认撤回并下线',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    withdrawMutation.mutate()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
+  } finally {
+    isWithdrawConfirming.value = false
+  }
+}
+
 const canPublish = computed(() => form.siteName && form.introduction && form.heroFileId && form.contactText)
 </script>
 
@@ -265,10 +338,10 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
           保存草稿
         </el-button>
         <template v-if="auth.hasPermission('site:homepage:publish')">
-          <el-button type="success" :loading="publishMutation.isPending.value" :disabled="!canPublish" @click="publishMutation.mutate()">
+          <el-button type="success" :loading="publishMutation.isPending.value" :disabled="!canPublish || isPublishConfirming" @click="handlePublish">
             发布
           </el-button>
-          <el-button type="danger" plain :loading="withdrawMutation.isPending.value" @click="withdrawMutation.mutate()">
+          <el-button type="danger" plain :loading="withdrawMutation.isPending.value" :disabled="isWithdrawConfirming" @click="handleWithdraw">
             撤回
           </el-button>
         </template>
@@ -299,15 +372,31 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
             </el-radio-group>
           </el-form-item>
           <el-form-item label="主展示图片" prop="heroFileId" required>
-            <div class="upload-row">
+            <div class="ui-file-picker">
               <input
                 ref="fileInput"
-                class="file-input"
+                class="ui-sr-only"
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
+                aria-label="选择主展示图片文件"
                 @change="(e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) void onUpload(f) }"
               />
-              <el-button :loading="uploadLoading" @click="onPickFile">选择图片上传</el-button>
+              <el-button :icon="Upload" :loading="uploadLoading" @click="onPickFile">
+                {{ form.heroFileId ? '更换主图' : '选择图片上传' }}
+              </el-button>
+              <span v-if="form.heroFileId" class="ui-file-badge">
+                <el-icon><Picture /></el-icon>
+                <span class="ui-file-name">已设置主图</span>
+                <el-button
+                  link
+                  type="danger"
+                  :icon="Close"
+                  class="ui-file-clear-btn"
+                  aria-label="清除主图"
+                  @click="form.heroFileId = ''"
+                />
+              </span>
+              <span v-else class="ui-file-placeholder">支持 jpg/png/webp，≤10MB</span>
             </div>
             <img v-if="form.heroFileId" :src="manageFileUrl(form.heroFileId)" class="hero-preview" alt="主图预览" />
           </el-form-item>
@@ -338,15 +427,31 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
                 <el-input v-model="section.content" type="textarea" :rows="3" placeholder="区块内容" />
               </el-form-item>
               <el-form-item label="配图（可空）">
-                <div class="upload-row">
+                <div class="ui-file-picker">
                   <input
                     ref="sectionFileInput"
-                    class="file-input"
+                    class="ui-sr-only"
                     type="file"
                     accept="image/jpeg,image/png,image/webp"
+                    aria-label="选择区块配图文件"
                     @change="(e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) void onUploadSectionFile(f) }"
                   />
-                  <el-button size="small" :loading="uploadLoading" @click="onPickSectionFile(index)">上传配图</el-button>
+                  <el-button size="small" :icon="Upload" :loading="uploadLoading" @click="onPickSectionFile(index)">
+                    {{ section.heroFileId ? '更换配图' : '上传配图' }}
+                  </el-button>
+                  <span v-if="section.heroFileId" class="ui-file-badge">
+                    <el-icon><Picture /></el-icon>
+                    <span class="ui-file-name">已上传配图</span>
+                    <el-button
+                      link
+                      type="danger"
+                      :icon="Close"
+                      class="ui-file-clear-btn"
+                      aria-label="清除区块配图"
+                      @click="section.heroFileId = ''"
+                    />
+                  </span>
+                  <span v-else class="ui-file-placeholder">可空，支持 jpg/png/webp</span>
                 </div>
                 <img v-if="section.heroFileId" :src="manageFileUrl(section.heroFileId)" class="section-preview" alt="区块配图预览" />
               </el-form-item>
@@ -364,7 +469,7 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
       </aside>
     </div>
 
-    <el-dialog v-model="showPreview" title="草稿预览" width="720px">
+    <el-dialog v-model="showPreview" title="草稿预览" width="720px" class="ui-managed-dialog">
       <HomepageShowcase :content="form" mode="preview" />
     </el-dialog>
   </section>
@@ -406,14 +511,6 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
   margin: 0 0 1rem;
   font-size: 1rem;
 }
-.upload-row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-.file-input {
-  max-width: 220px;
-}
 .hero-preview {
   display: block;
   margin-top: 0.75rem;
@@ -432,7 +529,7 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius);
   padding: 1rem;
-  background: var(--ui-surface-soft, var(--ui-surface));
+  background: var(--ui-surface-muted);
 }
 .section-edit-head {
   display: flex;

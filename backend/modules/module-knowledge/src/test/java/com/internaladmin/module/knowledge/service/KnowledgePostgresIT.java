@@ -152,7 +152,7 @@ class KnowledgePostgresIT {
                         assertThat(citation.sourceType()).isEqualTo("USER_UPLOAD");
                     });
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM knowledge_databasechangelog", Integer.class))
-                    .isEqualTo(6);
+                    .isEqualTo(7);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns "
                     + "WHERE table_schema='ai_knowledge' AND table_name='ai_knowledge_draft' "
                     + "AND column_name='publish_client_request_id'", Integer.class)).isEqualTo(1);

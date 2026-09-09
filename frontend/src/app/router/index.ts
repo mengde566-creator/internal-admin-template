@@ -56,6 +56,7 @@ export const router = createRouter({
         {
           path: 'warehouse',
           name: 'warehouse',
+          redirect: { name: 'warehouse-stock' },
           component: () => import('../../modules/warehouse/pages/WarehouseManagePage.vue'),
           meta: { title: '仓储', permission: 'warehouse:read' },
           children: [

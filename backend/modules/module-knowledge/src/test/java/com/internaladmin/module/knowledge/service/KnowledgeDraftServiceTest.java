@@ -3,9 +3,12 @@ package com.internaladmin.module.knowledge.service;
 import com.internaladmin.module.file.api.ControlledDocumentAsset;
 import com.internaladmin.module.file.api.ControlledDocumentFileApi;
 import com.internaladmin.module.file.api.ControlledDocumentRead;
+import com.internaladmin.module.file.api.ControlledDocumentStoreRequest;
 import com.internaladmin.module.file.api.DocumentFileLimitSnapshot;
 import com.internaladmin.module.file.api.DocumentFilePurpose;
 import com.internaladmin.module.file.api.DocumentFileStatus;
+import com.internaladmin.module.file.mapper.ControlledDocumentAssetMapper;
+import com.internaladmin.module.file.service.ControlledDocumentFileService;
 import com.internaladmin.module.iam.api.IamActorApi;
 import com.internaladmin.module.iam.api.IamActorDTO;
 import com.internaladmin.module.iam.api.PermissionCodes;
@@ -18,7 +21,13 @@ import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.SparseEntry;
 import com.internaladmin.module.knowledge.mapper.KnowledgeDraftMapper;
 import com.internaladmin.module.knowledge.mapper.KnowledgeMapper;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -27,6 +36,8 @@ import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionStatus;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -51,6 +62,9 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class KnowledgeDraftServiceTest {
+
+    @TempDir
+    Path fileStorageRoot;
 
     private static final DocumentFileLimitSnapshot LIMITS =
             new DocumentFileLimitSnapshot(10_000_000, 100_000, 20_000, 20, 7, 30);
@@ -80,6 +94,100 @@ class KnowledgeDraftServiceTest {
         verify(files, never()).retain(anyString(), anyLong(), any());
         verify(files, never()).discard(anyString(), anyLong(), any());
         verifyNoEmbedding(knowledge);
+    }
+
+    @Test
+    void fixedNormalFixtureRoundTripsThroughControlledFileServiceAndLogsRedactedStages() throws Exception {
+        byte[] fixture = fixture("06F-KNOWLEDGE-NORMAL.md");
+        assertThat(fixture).hasSize(358);
+        assertThat(sha256(fixture)).isEqualTo("a0457cda16527da08419f373b6d76d6fdf3ef76017a7e7abed7dd37212423438");
+
+        ControlledDocumentAssetMapper assetMapper = mock(ControlledDocumentAssetMapper.class);
+        com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO[] persisted =
+                new com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO[1];
+        when(assetMapper.insert(any(com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO.class)))
+                .thenAnswer(invocation -> {
+                    persisted[0] = invocation.getArgument(0);
+                    return 1;
+                });
+        when(assetMapper.updateById(any(com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO.class)))
+                .thenAnswer(invocation -> {
+                    persisted[0] = invocation.getArgument(0);
+                    return 1;
+                });
+        when(assetMapper.selectById(anyString())).thenAnswer(invocation -> persisted[0]);
+        ControlledDocumentFileService documents = new ControlledDocumentFileService(assetMapper,
+                () -> LIMITS, fileStorageRoot.toString(), null);
+
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper mapper = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        when(mapper.findByRequest(7L, "06f-normal-request")).thenReturn(null);
+        when(mapper.findByDocumentVersion("06f-normal", "v1")).thenReturn(null);
+        when(mapper.insertSections(anyString(), any())).thenAnswer(invocation ->
+                new int[((List<?>) invocation.getArgument(1)).size()]);
+        when(knowledge.readActiveDocument("06f-normal", 20, 20_000))
+                .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+        when(files.store(any(ControlledDocumentStoreRequest.class)))
+                .thenAnswer(invocation -> documents.store(invocation.getArgument(0)));
+        when(files.read(anyString(), eq(7L), eq(DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT)))
+                .thenAnswer(invocation -> documents.read(invocation.getArgument(0), 7L,
+                        DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(KnowledgeDraftService.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> logAppender = new ListAppender<>();
+        logAppender.start();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(logAppender);
+        try {
+            KnowledgeDraftApi.DraftView view = service(files, mapper, knowledge).submit(7L,
+                    new KnowledgeDraftApi.DraftRequest("06f-normal", "v1", "06F固定知识资料", "06f-normal-request"),
+                    "06F-KNOWLEDGE-NORMAL.md", new java.io.ByteArrayInputStream(fixture));
+
+            assertThat(view.status()).isEqualTo("PREVIEW_READY");
+            assertThat(view.sourceType()).isEqualTo("USER_UPLOAD");
+            assertThat(view.characterCount()).isEqualTo(119);
+            assertThat(view.ignoredCount()).isEqualTo(0);
+            assertThat(view.truncated()).isFalse();
+            assertThat(view.sections()).hasSize(3);
+            assertThat(persisted[0].getStatus()).isEqualTo("AVAILABLE");
+            assertThat(persisted[0].getSha256()).isEqualTo("a0457cda16527da08419f373b6d76d6fdf3ef76017a7e7abed7dd37212423438");
+            String logs = logAppender.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            assertThat(logs).contains("stage=file_stored", "stage=file_read", "stage=document_parsed",
+                    "stage=diff_calculated", "stage=draft_persisted", "draftId=", "assetId=",
+                    "sectionCount=3", "characterCount=119", "ignoredCount=0", "truncated=false");
+            assertThat(logs.indexOf("stage=file_stored")).isLessThan(logs.indexOf("stage=file_read"));
+            assertThat(logs.indexOf("stage=file_read")).isLessThan(logs.indexOf("stage=document_parsed"));
+            assertThat(logs.indexOf("stage=document_parsed")).isLessThan(logs.indexOf("stage=diff_calculated"));
+            assertThat(logs.indexOf("stage=diff_calculated")).isLessThan(logs.indexOf("stage=draft_persisted"));
+            assertThat(logs).doesNotContain("06F固定知识资料", "06F-KNOWLEDGE-NORMAL.md",
+                    "仓储入库固定样本检索短语 06F", "a0457cda16527da08419f373b6d76d6fdf3ef76017a7e7abed7dd37212423438",
+                    fileStorageRoot.toAbsolutePath().toString());
+        } finally {
+            logger.detachAppender(logAppender);
+            logger.setLevel(previousLevel);
+            logAppender.stop();
+            shutdownDocuments(documents);
+        }
+    }
+
+    @Test
+    void fixedEmptyFixtureFailsAtParseAndRecordsOnlyStableDiagnostic() throws Exception {
+        byte[] fixture = fixture("06F-KNOWLEDGE-EMPTY.md");
+        assertThat(fixture).hasSize(2);
+        assertThat(sha256(fixture)).isEqualTo("e16f1596201850fd4a63680b27f603cb64e67176159be3d8ed78a4403fdb1700");
+        assertDraftFixtureFailure(fixture, "06F-KNOWLEDGE-EMPTY.md", "document_parse", "KNOWLEDGE_DRAFT_EMPTY");
+    }
+
+    @Test
+    void fixedInvalidUtf8FixtureFailsAtParseAndRecordsOnlyStableDiagnostic() throws Exception {
+        byte[] fixture = fixture("06F-KNOWLEDGE-INVALID-UTF8.md");
+        assertThat(fixture).hasSize(13);
+        assertThat(sha256(fixture)).isEqualTo("b82b144396106fc13067466a7d28a5c671fb10a28cfad44d33cb7fa901a7d790");
+        assertDraftFixtureFailure(fixture, "06F-KNOWLEDGE-INVALID-UTF8.md", "file_store",
+                "KNOWLEDGE_DRAFT_FILE_UNAVAILABLE");
     }
 
     @Test
@@ -135,10 +243,26 @@ class KnowledgeDraftServiceTest {
         when(files.store(any())).thenReturn(asset);
         when(files.read("asset-conflict", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
                 .thenReturn(new ControlledDocumentRead(asset, "# existing".getBytes(StandardCharsets.UTF_8)));
-        assertThatThrownBy(() -> service(files, mapper, knowledge).submit(7L,
-                new KnowledgeDraftApi.DraftRequest("warehouse-rules", "v3", "标题", "request-2"), "rules.md",
-                new java.io.ByteArrayInputStream("# other".getBytes(StandardCharsets.UTF_8))))
-                .hasMessageContaining("KNOWLEDGE_DRAFT_CONFLICT");
+        Logger logger = (Logger) LoggerFactory.getLogger(KnowledgeDraftService.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> logAppender = new ListAppender<>();
+        logAppender.start();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(logAppender);
+        try {
+            assertThatThrownBy(() -> service(files, mapper, knowledge).submit(7L,
+                    new KnowledgeDraftApi.DraftRequest("warehouse-rules", "v3", "标题", "request-2"), "rules.md",
+                    new java.io.ByteArrayInputStream("# other".getBytes(StandardCharsets.UTF_8))))
+                    .hasMessageContaining("KNOWLEDGE_DRAFT_CONFLICT");
+            String logs = logAppender.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            assertThat(logs).contains("stage=draft_failed", "failureStage=version_recheck",
+                    "errorCode=KNOWLEDGE_DRAFT_CONFLICT");
+        } finally {
+            logger.detachAppender(logAppender);
+            logger.setLevel(previousLevel);
+            logAppender.stop();
+        }
         verify(files).store(any());
         verify(files).discard("asset-conflict", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
     }
@@ -404,6 +528,196 @@ class KnowledgeDraftServiceTest {
         verify(mapper).insertVector(any(), eq("入库\n必须核对编码"), anyString(), any(), anyDouble(), any());
         verify(mapper).activateVersion(anyString(), anyString(), any(), eq("标题"));
         verify(files).retain("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
+    }
+
+    @Test
+    void fixedNormalFixturePublishesAllParsedSectionsWithoutLoggingContent() throws Exception {
+        byte[] fixture = fixture("06F-KNOWLEDGE-NORMAL.md");
+        String markdown = new String(fixture, StandardCharsets.UTF_8);
+        String contentHash = normalizedHash(markdown);
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        ControlledDocumentAsset asset = asset("asset-1", "06F-KNOWLEDGE-NORMAL.md");
+        KnowledgeDraftMapper.DraftRow ready = draftWithStatus("draft-06f-publish", "PREVIEW_READY", 0, contentHash);
+        KnowledgeDraftMapper.DraftRow publishing = draftWithStatus("draft-06f-publish", "PUBLISHING", 1,
+                contentHash, "publish-06f");
+        KnowledgeDraftMapper.DraftRow published = draftWithStatus("draft-06f-publish", "PUBLISHED", 2, contentHash);
+        when(drafts.findOwned("draft-06f-publish", 7L)).thenReturn(ready, publishing, publishing, publishing, published);
+        when(files.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                .thenReturn(new ControlledDocumentRead(asset, fixture));
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+        when(embedding.embedDocuments(any())).thenReturn(List.of(validEmbedding(1), validEmbedding(2), validEmbedding(3)));
+        when(drafts.claimForPublishing(eq("draft-06f-publish"), eq(7L), eq(0), eq("publish-06f"), any()))
+                .thenReturn(1);
+        when(drafts.markPublished(eq("draft-06f-publish"), eq(7L), eq(1), eq("publish-06f"), isNull(), any()))
+                .thenReturn(1);
+        when(mapper.findDocumentId("warehouse-rules")).thenReturn(null);
+        when(mapper.findVersion(anyString(), eq("v3"))).thenReturn(null);
+
+        Logger logger = (Logger) LoggerFactory.getLogger(KnowledgeDraftService.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> logAppender = new ListAppender<>();
+        logAppender.start();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(logAppender);
+        try {
+            KnowledgeDraftApi.DraftView view = publishService(files, drafts, knowledge, embedding, mapper)
+                    .publish(7L, "draft-06f-publish",
+                            new KnowledgeDraftApi.PublishRequest(0, "publish-06f", true));
+
+            assertThat(view.status()).isEqualTo("PUBLISHED");
+            assertThat(view.sourceType()).isEqualTo("USER_UPLOAD");
+            assertThat(view.sections()).hasSize(3);
+            verify(embedding).embedDocuments(List.of(
+                    "仓储入库规则\n入库资料必须核对物品编码、数量和库位,确认后才能提交。",
+                    "编码核对\n每条入库记录使用唯一编码,发现未知编码时先暂停处理。",
+                    "盘点复核\n盘点完成后保留差异说明,并由维护人员复核后发布。\n固定检索短语:仓储入库固定样本检索短语 06F。"));
+            verify(mapper, times(3)).insertVector(any(), anyString(), anyString(), any(), anyDouble(), any());
+            String logs = logAppender.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            assertThat(logs).contains("stage=publish_started", "stage=source_verified", "stage=publish_claimed",
+                    "stage=embedding_started", "stage=embedding_finished", "stage=publication_persisted",
+                    "stage=active_switched", "stage=publish_finished");
+            assertThat(logs.indexOf("stage=source_verified")).isLessThan(logs.indexOf("stage=publish_claimed"));
+            assertThat(logs.indexOf("stage=publish_claimed")).isLessThan(logs.indexOf("stage=embedding_started"));
+            assertThat(logs.indexOf("stage=embedding_finished")).isLessThan(logs.indexOf("stage=publication_persisted"));
+            assertThat(logs).doesNotContain("06F-KNOWLEDGE-NORMAL.md", "仓储入库固定样本检索短语 06F",
+                    "b4c17428c10dd702ffb62f7a7d1d6c79ce04dc39bfbddb555e58f40cba94ee");
+        } finally {
+            logger.detachAppender(logAppender);
+            logger.setLevel(previousLevel);
+            logAppender.stop();
+        }
+    }
+
+    @Test
+    void publishControlPathsAlwaysEmitExactlyOneTerminalEvent() {
+        Logger logger = (Logger) LoggerFactory.getLogger(KnowledgeDraftService.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> logAppender = new ListAppender<>();
+        logAppender.start();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(logAppender);
+        try {
+            KnowledgeDraftMapper.DraftRow staleRevision = draftWithStatus("draft-log-stale", "PREVIEW_READY", 3,
+                    "hash");
+            KnowledgeDraftMapper staleDrafts = mock(KnowledgeDraftMapper.class);
+            when(staleDrafts.findOwned("draft-log-stale", 7L)).thenReturn(staleRevision);
+            assertThatThrownBy(() -> publishService(mock(ControlledDocumentFileApi.class), staleDrafts,
+                    mock(KnowledgeQueryApi.class), mock(KnowledgeRetrievalEmbeddingClient.class), mock(KnowledgeMapper.class))
+                    .publish(7L, "draft-log-stale", new KnowledgeDraftApi.PublishRequest(2, "log-stale", true)))
+                    .hasMessageContaining("草稿修订已变化");
+            assertSinglePublishTerminal(logAppender, "publish_failed", "failureStage=precondition");
+            logAppender.list.clear();
+
+            KnowledgeDraftMapper.DraftRow fresh = draftWithStatus("draft-log-fresh", "PUBLISHING", 1,
+                    normalizedHash("# 入库\n必须核对编码"), "first-request");
+            KnowledgeDraftMapper freshDrafts = mock(KnowledgeDraftMapper.class);
+            when(freshDrafts.findOwned("draft-log-fresh", 7L)).thenReturn(fresh);
+            assertThatThrownBy(() -> publishService(mock(ControlledDocumentFileApi.class), freshDrafts,
+                    mock(KnowledgeQueryApi.class), mock(KnowledgeRetrievalEmbeddingClient.class), mock(KnowledgeMapper.class))
+                    .publish(7L, "draft-log-fresh", new KnowledgeDraftApi.PublishRequest(1, "other-request", true)))
+                    .hasMessageContaining("草稿正在由其他发布请求处理");
+            assertSinglePublishTerminal(logAppender, "publish_failed", "failureStage=precondition");
+            logAppender.list.clear();
+
+            ControlledDocumentFileApi inProgressFiles = mock(ControlledDocumentFileApi.class);
+            KnowledgeDraftMapper inProgressDrafts = mock(KnowledgeDraftMapper.class);
+            KnowledgeQueryApi inProgressKnowledge = mock(KnowledgeQueryApi.class);
+            KnowledgeDraftMapper.DraftRow inProgress = draftWithStatus("draft-log-progress", "PUBLISHING", 1,
+                    normalizedHash("# 入库\n必须核对编码"), "same-request");
+            when(inProgressDrafts.findOwned("draft-log-progress", 7L)).thenReturn(inProgress);
+            when(inProgressDrafts.findSections("draft-log-progress", 7L)).thenReturn(List.of());
+            when(inProgressKnowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                    .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+            KnowledgeDraftApi.DraftView inProgressView = publishService(inProgressFiles, inProgressDrafts,
+                    inProgressKnowledge, mock(KnowledgeRetrievalEmbeddingClient.class), mock(KnowledgeMapper.class))
+                    .publish(7L, "draft-log-progress", new KnowledgeDraftApi.PublishRequest(1, "same-request", true));
+            assertThat(inProgressView.status()).isEqualTo("PUBLISHING");
+            assertSinglePublishTerminal(logAppender, "publish_finished", "outcome=PUBLISHING");
+            logAppender.list.clear();
+
+            String markdown = "# 入库\n必须核对编码";
+            KnowledgeDraftMapper.DraftRow ready = draftWithStatus("draft-log-claim", "PREVIEW_READY", 0,
+                    normalizedHash(markdown));
+            KnowledgeDraftMapper claimDrafts = mock(KnowledgeDraftMapper.class);
+            ControlledDocumentFileApi claimFiles = mock(ControlledDocumentFileApi.class);
+            KnowledgeQueryApi claimKnowledge = mock(KnowledgeQueryApi.class);
+            when(claimDrafts.findOwned("draft-log-claim", 7L)).thenReturn(ready, ready);
+            when(claimFiles.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                    .thenReturn(new ControlledDocumentRead(asset("asset-1", "rules.md"), markdown.getBytes(StandardCharsets.UTF_8)));
+            when(claimKnowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                    .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+            when(claimDrafts.claimForPublishing(eq("draft-log-claim"), eq(7L), eq(0), eq("claim-request"), any()))
+                    .thenReturn(0);
+            assertThatThrownBy(() -> publishService(claimFiles, claimDrafts, claimKnowledge,
+                    mock(KnowledgeRetrievalEmbeddingClient.class), mock(KnowledgeMapper.class))
+                    .publish(7L, "draft-log-claim", new KnowledgeDraftApi.PublishRequest(0, "claim-request", true)))
+                    .hasMessageContaining("草稿已被其他发布操作占用");
+            assertSinglePublishTerminal(logAppender, "publish_failed", "failureStage=claim");
+            logAppender.list.clear();
+
+            KnowledgeDraftMapper existingDrafts = mock(KnowledgeDraftMapper.class);
+            KnowledgeQueryApi existingKnowledge = mock(KnowledgeQueryApi.class);
+            KnowledgeMapper existingMapper = mock(KnowledgeMapper.class);
+            KnowledgeDraftMapper.DraftRow existingReady = draftWithStatus("draft-log-existing", "PREVIEW_READY", 0,
+                    normalizedHash(markdown));
+            KnowledgeDraftMapper.DraftRow existingClaimed = draftWithStatus("draft-log-existing", "PUBLISHING", 1,
+                    normalizedHash(markdown), "existing-request");
+            when(existingDrafts.findOwned("draft-log-existing", 7L)).thenReturn(existingReady, existingClaimed, existingClaimed);
+            when(existingDrafts.claimForPublishing(eq("draft-log-existing"), eq(7L), eq(0), eq("existing-request"), any()))
+                    .thenReturn(1);
+            ControlledDocumentFileApi existingFiles = mock(ControlledDocumentFileApi.class);
+            when(existingFiles.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                    .thenReturn(new ControlledDocumentRead(asset("asset-1", "rules.md"), markdown.getBytes(StandardCharsets.UTF_8)));
+            when(existingKnowledge.readActiveDocument("warehouse-rules", 20, 20_000))
+                    .thenReturn(KnowledgeQueryApi.DocumentResult.noEvidence(NOW));
+            when(existingMapper.findDocumentId("warehouse-rules"))
+                    .thenThrow(new IllegalStateException("existing check failed"));
+            assertThatThrownBy(() -> publishService(existingFiles, existingDrafts, existingKnowledge,
+                    mock(KnowledgeRetrievalEmbeddingClient.class), existingMapper)
+                    .publish(7L, "draft-log-existing", new KnowledgeDraftApi.PublishRequest(0, "existing-request", true)))
+                    .hasMessageContaining("existing check failed");
+            assertSinglePublishTerminal(logAppender, "publish_failed", "failureStage=existing_publication_check");
+        } finally {
+            logger.detachAppender(logAppender);
+            logger.setLevel(previousLevel);
+            logAppender.stop();
+        }
+    }
+
+    @Test
+    void publishSourceReadFailureIsLoggedWithStableFailureStage() {
+        assertPublishPreClaimFailure(null, "not-used", "source_read", "KNOWLEDGE_PUBLISH_SOURCE_UNAVAILABLE",
+                KnowledgeQueryApi.DocumentResult.noEvidence(NOW), "read unavailable");
+    }
+
+    @Test
+    void publishReparseFailureIsLoggedWithStableFailureStage() {
+        assertPublishPreClaimFailure(new byte[]{(byte) 0xc3, 0x28}, "bad.md", "source_parse",
+                "KNOWLEDGE_DRAFT_ENCODING", KnowledgeQueryApi.DocumentResult.noEvidence(NOW), null);
+    }
+
+    @Test
+    void publishContentHashMismatchIsLoggedWithStableFailureStage() {
+        assertPublishPreClaimFailure("# changed\n正文".getBytes(StandardCharsets.UTF_8), "changed.md",
+                "source_hash_validation", "KNOWLEDGE_PUBLISH_CONTENT_CHANGED",
+                KnowledgeQueryApi.DocumentResult.noEvidence(NOW), null);
+    }
+
+    @Test
+    void publishActiveValidationFailureIsLoggedWithStableFailureStage() {
+        Instant now = NOW;
+        KnowledgeQueryApi.DocumentResult active = KnowledgeQueryApi.DocumentResult.found(
+                new KnowledgeQueryApi.ActiveDocument("warehouse-rules", "规则", "v2", now, now, true),
+                List.of(new KnowledgeQueryApi.Citation("warehouse-rules", "规则", "v2", "入库", 1,
+                        "# 入库\n\n新内容", 1d, true, "knowledge://warehouse-rules/v2#1", now, now)), now, false);
+        assertPublishPreClaimFailure("# 入库\n必须核对编码".getBytes(StandardCharsets.UTF_8), "rules.md",
+                "active_validation", "KNOWLEDGE_PUBLISH_ACTIVE_CHANGED", active, null);
     }
 
     @Test
@@ -867,6 +1181,150 @@ class KnowledgeDraftServiceTest {
     private static void verifyNoEmbedding(KnowledgeQueryApi knowledge) {
         // KnowledgeQueryApi is a read-only active fact source; no embedding client is injected by this service.
         assertThat(knowledge).isNotNull();
+    }
+
+    private static void assertSinglePublishTerminal(ListAppender<ILoggingEvent> logAppender,
+                                                    String terminalStage, String detail) {
+        List<String> terminalEvents = logAppender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .filter(message -> message.contains("stage=publish_finished") || message.contains("stage=publish_failed"))
+                .toList();
+        assertThat(terminalEvents).hasSize(1);
+        assertThat(terminalEvents.getFirst()).contains("stage=" + terminalStage, detail);
+    }
+
+    private void assertDraftFixtureFailure(byte[] fixture, String filename, String expectedStage,
+                                           String expectedErrorCode) throws Exception {
+        ControlledDocumentAssetMapper assetMapper = mock(ControlledDocumentAssetMapper.class);
+        var persisted = new com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO[1];
+        when(assetMapper.insert(any(com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO.class)))
+                .thenAnswer(invocation -> {
+                    persisted[0] = invocation.getArgument(0);
+                    return 1;
+                });
+        when(assetMapper.updateById(any(com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO.class)))
+                .thenAnswer(invocation -> {
+                    persisted[0] = invocation.getArgument(0);
+                    return 1;
+                });
+        when(assetMapper.selectById(anyString())).thenAnswer(invocation -> persisted[0]);
+        when(assetMapper.deleteById(anyString())).thenReturn(1);
+        ControlledDocumentFileService documents = new ControlledDocumentFileService(assetMapper,
+                () -> LIMITS, fileStorageRoot.toString(), null);
+
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper mapper = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        when(mapper.findByRequest(7L, "06f-failure-request")).thenReturn(null);
+        when(mapper.findByDocumentVersion("06f-failure", "v1")).thenReturn(null);
+        when(files.store(any(ControlledDocumentStoreRequest.class)))
+                .thenAnswer(invocation -> documents.store(invocation.getArgument(0)));
+        when(files.read(anyString(), eq(7L), eq(DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT)))
+                .thenAnswer(invocation -> documents.read(invocation.getArgument(0), 7L,
+                        DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT));
+        doAnswer(invocation -> {
+            documents.discard(invocation.getArgument(0), 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT);
+            return null;
+        }).when(files).discard(anyString(), eq(7L), eq(DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(KnowledgeDraftService.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> logAppender = new ListAppender<>();
+        logAppender.start();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(logAppender);
+        try {
+            assertThatThrownBy(() -> service(files, mapper, knowledge).submit(7L,
+                    new KnowledgeDraftApi.DraftRequest("06f-failure", "v1", "固定失败样本", "06f-failure-request"),
+                    filename, new java.io.ByteArrayInputStream(fixture)))
+                    .hasMessageContaining(expectedStage.equals("file_store")
+                            ? "有效 UTF-8" : expectedErrorCode);
+            verify(mapper, never()).insertDraft(any(), anyString());
+            verify(knowledge, never()).readActiveDocument(anyString(), anyInt(), anyInt());
+            if ("document_parse".equals(expectedStage)) {
+                verify(files).discard(anyString(), eq(7L), eq(DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT));
+            } else {
+                verify(files, never()).discard(anyString(), anyLong(), any());
+            }
+            String logs = logAppender.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            assertThat(logs).contains("stage=draft_failed", "failureStage=" + expectedStage,
+                    "errorCode=" + expectedErrorCode);
+            assertThat(logs).doesNotContain(filename, "固定失败样本");
+        } finally {
+            logger.detachAppender(logAppender);
+            logger.setLevel(previousLevel);
+            logAppender.stop();
+            shutdownDocuments(documents);
+        }
+    }
+
+    private void assertPublishPreClaimFailure(byte[] bytes, String filename, String expectedStage,
+                                              String expectedErrorCode, KnowledgeQueryApi.DocumentResult active,
+                                              String readFailureMessage) {
+        ControlledDocumentFileApi files = mock(ControlledDocumentFileApi.class);
+        KnowledgeDraftMapper drafts = mock(KnowledgeDraftMapper.class);
+        KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        String source = "# 入库\n必须核对编码";
+        String contentHash = normalizedHash(source);
+        KnowledgeDraftMapper.DraftRow draft = "active_validation".equals(expectedStage)
+                ? draftWithBase("draft-preclaim-failure", "v1", "old-hash", contentHash)
+                : draftWithStatus("draft-preclaim-failure", "PREVIEW_READY", 0, "source-hash");
+        when(drafts.findOwned("draft-preclaim-failure", 7L)).thenReturn(draft);
+        if (readFailureMessage == null) {
+            when(files.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                    .thenReturn(new ControlledDocumentRead(asset("asset-1", filename), bytes));
+        } else {
+            when(files.read("asset-1", 7L, DocumentFilePurpose.KNOWLEDGE_DOCUMENT_IMPORT))
+                    .thenThrow(new IllegalStateException(readFailureMessage));
+        }
+        when(knowledge.readActiveDocument("warehouse-rules", 20, 20_000)).thenReturn(active);
+
+        Logger logger = (Logger) LoggerFactory.getLogger(KnowledgeDraftService.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> logAppender = new ListAppender<>();
+        logAppender.start();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(logAppender);
+        try {
+            assertThatThrownBy(() -> publishService(files, drafts, knowledge, embedding, mapper).publish(7L,
+                    "draft-preclaim-failure", new KnowledgeDraftApi.PublishRequest(0, "publish-preclaim", true)));
+            String logs = logAppender.list.stream().map(ILoggingEvent::getFormattedMessage)
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            assertThat(logs).contains("stage=publish_failed", "failureStage=" + expectedStage,
+                    "errorCode=" + expectedErrorCode, "draftId=draft-preclaim-failure", "assetId=asset-1");
+            verifyNoInteractions(embedding, mapper);
+        } finally {
+            logger.detachAppender(logAppender);
+            logger.setLevel(previousLevel);
+            logAppender.stop();
+        }
+    }
+
+    private static byte[] fixture(String name) throws java.io.IOException {
+        try (java.io.InputStream input = KnowledgeDraftServiceTest.class.getResourceAsStream("/fixtures/" + name)) {
+            if (input == null) throw new java.io.IOException("fixture missing: " + name);
+            return input.readAllBytes();
+        }
+    }
+
+    private static String sha256(byte[] bytes) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes);
+        StringBuilder result = new StringBuilder(digest.length * 2);
+        for (byte value : digest) result.append(String.format("%02x", value));
+        return result.toString();
+    }
+
+    private static void shutdownDocuments(ControlledDocumentFileService documents) {
+        try {
+            var shutdown = ControlledDocumentFileService.class.getDeclaredMethod("shutdown");
+            shutdown.setAccessible(true);
+            shutdown.invoke(documents);
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError("无法关闭测试文件处理执行器", exception);
+        }
     }
 
     private static final class NoopTransactionManager implements PlatformTransactionManager {

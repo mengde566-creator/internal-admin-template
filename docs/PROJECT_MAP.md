@@ -50,7 +50,7 @@
 | `module-agent` | Conversation、Task、Run、History、SSE和模型编排 | app-server、前端仓储助手、业务Adapter |
 | `module-ai-observability` | AI Run/Step/Attempt、反馈和评测所有权 | Agent、Knowledge Tool和业务Adapter写入 |
 | `module-agent-warehouse-adapter` | Warehouse Tool、卡片映射和语义搜索索引 | 连接通用Agent与Warehouse公开API |
-| `app-server` | 模块装配、运行配置和应用入口 | `backend/apps/app-server/` |
+| `app-server` | 模块装配、运行配置、应用入口及06F文件作业有界维护 | `backend/apps/app-server/`；文件作业维护由`DocumentImportMaintenance`统一装配 |
 
 依赖事实：后端版本与模块清单看`backend/pom.xml`及目标模块`pom.xml`；前端依赖看`frontend/package.json`和锁文件；OpenAPI工具看`tools/openapi/`；质量入口看`scripts/quality.sh`。
 

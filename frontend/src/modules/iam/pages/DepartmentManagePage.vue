@@ -12,6 +12,7 @@ import {
   updateDepartmentApi,
   type DepartmentNode
 } from '../api/department'
+import { confirmDiscardChanges } from '../../../shared/utils/formLeaveGuard'
 import { filterParentOptions } from '../department-tree'
 
 const queryClient = useQueryClient()
@@ -54,6 +55,8 @@ function errorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
+let initialSnapshot = ''
+
 function openCreate(parentId = treeQuery.data.value?.nodes[0]?.id ?? '') {
   const parent = findNode(treeQuery.data.value?.nodes ?? [], parentId)
   if (!parent?.enabled) return
@@ -62,6 +65,7 @@ function openCreate(parentId = treeQuery.data.value?.nodes[0]?.id ?? '') {
   form.name = ''
   form.parentId = parentId
   form.sortOrder = 0
+  initialSnapshot = JSON.stringify(form)
   dialogVisible.value = true
 }
 
@@ -72,7 +76,32 @@ function openEdit(node: DepartmentNode) {
   form.name = node.name
   form.parentId = node.parentId ?? ''
   form.sortOrder = node.sortOrder
+  initialSnapshot = JSON.stringify(form)
   dialogVisible.value = true
+}
+
+const isDirty = () => JSON.stringify(form) !== initialSnapshot
+
+async function handleBeforeClose(done: () => void) {
+  if (isDirty()) {
+    const confirmed = await confirmDiscardChanges()
+    if (confirmed) {
+      done()
+    }
+  } else {
+    done()
+  }
+}
+
+async function requestClose() {
+  if (isDirty()) {
+    const confirmed = await confirmDiscardChanges()
+    if (confirmed) {
+      dialogVisible.value = false
+    }
+  } else {
+    dialogVisible.value = false
+  }
 }
 
 const saveMutation = useMutation({
@@ -114,20 +143,63 @@ const statusMutation = useMutation({
   onError: (error) => ElMessage.error(errorMessage(error, '更新部门状态失败，请刷新后重试'))
 })
 
+const confirmingDepartmentAction = ref(false)
+const isDeletingDepartment = ref(false)
+
+async function handleToggleStatus(node: DepartmentNode) {
+  if (confirmingDepartmentAction.value || statusMutation.isPending.value) return
+  if (node.enabled) {
+    confirmingDepartmentAction.value = true
+    try {
+      await ElMessageBox.confirm(
+        `确定要停用部门“${node.name}（${node.code}）”吗？停用后该部门将无法被选择或分配，但保留历史记录。`,
+        '停用部门',
+        {
+          type: 'warning',
+          confirmButtonText: '确认停用',
+          cancelButtonText: '取消'
+        }
+      )
+    } catch (error) {
+      if (error !== 'cancel' && error !== 'close') throw error
+      return
+    } finally {
+      confirmingDepartmentAction.value = false
+    }
+  }
+  statusMutation.mutate({ node, enabled: !node.enabled })
+}
+
 async function remove(node: DepartmentNode) {
+  if (confirmingDepartmentAction.value || isDeletingDepartment.value) return
+  confirmingDepartmentAction.value = true
   try {
-    await ElMessageBox.confirm('删除后部门只保留历史标识，且必须没有子部门和有效用户。确定继续？', '删除部门', {
-      type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消'
-    })
+    await ElMessageBox.confirm(
+      `确定要删除部门“${node.name}（${node.code}）”吗？删除后部门只保留历史标识，且必须没有子部门和有效用户。`,
+      '删除部门',
+      {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消'
+      }
+    )
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
+    return
+  } finally {
+    confirmingDepartmentAction.value = false
+  }
+
+  isDeletingDepartment.value = true
+  try {
     await deleteDepartmentApi(node.id, requiredTreeVersion())
     ElMessage.success('部门已删除')
     void queryClient.invalidateQueries({ queryKey: iamQueryKeys.departments() })
     void queryClient.invalidateQueries({ queryKey: iamQueryKeys.departmentOptions() })
   } catch (error) {
-    if (error === 'cancel' || error === 'close') return
     ElMessage.error(errorMessage(error, '删除部门失败，请刷新后重试'))
+  } finally {
+    isDeletingDepartment.value = false
   }
 }
 
@@ -148,46 +220,62 @@ async function onSubmit() {
 </script>
 
 <template>
-  <section class="department-manage">
-    <header class="page-header">
-      <div>
+  <section class="department-manage ui-page-shell">
+    <header class="ui-page-header-compact">
+      <div class="header-left">
         <h1>部门管理</h1>
-        <p class="hint">部门写入按整棵树修订号保护，冲突时请刷新后重试。</p>
+        <p class="header-hint">部门写入按整棵树修订号保护，冲突时请刷新后重试</p>
       </div>
-      <el-button type="primary" @click="openCreate()">新建下级部门</el-button>
+      <div class="header-actions">
+        <el-button type="primary" @click="openCreate()">新建下级部门</el-button>
+      </div>
     </header>
 
-    <el-tree
-      v-loading="treeQuery.isLoading.value"
-      :data="treeQuery.data.value?.nodes ?? []"
-      node-key="id"
-      default-expand-all
-      empty-text="暂无部门数据"
-    >
-      <template #default="{ data }">
-        <div class="tree-node">
-          <span>{{ data.name }}（{{ data.code }}）</span>
-          <el-tag size="small" :type="data.enabled ? 'success' : 'info'">
-            {{ data.enabled ? '启用' : '停用' }}
-          </el-tag>
-          <span class="node-actions">
-            <el-button v-if="data.enabled" link type="primary" @click.stop="openCreate(data.id)">新建下级</el-button>
-            <el-button v-if="data.code !== 'ROOT'" link type="primary" @click.stop="openEdit(data)">编辑</el-button>
-            <el-button
-              v-if="data.code !== 'ROOT'"
-              link
-              type="warning"
-              @click.stop="statusMutation.mutate({ node: data, enabled: !data.enabled })"
-            >
-              {{ data.enabled ? '停用' : '启用' }}
-            </el-button>
-            <el-button v-if="data.code !== 'ROOT'" link type="danger" @click.stop="remove(data)">删除</el-button>
-          </span>
-        </div>
-      </template>
-    </el-tree>
+    <div class="ui-data-card department-tree-card">
+      <el-tree
+        v-loading="treeQuery.isLoading.value"
+        :data="treeQuery.data.value?.nodes ?? []"
+        node-key="id"
+        default-expand-all
+        empty-text="暂无部门数据"
+        class="department-tree"
+      >
+        <template #default="{ data }">
+          <div class="tree-node">
+            <div class="node-content">
+              <span class="node-name">{{ data.name }}</span>
+              <span class="node-code">（{{ data.code }}）</span>
+              <el-tag size="small" :type="data.enabled ? 'success' : 'info'" class="node-status">
+                {{ data.enabled ? '启用' : '停用' }}
+              </el-tag>
+            </div>
+            <span class="node-actions">
+              <el-button v-if="data.enabled" link type="primary" @click.stop="openCreate(data.id)">新建下级</el-button>
+              <el-button v-if="data.code !== 'ROOT'" link type="primary" @click.stop="openEdit(data)">编辑</el-button>
+              <el-button
+                v-if="data.code !== 'ROOT'"
+                link
+                type="warning"
+                :disabled="confirmingDepartmentAction || statusMutation.isPending.value"
+                @click.stop="handleToggleStatus(data)"
+              >
+                {{ data.enabled ? '停用' : '启用' }}
+              </el-button>
+              <el-button v-if="data.code !== 'ROOT'" link type="danger" :disabled="confirmingDepartmentAction || isDeletingDepartment" @click.stop="remove(data)">删除</el-button>
+            </span>
+          </div>
+        </template>
+      </el-tree>
+    </div>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑部门' : '新建部门'" width="480px" destroy-on-close>
+    <el-dialog
+      v-model="dialogVisible"
+      :title="editing ? '编辑部门' : '新建部门'"
+      width="480px"
+      class="ui-managed-dialog"
+      :before-close="handleBeforeClose"
+      destroy-on-close
+    >
       <el-form label-position="top">
         <el-form-item v-if="!editing" label="部门编码" required>
           <el-input v-model="form.code" placeholder="创建后不可修改" />
@@ -208,7 +296,7 @@ async function onSubmit() {
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button @click="requestClose">取消</el-button>
         <el-button type="primary" :loading="submitting" @click="onSubmit">保存</el-button>
       </template>
     </el-dialog>
@@ -216,31 +304,91 @@ async function onSubmit() {
 </template>
 
 <style scoped>
-.department-manage {
-  padding: 1.5rem;
+.department-tree-card {
+  overflow-x: auto;
 }
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 1rem;
+.department-tree :deep(.el-tree-node__content) {
+  min-height: 2.75rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  border-radius: var(--ui-radius-sm);
+  transition: background-color var(--ui-enter) var(--ui-ease-out);
 }
-.page-header h1 {
-  margin: 0;
-  font-size: 1.25rem;
+.department-tree :deep(.el-tree-node__content:hover) {
+  background-color: var(--ui-surface-hover);
 }
-.hint {
-  margin: 0.35rem 0 0;
-  color: var(--ui-text-muted);
-  font-size: 0.875rem;
+.department-tree :deep(.el-tree-node__children) {
+  padding-left: 1.25rem;
+  border-left: 1px dashed var(--ui-border);
+  margin-left: 0.75rem;
 }
 .tree-node {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: space-between;
   width: 100%;
+  padding-right: 0.5rem;
+  gap: 1rem;
+}
+.node-content {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.node-name {
+  font-weight: 500;
+  color: var(--ui-text-strong);
+}
+.node-code {
+  color: var(--ui-text-muted);
+  font-size: 0.8125rem;
+}
+.node-status {
+  flex-shrink: 0;
 }
 .node-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
   margin-left: auto;
+}
+
+@media (max-width: 640px) {
+  .department-tree :deep(.el-tree-node__children) {
+    padding-left: 0.625rem;
+    margin-left: 0.375rem;
+  }
+  .department-tree :deep(.el-tree-node__content) {
+    height: auto;
+    min-height: 3.25rem;
+    align-items: flex-start;
+    padding-top: 0.375rem;
+    padding-bottom: 0.375rem;
+    padding-right: 0.25rem;
+  }
+  .tree-node {
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    align-items: flex-start;
+    padding-right: 0;
+  }
+  .node-content {
+    width: 100%;
+    min-width: 0;
+  }
+  .node-name {
+    word-break: break-all;
+  }
+  .node-actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    margin-left: 0;
+    gap: 0.25rem;
+    padding-top: 0.125rem;
+  }
 }
 </style>

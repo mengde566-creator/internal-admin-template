@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElMessageBox } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), submit: vi.fn(), download: vi.fn(), publish: vi.fn() }))
@@ -50,13 +50,58 @@ describe('知识资料草稿页面', () => {
     const publishable = { ...draft, revision: 1, expiresAt: '2099-01-01T00:00:00Z' }
     api.list.mockResolvedValue({ data: { data: { records: [publishable], total: 1, page: 1, size: 20 } } })
     api.get.mockResolvedValue({ data: { data: publishable } })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as any)
     const wrapper = mount(KnowledgeDraftManagePage, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     expect(wrapper.get('[data-testid="publish-draft"]').text()).toContain('确认发布')
     await wrapper.get('[data-testid="publish-draft"]').trigger('click')
     await flushPromises()
+
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining('仓储操作规则'),
+      '发布知识资料',
+      expect.objectContaining({
+        confirmButtonText: '发布并设为当前版',
+        cancelButtonText: '返回预览'
+      })
+    )
     expect(api.publish).toHaveBeenCalledWith('draft-1', expect.objectContaining({ revision: 1, confirmed: true }))
-    vi.restoreAllMocks()
+    confirmSpy.mockRestore()
+  })
+
+  it('发布确认点击取消时不发出发布请求', async () => {
+    const publishable = { ...draft, revision: 1, expiresAt: '2099-01-01T00:00:00Z' }
+    api.list.mockResolvedValue({ data: { data: { records: [publishable], total: 1, page: 1, size: 20 } } })
+    api.get.mockResolvedValue({ data: { data: publishable } })
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockRejectedValue('cancel')
+    const wrapper = mount(KnowledgeDraftManagePage, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await wrapper.get('[data-testid="publish-draft"]').trigger('click')
+    await flushPromises()
+
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(api.publish).not.toHaveBeenCalled()
+    confirmSpy.mockRestore()
+  })
+
+  it('发布知识资料具有防重复确认互斥锁，快速点击只弹一次确认框', async () => {
+    const publishable = { ...draft, revision: 1, expiresAt: '2099-01-01T00:00:00Z' }
+    api.list.mockResolvedValue({ data: { data: { records: [publishable], total: 1, page: 1, size: 20 } } })
+    api.get.mockResolvedValue({ data: { data: publishable } })
+    let resolveConfirm: (val: any) => void = () => {}
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockImplementation(() => new Promise((resolve) => { resolveConfirm = resolve }))
+    const wrapper = mount(KnowledgeDraftManagePage, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+
+    const publishBtn = wrapper.get('[data-testid="publish-draft"]')
+    const c1 = publishBtn.trigger('click')
+    const c2 = publishBtn.trigger('click')
+    await Promise.all([c1, c2])
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    resolveConfirm('confirm')
+    await flushPromises()
+    expect(api.publish).toHaveBeenCalledTimes(1)
+    confirmSpy.mockRestore()
   })
 })

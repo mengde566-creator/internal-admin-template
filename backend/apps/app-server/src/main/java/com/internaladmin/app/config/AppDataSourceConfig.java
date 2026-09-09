@@ -1,5 +1,7 @@
 package com.internaladmin.app.config;
 
+import liquibase.integration.spring.SpringLiquibase;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -23,6 +25,8 @@ import java.nio.file.Path;
 @Configuration
 public class AppDataSourceConfig {
 
+    private static final String BUSINESS_CHANGELOG = "classpath:db/changelog-master.xml";
+
     /**
      * 创建数据源；SQLite 模式下先创建数据目录。
      *
@@ -45,6 +49,32 @@ public class AppDataSourceConfig {
             ensureDataDirectory(url);
         }
         return properties.initializeDataSourceBuilder().build();
+    }
+
+    /**
+     * 装配业务主库唯一的 Liquibase 入口。
+     *
+     * 方法：{@code liquibase}
+     *
+     * 执行链路（共 3 步）：
+     * 1. 创建独立的 {@link SpringLiquibase} 业务迁移入口，避免Knowledge与仓储语义索引的命名迁移Bean
+     *    触发Spring Boot默认业务迁移退让。
+     * 2. 调用 {@link SpringLiquibase#setDataSource(DataSource)} 绑定主业务数据源，并调用
+     *    {@link SpringLiquibase#setChangeLog(String)} 固定正式业务聚合changelog。
+     * 3. 调用 {@link SpringLiquibase#setShouldRun(boolean)} 启用迁移并返回；changelog及锁表沿用
+     *    Liquibase默认名称。
+     *
+     * @param dataSource 主业务数据源
+     * @return 业务主库 Liquibase 迁移入口
+     */
+    @Bean(name = "liquibase")
+    @ConditionalOnProperty(prefix = "spring.liquibase", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SpringLiquibase liquibase(@Qualifier("dataSource") DataSource dataSource) {
+        SpringLiquibase liquibase = new SpringLiquibase();
+        liquibase.setDataSource(dataSource);
+        liquibase.setChangeLog(BUSINESS_CHANGELOG);
+        liquibase.setShouldRun(true);
+        return liquibase;
     }
 
     /**

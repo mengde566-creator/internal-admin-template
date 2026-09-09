@@ -69,6 +69,11 @@ describe('应用路由守卫', () => {
     expect(stock?.meta?.permission).toBe('warehouse:read')
   })
 
+  it('访问仓储父路由时配置自动重定向到库存查询', () => {
+    const warehouse = router.getRoutes().find((route) => route.name === 'warehouse')
+    expect(warehouse?.redirect).toEqual({ name: 'warehouse-stock' })
+  })
+
   it('AI观测入口使用专用观测权限', () => {
     const observation = router.getRoutes().find((route) => route.name === 'ai-observability')
     expect(observation?.path).toBe('/ai-observability')

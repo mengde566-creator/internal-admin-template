@@ -8,6 +8,7 @@ import 'element-plus/dist/index.css'
 import './shared/styles/tokens.css'
 import './shared/styles/base.css'
 import './shared/styles/element-plus-overrides.css'
+import './shared/styles/layout.css'
 
 import App from './App.vue'
 import { router } from './app/router'

@@ -8,7 +8,10 @@ import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -42,6 +45,35 @@ class KnowledgeDocumentParserTest {
         assertThat(parsed.truncated()).isTrue();
         assertThat(parsed.characterCount()).isLessThanOrEqualTo(5);
         assertThat(parsed.sections()).hasSize(1);
+    }
+
+    @Test
+    void fixedNormalFixtureHasStableBytesAndParsedSections() throws Exception {
+        byte[] source = fixture("06F-KNOWLEDGE-NORMAL.md");
+
+        assertThat(source).hasSize(358);
+        assertThat(sha256(source)).isEqualTo("a0457cda16527da08419f373b6d76d6fdf3ef76017a7e7abed7dd37212423438");
+        KnowledgeDocumentParser.ParsedDocument parsed = parser.parse(source, "06F-KNOWLEDGE-NORMAL.md", limits);
+
+        assertThat(parsed.sections()).hasSize(3);
+        assertThat(parsed.characterCount()).isEqualTo(119);
+        assertThat(parsed.ignoredCount()).isEqualTo(0);
+        assertThat(parsed.truncated()).isFalse();
+        assertThat(parsed.sections().getFirst().heading()).isEqualTo("仓储入库规则");
+        assertThat(parsed.sections()).extracting(KnowledgeDocumentParser.Section::content)
+                .anyMatch(content -> content.contains("仓储入库固定样本检索短语 06F"));
+    }
+
+    @Test
+    void fixedEmptyFixtureIsRejectedWithStableBusinessCode() throws Exception {
+        assertThatThrownBy(() -> parser.parse(fixture("06F-KNOWLEDGE-EMPTY.md"), "06F-KNOWLEDGE-EMPTY.md", limits))
+                .hasMessageContaining("KNOWLEDGE_DRAFT_EMPTY");
+    }
+
+    @Test
+    void fixedInvalidUtf8FixtureIsRejectedWithStableBusinessCode() throws Exception {
+        assertThatThrownBy(() -> parser.parse(fixture("06F-KNOWLEDGE-INVALID-UTF8.md"), "06F-KNOWLEDGE-INVALID-UTF8.md", limits))
+                .hasMessageContaining("KNOWLEDGE_DRAFT_ENCODING");
     }
 
     @Test
@@ -89,5 +121,19 @@ class KnowledgeDocumentParserTest {
             document.write(output);
             return output.toByteArray();
         }
+    }
+
+    private static byte[] fixture(String name) throws IOException {
+        try (InputStream input = KnowledgeDocumentParserTest.class.getResourceAsStream("/fixtures/" + name)) {
+            if (input == null) throw new IOException("fixture missing: " + name);
+            return input.readAllBytes();
+        }
+    }
+
+    private static String sha256(byte[] bytes) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes);
+        StringBuilder result = new StringBuilder(digest.length * 2);
+        for (byte value : digest) result.append(String.format("%02x", value));
+        return result.toString();
     }
 }

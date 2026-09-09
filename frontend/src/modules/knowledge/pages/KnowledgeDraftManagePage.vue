@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Close, Document, Upload } from '@element-plus/icons-vue'
 import { isAxiosError } from 'axios'
-import { ElMessage } from 'element-plus'
 import { fetchKnowledgeDraft, fetchKnowledgeDrafts, downloadKnowledgeDraftSource, submitKnowledgeDraft, publishKnowledgeDraft, type KnowledgeDraft } from '../api/draft'
+import { formatTaskError } from '../../../shared/utils/taskError'
 
 const drafts = ref<KnowledgeDraft[]>([])
 const selected = ref<KnowledgeDraft | null>(null)
@@ -69,10 +71,28 @@ const canPublish = computed(() => {
     && Number.isFinite(expiresAt) && expiresAt > Date.now()
 })
 
+const confirmingPublish = ref(false)
+
 async function publish() {
   const draft = selected.value
-  if (!draft || !canPublish.value || submitting.value) return
-  if (!window.confirm(`将发布 ${draft.title} ${draft.versionCode}，替换当前生效版本。是否继续？`)) return
+  if (!draft || !canPublish.value || submitting.value || confirmingPublish.value) return
+  confirmingPublish.value = true
+  try {
+    await ElMessageBox.confirm(
+      `确定发布知识资料《${draft.title}》（文档编码：${draft.documentCode}，版本名称：${draft.versionCode}）？发布后新版本将成为当前查询生效版本，旧版本保留为历史记录。`,
+      '发布知识资料',
+      {
+        type: 'warning',
+        confirmButtonText: '发布并设为当前版',
+        cancelButtonText: '返回预览'
+      }
+    )
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
+    return
+  } finally {
+    confirmingPublish.value = false
+  }
   submitting.value = true; error.value = ''
   try {
     selected.value = (await publishKnowledgeDraft(draft.draftId!, {
@@ -94,15 +114,46 @@ onMounted(load)
   <section class="knowledge-draft-page" data-testid="knowledge-draft-page">
     <header class="page-header"><div><p class="eyebrow">资料维护</p><h1>知识资料</h1><p class="heading-copy">上传后先进行格式与结构安全校验，保存为草稿预览；不会自动发布或调用模型。</p></div><el-button @click="load" :loading="loading">刷新</el-button></header>
     <el-alert title="系统只进行格式与结构安全校验，不提供病毒扫描。" type="warning" :closable="false" show-icon />
-    <p v-if="error" class="page-error" role="alert">{{ error }}</p>
+    <el-alert
+      v-if="error"
+      type="error"
+      :closable="false"
+      show-icon
+      class="state-alert"
+      role="alert"
+      :title="formatTaskError(error, '知识资料处理失败').title"
+    >
+      <div class="task-error-body">
+        <p class="error-reason page-error">{{ formatTaskError(error).reason }}</p>
+        <p class="error-action">{{ formatTaskError(error).action }}</p>
+      </div>
+    </el-alert>
     <div class="draft-layout">
       <section class="panel-section upload-panel" aria-label="上传知识资料"><h2>上传资料</h2>
         <el-form label-position="top" @submit.prevent="submit">
           <el-form-item label="业务文档编码"><el-input v-model="form.documentCode" placeholder="例如 warehouse-rules" /></el-form-item>
           <el-form-item label="版本名称"><el-input v-model="form.versionCode" placeholder="例如 v3" /></el-form-item>
           <el-form-item label="标题"><el-input v-model="form.title" /></el-form-item>
-          <input ref="fileInput" type="file" accept=".docx,.md,.txt" aria-label="选择知识文件" @change="chooseFile" />
-          <p class="muted">{{ file?.name ?? '支持 .docx、.md、.txt' }}</p><el-button data-testid="submit-draft" type="primary" :loading="submitting" @click="submit">上传并生成预览</el-button>
+          <div class="ui-file-picker" style="margin-bottom: 14px">
+            <input ref="fileInput" type="file" accept=".docx,.md,.txt" class="ui-sr-only" aria-label="选择知识文件" @change="chooseFile" />
+            <el-button :icon="Upload" @click="fileInput?.click()">
+              {{ file ? '更换文件' : '选择文件' }}
+            </el-button>
+            <span v-if="file" class="ui-file-badge" :title="file.name">
+              <el-icon><Document /></el-icon>
+              <span class="ui-file-name">{{ file.name }}</span>
+              <el-button
+                link
+                type="danger"
+                :icon="Close"
+                class="ui-file-clear-btn"
+                aria-label="清除已选文件"
+                @click="file = null; if (fileInput) fileInput.value = ''"
+              />
+            </span>
+            <span v-else class="ui-file-placeholder">支持 .docx、.md、.txt</span>
+          </div>
+          <el-button data-testid="submit-draft" type="primary" :loading="submitting" @click="submit">上传并生成预览</el-button>
         </el-form>
       </section>
       <section class="panel-section" aria-label="我的知识草稿"><div class="section-heading"><h2>我的草稿</h2><span class="muted">刷新后可恢复</span></div>
@@ -110,7 +161,7 @@ onMounted(load)
         <ul v-else class="draft-list"><li v-for="draft in drafts" :key="draft.draftId" :class="{ selected: selected?.draftId === draft.draftId }" @click="selectDraft(draft)"><strong>{{ draft.title }}</strong><span>{{ draft.documentCode }} / {{ draft.versionCode }}</span><em>{{ statusLabel(draft.status) }}</em></li></ul>
       </section>
     </div>
-    <section v-if="selected" class="panel-section preview-panel" aria-label="知识草稿预览"><div class="section-heading"><div><h2>{{ selected.title }}</h2><p class="muted">{{ selected.documentCode }} / {{ selected.versionCode }} · {{ statusLabel(selected.status) }}</p></div><div><el-button v-if="canPublish" data-testid="publish-draft" type="primary" :loading="submitting" @click="publish">确认发布</el-button><el-button text @click="downloadSource">下载原文件</el-button></div></div>
+    <section v-if="selected" class="panel-section preview-panel" aria-label="知识草稿预览"><div class="section-heading"><div><h2>{{ selected.title }}</h2><p class="muted">{{ selected.documentCode }} / {{ selected.versionCode }} · {{ statusLabel(selected.status) }}</p></div><div><el-button v-if="canPublish" data-testid="publish-draft" type="primary" :loading="submitting" :disabled="confirmingPublish" @click="publish">确认发布</el-button><el-button text @click="downloadSource">下载原文件</el-button></div></div>
       <div class="summary-grid"><span>字符数 <b>{{ selected.characterCount ?? 0 }}</b></span><span>片段数 <b>{{ selected.sectionCount ?? 0 }}</b></span><span>忽略内容 <b>{{ selected.ignoredCount ?? 0 }}</b></span><span>截断 <b>{{ selected.truncated ? '是' : '否' }}</b></span></div>
       <p v-if="selected.stale" class="page-error">当前 ACTIVE 资料已变化，请重新上传生成预览。</p><p v-if="selected.errorCode" class="page-error">错误码：{{ selected.errorCode }}</p>
       <el-table v-if="selected.sections?.length" :data="selected.sections" border><el-table-column prop="sectionNo" label="#" width="70" /><el-table-column prop="heading" label="章节" min-width="180" /><el-table-column label="变化" width="100"><template #default="{ row }">{{ changeLabel(row.changeType) }}</template></el-table-column><el-table-column prop="content" label="预览内容" min-width="320" show-overflow-tooltip /></el-table>
@@ -124,7 +175,7 @@ onMounted(load)
 .page-header h1 { margin: 4px 0; color: var(--ui-text-strong); }.heading-copy { color: var(--ui-text-muted); margin: 0; }
 .draft-layout { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(420px, 1.2fr); gap: 16px; }
 .panel-section { background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: 12px; padding: 18px; }.panel-section h2 { margin-top: 0; color: var(--ui-text-strong); }
-.draft-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }.draft-list li { display: grid; gap: 4px; padding: 10px; border: 1px solid var(--ui-border); border-radius: 8px; cursor: pointer; }.draft-list li.selected { border-color: var(--ui-accent); background: var(--ui-surface-muted); }
+.draft-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }.draft-list li { display: grid; gap: 4px; padding: 10px; border: 1px solid var(--ui-border); border-radius: 8px; cursor: pointer; }.draft-list li.selected { border-color: var(--ui-primary); background: var(--ui-surface-muted); }
 .draft-list span, .draft-list em, .muted { color: var(--ui-text-muted); font-size: .875rem; }.draft-list em { font-style: normal; }.summary-grid { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 14px; color: var(--ui-text-muted); }.summary-grid b { color: var(--ui-text-strong); }.page-error { color: var(--ui-danger, #b42318); }
 @media (max-width: 900px) { .draft-layout { grid-template-columns: 1fr; } }
 </style>
