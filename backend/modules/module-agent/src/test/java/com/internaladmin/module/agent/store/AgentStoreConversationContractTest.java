@@ -1,6 +1,7 @@
 package com.internaladmin.module.agent.store;
 
 import com.internaladmin.platform.kernel.error.BusinessException;
+import com.internaladmin.module.agent.TestAgentAdapterFixtures;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import liquibase.integration.spring.SpringLiquibase;
 import org.junit.jupiter.api.Test;
@@ -96,9 +97,24 @@ class AgentStoreConversationContractTest {
     }
 
     @Test
+    void unresolvedTaskStaysUnassignedUntilTheUniqueBAdapterIntentIsKnown() throws Exception {
+        AgentStore store = new AgentStore(database("conversation-dual-adapter-owner"),
+                TestAgentAdapterFixtures.dualRegistry());
+        String conversationId = store.createConversation(7L).conversationId();
+
+        AgentStore.StartRun run = store.startRun(conversationId, "dual-adapter-owner", "B 业务查询", 7L, "scope-7");
+        assertEquals("", store.task(run.taskId()).adapter(),
+                "未解析意图的 Task 必须保持通用未归属，不能猜测 A");
+
+        AgentStore.TaskRow completed = store.completeTask(run.taskId(), run.taskRevision(), "scope-7", "B_TASK");
+        assertEquals("adapter-b", completed.adapter(),
+                "解析为 B_TASK 后只能归属于唯一接受该 intent 的 B adapter");
+    }
+
+    @Test
     void historicalRowsAreBackfilledByMigrationBeforeTheNotNullContractIsUsed() throws Exception {
         JdbcTemplate jdbc = database("conversation-legacy-upgrade");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
 
         AgentStore.ConversationPage conversations = store.pageConversations(99L, 1, 20);
         assertEquals(1, conversations.total());
@@ -327,7 +343,7 @@ class AgentStoreConversationContractTest {
     @Test
     void successBoundaryRollsBackHistoryWhenObservationCannotClose() throws Exception {
         JdbcTemplate jdbc = database("conversation-success-boundary");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, "success-boundary", "库存", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -350,7 +366,7 @@ class AgentStoreConversationContractTest {
     @Test
     void completePartialPersistsVisiblePartialAndKeepsItOutOfMemory() throws Exception {
         JdbcTemplate jdbc = database("conversation-partial-boundary");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, "partial-boundary", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -373,7 +389,7 @@ class AgentStoreConversationContractTest {
     @Test
     void knowledgeCardIsCommittedWithAssistantHistoryAndReadBackOnlyForThatMessage() throws Exception {
         JdbcTemplate jdbc = database("conversation-knowledge-card");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, "knowledge-card-run", "制度问题", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -394,7 +410,7 @@ class AgentStoreConversationContractTest {
     @Test
     void latestKnowledgeReferencesRequireCompleteAnsweredFreshAndStrictCards() throws Exception {
         JdbcTemplate jdbc = database("conversation-knowledge-reference-valid");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, "knowledge-reference-valid", "制度追问", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -420,7 +436,7 @@ class AgentStoreConversationContractTest {
     @Test
     void trustedKnowledgeReferenceRequiresCurrentConversationOwnerScopeAndFreshTask() throws Exception {
         JdbcTemplate jdbc = database("conversation-knowledge-task-reference");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun candidateRun = store.startRun(conversationId, "knowledge-task-candidate", "完整资料", 7L, "scope-7");
         AgentStore.TaskRow ready = store.recordTaskCandidates(candidateRun.taskId(), candidateRun.taskRevision(), "scope-7",
@@ -452,7 +468,7 @@ class AgentStoreConversationContractTest {
     @Test
     void retryPlanIsConsumedOnceAndChildLinksDirectParent() throws Exception {
         JdbcTemplate jdbc = database("conversation-retry-plan");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun source = store.startRun(conversationId, "retry-source", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -491,8 +507,8 @@ class AgentStoreConversationContractTest {
 
     @Test
     void knowledgeRetryPlanPreservesOperationAndRejectsLegacyOrForgedArguments() {
-        AgentStore store = new AgentStore(mock(JdbcTemplate.class));
-        String valid = "{\"kind\":\"WAREHOUSE_RETRY_PLAN\",\"version\":1,"
+        AgentStore store = new AgentStore(mock(JdbcTemplate.class), TestAgentAdapterFixtures.warehouseRegistry());
+        String valid = "{\"kind\":\"AGENT_RETRY_PLAN\",\"version\":1,"
                 + "\"sourceRunId\":\"run-1\",\"taskIntent\":\"KNOWLEDGE\",\"successfulCount\":0,"
                 + "\"subtasks\":[{\"order\":1,\"toolName\":\"knowledge_search\","
                 + "\"arguments\":\"{\\\"operation\\\":\\\"LIST_ACTIVE\\\",\\\"queryText\\\":\\\"系统收录了哪些资料\\\"}\","
@@ -503,12 +519,16 @@ class AgentStoreConversationContractTest {
 
         String legacy = valid.replace("\\\"operation\\\":\\\"LIST_ACTIVE\\\",", "");
         assertNull(store.parseRetryPlan(legacy, "run-1"));
+
+        String unknownKind = valid.replace("AGENT_RETRY_PLAN", "UNKNOWN_RETRY_PLAN");
+        assertNull(store.parseRetryPlan(unknownKind, "run-1"),
+                "未知前缀的 retry kind 不能通过受控 envelope 校验");
     }
 
     @Test
     void concurrentRetryPlanConsumersHaveOneAtomicWinner() throws Exception {
         JdbcTemplate jdbc = database("conversation-retry-concurrent");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun source = store.startRun(conversationId, "retry-concurrent-source", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -539,7 +559,7 @@ class AgentStoreConversationContractTest {
     @Test
     void retryPlanOverBudgetIsNeitherPersistedNorAdvertised() throws Exception {
         JdbcTemplate jdbc = database("conversation-retry-plan-budget");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun source = store.startRun(conversationId, "retry-budget-source", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -563,7 +583,7 @@ class AgentStoreConversationContractTest {
     @Test
     void ordinaryTextRunInvalidatesExistingRetryPlanBeforeExecution() throws Exception {
         JdbcTemplate jdbc = database("conversation-retry-plan-invalidated");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun source = store.startRun(conversationId, "retry-invalidation-source", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -603,7 +623,7 @@ class AgentStoreConversationContractTest {
 
     private void assertNoLatestReferenceForCompleteCard(String databaseName, String outcome, String mode) throws Exception {
         JdbcTemplate jdbc = database(databaseName);
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -616,7 +636,7 @@ class AgentStoreConversationContractTest {
 
     private void assertNoLatestReferenceForPartialCard(String databaseName) throws Exception {
         JdbcTemplate jdbc = database(databaseName);
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -629,7 +649,7 @@ class AgentStoreConversationContractTest {
 
     private void assertNoLatestReferenceForFailedCard(String databaseName) throws Exception {
         JdbcTemplate jdbc = database(databaseName);
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -642,7 +662,7 @@ class AgentStoreConversationContractTest {
 
     private void assertNoLatestReferenceForThreeDocuments(String databaseName) throws Exception {
         JdbcTemplate jdbc = database(databaseName);
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, databaseName, "制度", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -680,7 +700,7 @@ class AgentStoreConversationContractTest {
     @Test
     void successfulMultiToolBoundaryCompletesTaskOnceAfterAllCards() throws Exception {
         JdbcTemplate jdbc = database("conversation-multi-tool-boundary");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, "multi-tool-boundary", "库存和变化", 7L, "scope-7");
         AiObservationRecorder observations = mock(AiObservationRecorder.class);
@@ -702,7 +722,7 @@ class AgentStoreConversationContractTest {
     @Test
     void successfulRunWithClarificationCardLeavesTaskReady() throws Exception {
         JdbcTemplate jdbc = database("conversation-clarification-boundary");
-        AgentStore store = new AgentStore(jdbc);
+        AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());
         String conversationId = store.createConversation(7L).conversationId();
         AgentStore.StartRun run = store.startRun(conversationId, "clarification-boundary", "轴承", 7L, "scope-7");
         store.recordTaskCandidates(run.taskId(), run.taskRevision(), "scope-7",
@@ -751,7 +771,7 @@ class AgentStoreConversationContractTest {
     }
 
     private AgentStore store(String name) throws Exception {
-        return new AgentStore(database(name));
+        return new AgentStore(database(name), TestAgentAdapterFixtures.warehouseRegistry());
     }
 
     private JdbcTemplate database(String name) throws Exception {

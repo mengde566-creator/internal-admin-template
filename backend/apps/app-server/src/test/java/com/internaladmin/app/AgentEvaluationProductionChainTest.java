@@ -3,6 +3,7 @@ package com.internaladmin.app;
 import com.internaladmin.module.agent.api.AgentRunContext;
 import com.internaladmin.module.agent.api.AgentToolProvider;
 import com.internaladmin.module.agent.api.AgentErrorCode;
+import com.internaladmin.module.agent.api.AgentAdapterRegistry;
 import com.internaladmin.module.agent.knowledge.KnowledgeToolProvider;
 import com.internaladmin.module.agent.service.AgentConversationService;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
@@ -196,7 +197,6 @@ class AgentEvaluationProductionChainTest {
 
         private ProductionChainExecutor(JdbcTemplate jdbc) {
             this.jdbc = jdbc;
-            this.store = new AgentStore(jdbc);
             this.observations = new JdbcAiObservationRecorder(jdbc);
             this.knowledge = new FixtureKnowledge();
             this.warehouseProvider = new WarehouseInventoryToolProvider(warehouse, iam,
@@ -204,8 +204,10 @@ class AgentEvaluationProductionChainTest {
             this.knowledgeProvider = new KnowledgeToolProvider(knowledge, observations);
             this.client = controlledChatClient();
             List<AgentToolProvider> providers = List.of(warehouseProvider, knowledgeProvider);
+            AgentAdapterRegistry adapterRegistry = new AgentAdapterRegistry(List.of(warehouseProvider));
+            this.store = new AgentStore(jdbc, adapterRegistry);
             this.service = new AgentConversationService(store, client, observations,
-                    new AiProperties(), providers);
+                    new AiProperties(), providers, adapterRegistry, null);
         }
 
         @Override
@@ -457,6 +459,8 @@ class AgentEvaluationProductionChainTest {
             when(request.system(any(String.class))).thenReturn(request);
             when(request.user(any(String.class))).thenReturn(request);
             when(request.messages(any(List.class))).thenReturn(request);
+            when(request.options(any())).thenReturn(request);
+            when(request.toolCallbacks(any(List.class))).thenReturn(request);
             when(request.toolContext(any(Map.class))).thenAnswer(invocation -> {
                 @SuppressWarnings("unchecked") Map<String, Object> context = invocation.getArgument(0, Map.class);
                 currentExecution.set((AgentExecutionContext) context.get("agent.execution"));
@@ -495,7 +499,7 @@ class AgentEvaluationProductionChainTest {
             assertTrue(store.complete(selected.runId()));
             AgentStore.StartRun correction = store.startRun(conversationId, "correction-query-" + UUID.randomUUID(),
                     "不是这个，是蓝色标签密封圈", USER_ID, SCOPE);
-            assertTrue(correction.trustedItemReference() != null, "修正必须携带同会话受信旧物品");
+            assertTrue(correction.trustedReference() != null, "修正必须携带同会话受信旧物品");
 
             AiObservationRecorder.RunHandle observationRun = observations.beginRun(
                     new AiObservationRecorder.RunMetadata(correction.runId(), correction.taskId(), correction.conversationId(),
@@ -504,7 +508,7 @@ class AgentEvaluationProductionChainTest {
             assertTrue(observationRun != null);
             AgentExecutionContext execution = new AgentExecutionContext(FIXTURE_ACTOR, correction.runId(),
                     correction.effectiveUserMessage(), ignored -> { });
-            execution.setTrustedItemReferences(List.of(correction.trustedItemReference()));
+            execution.setTrustedReferences(List.of(correction.trustedReference()));
             ToolCallback stock = callback(warehouseProvider, WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL);
             String result = stock.call("{\"itemMentions\":[\"蓝色标签密封圈\"],\"excludedItemMentions\":[\"这个\"],"
                     + "\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",

@@ -6,6 +6,7 @@ import com.internaladmin.module.agent.api.AgentToolException;
 import com.internaladmin.module.agent.knowledge.KnowledgeToolProvider;
 import com.internaladmin.module.agent.config.MixedToolCallingManager;
 import com.internaladmin.module.agent.service.AgentConversationService;
+import com.internaladmin.module.agent.api.AgentAdapterRegistry;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
 import com.internaladmin.module.agent.store.AgentStore;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
@@ -649,13 +650,13 @@ class WarehouseInventoryToolProviderTest {
                         List.of(), java.time.Instant.now(), false));
         AtomicReference<String> card = new AtomicReference<>();
         AgentExecutionContext execution = context(card);
-        execution.setTrustedItemReferences(List.of(new AgentExecutionContext.TrustedItemReference(
+        execution.setTrustedReferences(List.of(new AgentExecutionContext.TrustedReference(
                 "task-previous", 4L, actorScopeFingerprint(), java.time.Instant.now().plusSeconds(3600),
                 "OLD-SEAL", "旧密封圈", "件")));
         execution = new AgentExecutionContext(execution.actor(), execution.runId(),
                 "不是刚才那个，是蓝色标签密封圈", execution.toolCardEmitter(), execution.toolOutputProduced(),
                 execution.eventSequence(), execution.messageId(), "task-current", 5L,
-                execution.outcomes(), execution.clarificationProduced(), execution.trustedItemsRef());
+                execution.outcomes(), execution.clarificationProduced(), execution.trustedReferencesRef());
 
         String output = provider(warehouse, iam).getToolCallbacks()[0].call(
                 "{\"itemMentions\":[\"蓝色标签密封圈\"],\"excludedItemMentions\":[\"刚才那个\"],\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20}",
@@ -781,8 +782,6 @@ class WarehouseInventoryToolProviderTest {
     @Test
     void multiMentionSelectionRunsOnlySelectedItemAndKeepsRemainingTaskReady() throws Exception {
         JdbcTemplate jdbc = database("production-multi-mention-chain");
-        AgentStore store = new AgentStore(jdbc);
-        String conversationId = store.createConversation(7L).conversationId();
         String scopeFingerprint = actorScopeFingerprint();
 
         WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
@@ -803,6 +802,9 @@ class WarehouseInventoryToolProviderTest {
 
         AiObservationRecorder observations = new JdbcAiObservationRecorder(jdbc);
         WarehouseInventoryToolProvider provider = provider(warehouse, iam, observations);
+        AgentAdapterRegistry adapters = new AgentAdapterRegistry(List.of(provider));
+        AgentStore store = new AgentStore(jdbc, adapters);
+        String conversationId = store.createConversation(7L).conversationId();
         ChatClient client = mock(ChatClient.class);
         ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
         ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
@@ -810,10 +812,11 @@ class WarehouseInventoryToolProviderTest {
         when(request.system(any(String.class))).thenReturn(request);
         when(request.user(any(String.class))).thenReturn(request);
         when(request.messages(any(List.class))).thenReturn(request);
+        when(request.toolCallbacks(any(List.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
         AgentConversationService service = new AgentConversationService(store, client, observations,
-                new AiProperties(), List.of(provider));
+                new AiProperties(), List.of(provider), adapters, null);
 
         AtomicReference<AgentExecutionContext> currentExecution = new AtomicReference<>();
         AtomicInteger invocation = new AtomicInteger();
@@ -892,8 +895,6 @@ class WarehouseInventoryToolProviderTest {
     @Test
     void unresolvedMentionSelectionUsesSecondLevelCandidatesAndRetainsRemainingMention() throws Exception {
         JdbcTemplate jdbc = database("production-multi-mention-unresolved-chain");
-        AgentStore store = new AgentStore(jdbc);
-        String conversationId = store.createConversation(7L).conversationId();
         String scopeFingerprint = actorScopeFingerprint();
 
         WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
@@ -917,6 +918,9 @@ class WarehouseInventoryToolProviderTest {
 
         AiObservationRecorder observations = new JdbcAiObservationRecorder(jdbc);
         WarehouseInventoryToolProvider provider = provider(warehouse, iam, observations);
+        AgentAdapterRegistry adapters = new AgentAdapterRegistry(List.of(provider));
+        AgentStore store = new AgentStore(jdbc, adapters);
+        String conversationId = store.createConversation(7L).conversationId();
         ChatClient client = mock(ChatClient.class);
         ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
         ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
@@ -924,10 +928,11 @@ class WarehouseInventoryToolProviderTest {
         when(request.system(any(String.class))).thenReturn(request);
         when(request.user(any(String.class))).thenReturn(request);
         when(request.messages(any(List.class))).thenReturn(request);
+        when(request.toolCallbacks(any(List.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
         AgentConversationService service = new AgentConversationService(store, client, observations,
-                new AiProperties(), List.of(provider));
+                new AiProperties(), List.of(provider), adapters, null);
 
         AtomicReference<AgentExecutionContext> currentExecution = new AtomicReference<>();
         AtomicInteger invocation = new AtomicInteger();
@@ -1044,10 +1049,12 @@ class WarehouseInventoryToolProviderTest {
         when(client.prompt()).thenReturn(request);
         when(request.system(any(String.class))).thenReturn(request);
         when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolCallbacks(any(List.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
 
-        AgentConversationService service = new AgentConversationService(store, client, observations, new AiProperties());
+        AgentConversationService service = new AgentConversationService(store, client, observations,
+                new AiProperties(), List.of(provider), new AgentAdapterRegistry(List.of(provider)), null);
         List<String> cards = new ArrayList<>();
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
         AtomicLong eventSequence = new AtomicLong();
@@ -1123,10 +1130,12 @@ class WarehouseInventoryToolProviderTest {
         when(client.prompt()).thenReturn(request);
         when(request.system(any(String.class))).thenReturn(request);
         when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolCallbacks(any(List.class))).thenReturn(request);
         when(request.toolContext(any(Map.class))).thenReturn(request);
         when(request.stream()).thenReturn(stream);
         AgentConversationService service = new AgentConversationService(store, client, observations,
-                new AiProperties(), List.of(warehouseProvider, knowledgeProvider));
+                new AiProperties(), List.of(warehouseProvider, knowledgeProvider),
+                new AgentAdapterRegistry(List.of(warehouseProvider)), null);
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
         AtomicLong eventSequence = new AtomicLong();
         AtomicBoolean clarificationProduced = new AtomicBoolean();
@@ -1232,7 +1241,7 @@ class WarehouseInventoryToolProviderTest {
                         new WarehouseStockCandidate("ITEM-B", "轴承B", "件")), java.time.Instant.now(), false));
         ChatClient client = mock(ChatClient.class);
         AgentConversationService service = new AgentConversationService(store, client, observations,
-                new AiProperties(), List.of(provider));
+                new AiProperties(), List.of(provider), new AgentAdapterRegistry(List.of(provider)), null);
         List<String> cards = new ArrayList<>();
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
         AtomicLong eventSequence = new AtomicLong();

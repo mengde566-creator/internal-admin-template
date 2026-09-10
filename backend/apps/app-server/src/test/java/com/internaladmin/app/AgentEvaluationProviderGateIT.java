@@ -161,7 +161,7 @@ class AgentEvaluationProviderGateIT {
                 return rejectedCase(testCase, rejected);
             }
             if ("repair-02".equals(testCase.caseId())) {
-                trustedCorrection = run.trustedItemReference() != null;
+                trustedCorrection = run.trustedReference() != null;
             }
             List<AgentConversationService.StreamEvent> events = new ArrayList<>();
             Set<String> cardKeys = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -274,7 +274,7 @@ class AgentEvaluationProviderGateIT {
         assertThat(store.complete(seed.runId())).isTrue();
         AgentStore.StartRun selected = service.start(conversationId, "correction-selection-" + UUID.randomUUID(), null,
                 actor, ready.taskId(), "trusted-old");
-        assertThat(selected.trustedItemReference()).isNull();
+        assertThat(selected.trustedReference()).isNull();
         assertThat(store.complete(selected.runId())).isTrue();
         assertThat(store.task(selected.taskId()).status()).isEqualTo(AgentStore.TASK_COLLECTING);
     }

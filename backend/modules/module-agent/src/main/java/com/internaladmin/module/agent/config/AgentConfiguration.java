@@ -1,5 +1,7 @@
 package com.internaladmin.module.agent.config;
 
+import com.internaladmin.module.agent.api.AgentAdapter;
+import com.internaladmin.module.agent.api.AgentAdapterRegistry;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -7,6 +9,7 @@ import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.DependsOn;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
 import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.deepseek.api.DeepSeekApi;
@@ -18,6 +21,19 @@ import org.springframework.core.retry.RetryTemplate;
 @Configuration
 @EnableConfigurationProperties(AiProperties.class)
 public class AgentConfiguration {
+
+    /**
+     * Assemble the compile-time business adapter registry.  An empty registry
+     * is valid so the generic Agent can be assembled without a business
+     * adapter after a deliberate module cut.
+     *
+     * @param adapters statically compiled adapter components
+     * @return validated deterministic registry
+     */
+    @Bean
+    public AgentAdapterRegistry agentAdapterRegistry(ObjectProvider<AgentAdapter> adapters) {
+        return new AgentAdapterRegistry(adapters.orderedStream().toList());
+    }
 
     /**
      * Validate enabled mode before provider and knowledge startup work.

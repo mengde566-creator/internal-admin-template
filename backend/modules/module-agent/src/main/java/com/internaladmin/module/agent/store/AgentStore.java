@@ -6,6 +6,8 @@ import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.ai.observability.api.FeedbackEligibilityApi;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
+import com.internaladmin.module.agent.api.AgentAdapterRegistry;
+import com.internaladmin.module.agent.api.AgentTaskPolicy;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -42,16 +44,13 @@ public class AgentStore implements FeedbackEligibilityApi {
     public static final String TASK_CANCELLED = "CANCELLED";
     public static final String TASK_REPLACED = "REPLACED";
     public static final String TASK_EXPIRED = "EXPIRED";
-    public static final String RETRY_PLAN_KIND = "WAREHOUSE_RETRY_PLAN";
+    public static final String RETRY_PLAN_KIND = "AGENT_RETRY_PLAN";
     public static final int RETRY_PLAN_VERSION = 1;
     private static final int MAX_RETRY_PLAN_CHARS = 20_000;
     public static final int MAX_KNOWLEDGE_CARD_CHARS = 20_000;
     private static final java.util.Set<String> RETRYABLE_CODES = java.util.Set.of(
             "AI_TOOL_TIMEOUT", "AI_TOOL_DATABASE_UNAVAILABLE", "AI_TOOL_EXECUTION_FAILED",
             "AI_KNOWLEDGE_UNAVAILABLE");
-    private static final java.util.Set<String> RETRYABLE_TOOLS = java.util.Set.of(
-            "warehouse_current_stock", "warehouse_item_locations", "warehouse_location_contents",
-            "warehouse_recent_movements", "knowledge_search");
 
     /** Narrow failure classification for the History/Observation/terminal success boundary. */
     public enum SuccessBoundaryFailure {
@@ -78,10 +77,19 @@ public class AgentStore implements FeedbackEligibilityApi {
     }
 
     private final JdbcTemplate jdbc;
+    private final AgentAdapterRegistry adapters;
     private static final tools.jackson.databind.ObjectMapper JSON = JsonMapper.builder().build();
 
     public AgentStore(@Qualifier("jdbcTemplate") JdbcTemplate jdbc) {
+        this(jdbc, AgentAdapterRegistry.empty());
+    }
+
+    /** Spring entry point; Task semantics are supplied by compiled business adapters. */
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentStore(@Qualifier("jdbcTemplate") JdbcTemplate jdbc,
+                      AgentAdapterRegistry adapters) {
         this.jdbc = jdbc;
+        this.adapters = adapters == null ? AgentAdapterRegistry.empty() : adapters;
     }
 
     /**
@@ -191,7 +199,7 @@ public class AgentStore implements FeedbackEligibilityApi {
                 effectiveScopeFingerprint, segment);
         jdbc.update("UPDATE ai_conversation SET updated_at = ? WHERE id = ?", now, conversationId);
         return new StartRun(conversationId, runId, true, RUNNING, assistantMessageId, segment,
-                task.taskId(), task.revision(), effectiveUserMessage, null, taskResolution.trustedItemReference());
+                task.taskId(), task.revision(), effectiveUserMessage, null, taskResolution.trustedReference());
     }
 
     /** Atomically consumes a server-created retry plan and creates its child Run. */
@@ -580,82 +588,32 @@ public class AgentStore implements FeedbackEligibilityApi {
                                          String scopeFingerprint, String taskIntent) {
         String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
         TaskRow current = task(taskId);
-        List<String> pending = pendingMentions(current.confirmedConditions());
-        if (!pending.isEmpty()) {
-            List<Map<String, Object>> pendingOptions = pendingOptions(current.confirmedConditions());
-            // pendingOptions also carries the current mention's second-level
-            // candidates so a later token selection can be validated against the
-            // same Task.  Only options for still-pending mentions belong in the
-            // newly emitted continuation card.
-            List<Map<String, Object>> visiblePendingOptions = pendingOptions.stream()
-                    .filter(option -> pending.contains(String.valueOf(option.get("mention"))))
-                    .toList();
-            int updated = jdbc.update("UPDATE ai_task SET status = ?, intent = ?, revision = revision + 1, "
+        AgentTaskPolicy.Continuation continuation = adapters.taskPolicyFor(current.intent())
+                .flatMap(policy -> policy.continuation(current.intent(), current.confirmedConditions()))
+                .orElse(null);
+        if (continuation != null) {
+            String effectiveIntent = taskIntent == null ? continuation.intent() : taskIntent;
+            String adapterId = adapters.adapterIdForIntent(effectiveIntent).orElse("");
+            int updated = jdbc.update("UPDATE ai_task SET status = ?, adapter = ?, intent = ?, revision = revision + 1, "
                             + "missing_fields = NULL, candidates = ?, updated_at = ? "
                             + "WHERE task_id = ? AND revision = ? AND status = ? AND scope_fingerprint = ?",
-                    TASK_READY, taskIntent == null ? current.intent() : taskIntent,
-                    visiblePendingOptions.isEmpty() ? pendingCandidateJsonFromMentions(pending) : pendingCandidateJson(visiblePendingOptions),
+                    continuation.status(), adapterId, effectiveIntent,
+                    continuation.candidatesJson(),
                     Timestamp.from(Instant.now()), taskId, taskRevision,
                     TASK_COLLECTING, effectiveScope);
             if (updated != 1) throw new IllegalStateException("任务候选恢复CAS失败");
             return;
         }
-        int updated = jdbc.update("UPDATE ai_task SET status = ?, intent = ?, revision = revision + 1, "
+        String effectiveIntent = taskIntent == null ? "MULTI_TOOL" : taskIntent;
+        String adapterId = adapters.adapterIdForIntent(effectiveIntent).orElse("");
+        int updated = jdbc.update("UPDATE ai_task SET status = ?, adapter = ?, intent = ?, revision = revision + 1, "
                         + "missing_fields = NULL, candidates = NULL, updated_at = ? "
                         + "WHERE task_id = ? AND revision = ? AND status = ? AND scope_fingerprint = ?",
-                    TASK_COMPLETED, taskIntent == null ? "MULTI_TOOL" : taskIntent,
+                    TASK_COMPLETED, adapterId, effectiveIntent,
                     Timestamp.from(Instant.now()), taskId, taskRevision, TASK_COLLECTING, effectiveScope);
         if (updated != 1) {
             throw new IllegalStateException("任务完成CAS失败");
         }
-    }
-
-    private List<String> pendingMentions(String conditions) {
-        if (conditions == null || conditions.isBlank()) return List.of();
-        try {
-            JsonNode root = JSON.readTree(conditions);
-            JsonNode pending = root == null ? null : root.get("pendingMentions");
-            if (pending == null || !pending.isArray() || pending.size() == 0 || pending.size() > 5) return List.of();
-            List<String> result = new ArrayList<>();
-            for (JsonNode value : pending) {
-                if (value == null || !value.isTextual() || value.asText().isBlank() || value.asText().length() > 256) return List.of();
-                result.add(value.asText());
-            }
-            return List.copyOf(result);
-        }
-        catch (RuntimeException ignored) { return List.of(); }
-    }
-
-    private String pendingCandidateJsonFromMentions(List<String> pending) {
-        List<Map<String, Object>> options = new ArrayList<>();
-        for (String mention : pending) {
-            Map<String, Object> option = new LinkedHashMap<>();
-            option.put("code", mention);
-            option.put("name", mention);
-            option.put("baseUnit", "");
-            option.put("mention", mention);
-            option.put("resolved", false);
-            options.add(option);
-        }
-        return pendingCandidateJson(options);
-    }
-
-    private String pendingCandidateJson(List<Map<String, Object>> pendingOptions) {
-        try {
-            List<Map<String, Object>> options = new ArrayList<>();
-            for (Map<String, Object> source : pendingOptions) {
-                Map<String, Object> option = new LinkedHashMap<>();
-                option.put("optionToken", UUID.randomUUID().toString());
-                option.put("code", source.getOrDefault("code", source.get("mention")));
-                option.put("name", source.getOrDefault("name", source.get("mention")));
-                option.put("baseUnit", source.getOrDefault("baseUnit", ""));
-                option.put("mention", source.get("mention"));
-                option.put("resolved", Boolean.TRUE.equals(source.get("resolved")));
-                options.add(option);
-            }
-            return JSON.writeValueAsString(options);
-        }
-        catch (Exception exception) { throw new IllegalStateException("候选生成失败", exception); }
     }
 
     /** Saves a validated all-tool failure as a visible failed assistant result without entering Memory. */
@@ -771,7 +729,7 @@ public class AgentStore implements FeedbackEligibilityApi {
                 String toolName = node.path("toolName").asText(null);
                 String arguments = node.path("arguments").asText(null);
                 String errorCode = node.path("errorCode").asText(null);
-                if (!RETRYABLE_TOOLS.contains(toolName) || !RETRYABLE_CODES.contains(errorCode)
+                if (toolName == null || toolName.isBlank() || !RETRYABLE_CODES.contains(errorCode)
                         || arguments == null || arguments.length() > 8_000) return null;
                 JsonNode argumentObject = JSON.readTree(arguments);
                 if (argumentObject == null || !argumentObject.isObject()) return null;
@@ -796,31 +754,6 @@ public class AgentStore implements FeedbackEligibilityApi {
         catch (RuntimeException ignored) {
             return null;
         }
-    }
-
-    private List<Map<String, Object>> pendingOptions(String conditions) {
-        if (conditions == null || conditions.isBlank()) return List.of();
-        try {
-            JsonNode root = JSON.readTree(conditions);
-            JsonNode pending = root == null ? null : root.get("pendingOptions");
-            if (pending == null || !pending.isArray() || pending.size() == 0 || pending.size() > 5) return List.of();
-            List<Map<String, Object>> result = new ArrayList<>();
-            for (JsonNode option : pending) {
-                if (option == null || !option.isObject()
-                        || !option.path("mention").isTextual() || option.path("mention").asText().isBlank()
-                        || option.path("mention").asText().length() > 256
-                        || !option.path("resolved").isBoolean()) return List.of();
-                Map<String, Object> value = new LinkedHashMap<>();
-                value.put("mention", option.path("mention").asText());
-                value.put("resolved", option.path("resolved").asBoolean());
-                value.put("code", option.path("code").asText(option.path("mention").asText()));
-                value.put("name", option.path("name").asText(option.path("mention").asText()));
-                value.put("baseUnit", option.path("baseUnit").asText(""));
-                result.add(value);
-            }
-            return List.copyOf(result);
-        }
-        catch (RuntimeException ignored) { return List.of(); }
     }
 
     private String retryPlanJson(RetryPlan plan) {
@@ -868,12 +801,13 @@ public class AgentStore implements FeedbackEligibilityApi {
                                         Instant expiresAt, String confirmedConditions,
                                         String missingFields, String candidates, String intent) {
         String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
-        int updated = jdbc.update("UPDATE ai_task SET revision = revision + 1, status = ?, "
+        String adapterId = adapters.adapterIdForIntent(intent).orElse("");
+        int updated = jdbc.update("UPDATE ai_task SET revision = revision + 1, status = ?, adapter = ?, "
                         + "scope_fingerprint = ?, expires_at = ?, intent = ?, confirmed_conditions = ?, "
                         + "missing_fields = ?, candidates = ?, updated_at = ? "
                         + "WHERE task_id = ? AND revision = ? AND status IN (?, ?) "
                         + "AND scope_fingerprint = ? AND expires_at > ?",
-                TASK_READY, effectiveScope, Timestamp.from(expiresAt), intent, confirmedConditions,
+                TASK_READY, adapterId, effectiveScope, Timestamp.from(expiresAt), intent, confirmedConditions,
                 missingFields, candidates, Timestamp.from(Instant.now()), taskId, revision,
                 TASK_COLLECTING, TASK_READY, effectiveScope, Timestamp.from(Instant.now()));
         if (updated != 1) {
@@ -909,12 +843,13 @@ public class AgentStore implements FeedbackEligibilityApi {
                 || !TASK_READY.equals(task.status()) || task.expiresAt().isBefore(Instant.now())) {
             throw new BusinessException(ErrorCode.CONFLICT, "候选已失效，请重新选择");
         }
-        TaskSelection selection = parseSelection(task, optionToken);
-        int updated = jdbc.update("UPDATE ai_task SET revision = revision + 1, status = ?, "
+        TaskSelection selection = selectWithAdapterPolicy(task, optionToken);
+        String adapterId = adapters.adapterIdForIntent(task.intent()).orElse("");
+        int updated = jdbc.update("UPDATE ai_task SET revision = revision + 1, status = ?, adapter = ?, "
                         + "confirmed_conditions = ?, missing_fields = ?, candidates = NULL, updated_at = ? "
                         + "WHERE task_id = ? AND revision = ? AND status = ? AND scope_fingerprint = ? "
                         + "AND expires_at > ?",
-                TASK_COLLECTING, selection.confirmedConditions(), task.missingFields(), Timestamp.from(Instant.now()),
+                TASK_COLLECTING, adapterId, selection.confirmedConditions(), task.missingFields(), Timestamp.from(Instant.now()),
                 taskId, revision, TASK_READY, effectiveScope, Timestamp.from(Instant.now()));
         if (updated != 1) {
             throw new BusinessException(ErrorCode.CONFLICT, "候选已被其他请求使用，请重新选择");
@@ -923,14 +858,26 @@ public class AgentStore implements FeedbackEligibilityApi {
         return new TaskSelection(selected, selection.confirmedConditions(), selection.effectiveUserMessage());
     }
 
+    private TaskSelection selectWithAdapterPolicy(TaskRow task, String optionToken) {
+        AgentTaskPolicy policy = adapters.taskPolicyFor(task.intent()).orElse(null);
+        if (policy == null) {
+            throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
+        }
+        AgentTaskPolicy.Selection selection = policy.select(task.intent(), task.candidates(),
+                        task.confirmedConditions(), optionToken)
+                .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "候选已失效，请重新选择"));
+        return new TaskSelection(task, selection.confirmedConditions(), selection.effectiveUserMessage());
+    }
+
     /** Complete a resolved task only after a trusted result card was built. */
     @Transactional
     public TaskRow completeTask(String taskId, long revision, String scopeFingerprint, String intent) {
         String effectiveScope = scopeFingerprint == null ? "" : scopeFingerprint;
-        int updated = jdbc.update("UPDATE ai_task SET status = ?, intent = ?, revision = revision + 1, "
+        String adapterId = adapters.adapterIdForIntent(intent).orElse("");
+        int updated = jdbc.update("UPDATE ai_task SET status = ?, adapter = ?, intent = ?, revision = revision + 1, "
                         + "missing_fields = NULL, candidates = NULL, updated_at = ? "
                         + "WHERE task_id = ? AND revision = ? AND status IN (?, ?) AND scope_fingerprint = ?",
-                TASK_COMPLETED, intent, Timestamp.from(Instant.now()), taskId, revision,
+                TASK_COMPLETED, adapterId, intent, Timestamp.from(Instant.now()), taskId, revision,
                 TASK_COLLECTING, TASK_READY, effectiveScope);
         if (updated != 1) {
             throw new BusinessException(ErrorCode.CONFLICT, "任务已被其他请求更新，请重新查询");
@@ -1167,7 +1114,7 @@ public class AgentStore implements FeedbackEligibilityApi {
                 throw new BusinessException(ErrorCode.CONFLICT, "候选序号无效，请重新选择");
             }
         }
-        AgentExecutionContext.TrustedItemReference previousItem = null;
+        AgentExecutionContext.TrustedReference previousReference = null;
         if (!active.isEmpty()) {
             TaskRow current = active.get(0);
             if (current.memorySegmentNo() == segment && scopeFingerprint.equals(current.scopeFingerprint())
@@ -1184,9 +1131,9 @@ public class AgentStore implements FeedbackEligibilityApi {
                     current = task(current.taskId());
                 }
                 return new TaskResolution(current, userMessage == null ? "" : userMessage,
-                        trustedItemReference(current));
+                        trustedReference(current));
             }
-            previousItem = trustedItemReference(current);
+            previousReference = trustedReference(current);
             boolean candidateWasSuperseded = TASK_READY.equals(current.status());
             jdbc.update("UPDATE ai_task SET status = ?, revision = revision + 1, updated_at = ? WHERE task_id = ? AND status IN (?, ?)",
                     candidateWasSuperseded ? TASK_REPLACED
@@ -1201,13 +1148,13 @@ public class AgentStore implements FeedbackEligibilityApi {
         jdbc.update("INSERT INTO ai_task(task_id, conversation_id, memory_segment_no, adapter, intent, status, revision, "
                         + "scope_fingerprint, expires_at, confirmed_conditions, missing_fields, candidates, created_at, updated_at) "
                         + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                taskId, conversationId, segment, "warehouse", "UNRESOLVED", TASK_COLLECTING, 1L,
+                taskId, conversationId, segment, "", "UNRESOLVED", TASK_COLLECTING, 1L,
                 scopeFingerprint == null ? "" : scopeFingerprint, expiry, "{}", "", null,
                 Timestamp.from(now), Timestamp.from(now));
         jdbc.update("UPDATE ai_conversation SET active_task_id = ? WHERE id = ? AND active_task_id IS NULL",
                 taskId, conversationId);
         return new TaskResolution(task(taskId), userMessage == null ? "" : userMessage,
-                previousItem);
+                previousReference);
     }
 
     private Integer controlledOrdinal(String value) {
@@ -1234,170 +1181,30 @@ public class AgentStore implements FeedbackEligibilityApi {
         return "一二三四五六七八九".indexOf(value) + 1;
     }
 
-    private AgentExecutionContext.TrustedItemReference trustedItemReference(TaskRow task) {
+    private AgentExecutionContext.TrustedReference trustedReference(TaskRow task) {
         if (task == null || task.confirmedConditions() == null || task.confirmedConditions().isBlank()
                 || task.scopeFingerprint() == null || task.expiresAt() == null || !task.expiresAt().isAfter(Instant.now())) return null;
-        try {
-            JsonNode root = JSON.readTree(task.confirmedConditions());
-            if (root == null || !"ITEM".equals(root.path("type").asText())
-                    || !root.path("code").isTextual() || !root.path("name").isTextual()) return null;
-            return new AgentExecutionContext.TrustedItemReference(task.taskId(), task.revision(),
-                    task.scopeFingerprint(), task.expiresAt(), root.path("code").asText(),
-                    root.path("name").asText(), root.path("baseUnit").asText(""));
-        }
-        catch (RuntimeException ignored) { return null; }
+        AgentTaskPolicy policy = adapters.taskPolicyFor(task.intent()).orElse(null);
+        if (policy == null) return null;
+        AgentTaskPolicy.Reference reference = policy.trustedReference(task.taskId(), task.revision(),
+                task.confirmedConditions(), task.scopeFingerprint(), task.expiresAt()).orElse(null);
+        return reference == null ? null : new AgentExecutionContext.TrustedReference(reference.taskId(),
+                reference.revision(), reference.scopeFingerprint(), reference.expiresAt(), reference.code(),
+                reference.name(), reference.unit());
     }
 
     private boolean isRetryPlanEnvelope(String value) {
         if (value == null || value.isBlank() || value.length() > MAX_RETRY_PLAN_CHARS) return false;
         try {
             JsonNode root = JSON.readTree(value);
+            String kind = root == null ? "" : root.path("kind").asText("");
             return root != null && root.isObject()
-                    && RETRY_PLAN_KIND.equals(root.path("kind").asText())
+                    && RETRY_PLAN_KIND.equals(kind)
                     && root.path("version").asInt() == RETRY_PLAN_VERSION;
         }
         catch (RuntimeException ignored) {
             return false;
         }
-    }
-
-    private TaskSelection parseSelection(TaskRow task, String optionToken) {
-        if (optionToken == null || optionToken.isBlank() || task.candidates() == null) {
-            throw new BusinessException(ErrorCode.CONFLICT, "候选已失效，请重新选择");
-        }
-        try {
-            JsonNode root = JSON.readTree(task.candidates());
-            if (root == null || !root.isArray() || root.size() == 0 || root.size() > 20) {
-                throw new BusinessException(ErrorCode.CONFLICT, "候选已失效，请重新选择");
-            }
-            for (JsonNode candidate : root) {
-                if (candidate == null || !candidate.isObject()) {
-                    throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
-                }
-                java.util.Set<String> names = new java.util.HashSet<>();
-                names.addAll(candidate.propertyNames());
-                if (!names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit"))
-                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "warehouseCode", "warehouseName"))
-                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "baseUnit", "mention", "resolved"))
-                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "versionCode"))
-                        && !names.equals(java.util.Set.of("optionToken", "code", "name", "versionCode", "versionUpdatedAt", "indexedAt"))) {
-                    throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
-                }
-                String token = text(candidate, "optionToken", 256);
-                String code = text(candidate, "code", 128);
-                String name = text(candidate, "name", 256);
-                String baseUnit = text(candidate, "baseUnit", 64);
-                if (optionToken.equals(token)) {
-                    java.util.Map<String, Object> confirmed = new java.util.LinkedHashMap<>();
-                    String warehouseCode = text(candidate, "warehouseCode", 128);
-                    String warehouseName = text(candidate, "warehouseName", 256);
-                    String intent = task.intent();
-                    String type = switch (intent) {
-                        case "CURRENT_STOCK", "ITEM_LOCATIONS", "RECENT_MOVEMENTS" -> "ITEM";
-                        case "LOCATION_CONTENTS" -> "LOCATION";
-                        case "KNOWLEDGE_DOCUMENT_READ" -> "DOCUMENT";
-                        default -> throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
-                    };
-                    boolean hasWarehouseFields = names.contains("warehouseCode") || names.contains("warehouseName");
-                    String mention = names.contains("mention") ? text(candidate, "mention", 256) : null;
-                    boolean resolved = !names.contains("resolved") || (candidate.get("resolved") != null && candidate.get("resolved").isBoolean()
-                            && candidate.get("resolved").asBoolean());
-                    if (names.contains("mention") && (!names.contains("resolved") || candidate.get("resolved") == null
-                            || !candidate.get("resolved").isBoolean())) {
-                        throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
-                    }
-                    if ("LOCATION".equals(type) && (!hasWarehouseFields || warehouseCode == null || warehouseName == null)) {
-                        throw new BusinessException(ErrorCode.CONFLICT, "候选与库位任务不匹配，请重新查询");
-                    }
-                    if ("ITEM".equals(type) && hasWarehouseFields) {
-                        throw new BusinessException(ErrorCode.CONFLICT, "候选与物品任务不匹配，请重新查询");
-                    }
-                    if ("DOCUMENT".equals(type) && hasWarehouseFields) {
-                        throw new BusinessException(ErrorCode.CONFLICT, "候选与知识任务不匹配，请重新查询");
-                    }
-                    confirmed.put("type", type);
-                    confirmed.put("intent", intent);
-                    if (mention != null) confirmed.put("mention", mention);
-                    if (resolved) {
-                        confirmed.put("code", code);
-                        confirmed.put("name", name);
-                        confirmed.put("baseUnit", baseUnit == null ? "" : baseUnit);
-                    }
-                    if ("DOCUMENT".equals(type)) {
-                        confirmed.put("documentCode", code);
-                        confirmed.put("title", name);
-                        confirmed.put("versionCode", text(candidate, "versionCode", 64));
-                        if (names.contains("versionUpdatedAt")) {
-                            confirmed.put("versionUpdatedAt", text(candidate, "versionUpdatedAt", 64));
-                            confirmed.put("indexedAt", text(candidate, "indexedAt", 64));
-                        }
-                    }
-                    if (warehouseCode != null) {
-                        confirmed.put("warehouseCode", warehouseCode);
-                        confirmed.put("warehouseName", warehouseName == null ? "" : warehouseName);
-                    }
-                    List<String> pendingMentions = new ArrayList<>();
-                    List<Map<String, Object>> remainingOptions = new ArrayList<>();
-                    if (task.confirmedConditions() != null && !task.confirmedConditions().isBlank()) {
-                        JsonNode existingConditions = JSON.readTree(task.confirmedConditions());
-                        List<Map<String, Object>> storedOptions = pendingOptions(task.confirmedConditions());
-                        if (!storedOptions.isEmpty()) {
-                            for (Map<String, Object> stored : storedOptions) {
-                                String storedMention = String.valueOf(stored.get("mention"));
-                                if (mention == null || !storedMention.equals(mention)) {
-                                    remainingOptions.add(stored);
-                                    pendingMentions.add(storedMention);
-                                }
-                            }
-                        } else {
-                            JsonNode pending = existingConditions == null ? null : existingConditions.get("pendingMentions");
-                            if (pending != null && pending.isArray()) {
-                                for (JsonNode pendingMention : pending) {
-                                    if (pendingMention != null && pendingMention.isTextual()
-                                            && (mention == null || !pendingMention.asText().equals(mention))) {
-                                        pendingMentions.add(pendingMention.asText());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (!pendingMentions.isEmpty()) {
-                        confirmed.put("pendingMentions", pendingMentions);
-                        if (!remainingOptions.isEmpty()) confirmed.put("pendingOptions", remainingOptions);
-                    }
-                    String conditions = JSON.writeValueAsString(confirmed);
-                    String effective = switch (intent) {
-                        case "CURRENT_STOCK" -> resolved ? "查询物品「" + name + "」（" + code + "）的当前库存" : "查询物品线索「" + mention + "」的当前库存";
-                        case "ITEM_LOCATIONS" -> resolved ? "查询物品「" + name + "」（" + code + "）所在的位置" : "查询物品线索「" + mention + "」所在的位置";
-                        case "RECENT_MOVEMENTS" -> resolved ? "查询物品「" + name + "」（" + code + "）的近期库存变化" : "查询物品线索「" + mention + "」的近期库存变化";
-                        case "LOCATION_CONTENTS" -> "查询仓库「" + warehouseName + "」的库位「" + name + "」有哪些库存";
-                        case "KNOWLEDGE_DOCUMENT_READ" -> "读取知识资料「" + name + "」（" + code + "）的全部内容";
-                        default -> throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
-                    };
-                    return new TaskSelection(task, conditions, effective);
-                }
-            }
-        }
-        catch (BusinessException exception) {
-            throw exception;
-        }
-        catch (Exception exception) {
-            throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
-        }
-        throw new BusinessException(ErrorCode.CONFLICT, "候选已失效，请重新选择");
-    }
-
-    private static String text(JsonNode object, String name, int maxLength) {
-        JsonNode value = object.get(name);
-        if (value == null || value.isNull()) {
-            if ("baseUnit".equals(name) || "warehouseCode".equals(name) || "warehouseName".equals(name)) return null;
-            throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
-        }
-        if (!value.isTextual() || (!"baseUnit".equals(name) && value.asText().isBlank())
-                || value.asText().length() > maxLength) {
-            throw new BusinessException(ErrorCode.CONFLICT, "候选格式无效，请重新查询");
-        }
-        return value.asText();
     }
 
     @Transactional
@@ -1569,7 +1376,7 @@ public class AgentStore implements FeedbackEligibilityApi {
                            String assistantMessageId, long memorySegmentNo,
                            String taskId, long taskRevision, String effectiveUserMessage,
                            RetryPlan retryPlan,
-                           AgentExecutionContext.TrustedItemReference trustedItemReference) {
+                           AgentExecutionContext.TrustedReference trustedReference) {
 
         public StartRun(String conversationId, String runId, boolean newRun, String status,
                         String assistantMessageId, long memorySegmentNo, String taskId, long taskRevision,
@@ -1656,7 +1463,7 @@ public class AgentStore implements FeedbackEligibilityApi {
     }
 
     private record TaskResolution(TaskRow task, String effectiveUserMessage,
-                                  AgentExecutionContext.TrustedItemReference trustedItemReference) {
+                                  AgentExecutionContext.TrustedReference trustedReference) {
     }
 
     public record TaskSelection(TaskRow task, String confirmedConditions, String effectiveUserMessage) {

@@ -19,7 +19,7 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                    String messageId, String taskId, long taskRevision,
                                    ToolOutcomeLedger outcomes,
                                    AtomicBoolean clarificationProduced,
-                                   AtomicReference<List<TrustedItemReference>> trustedItemsRef,
+                                   AtomicReference<List<TrustedReference>> trustedReferencesRef,
                                    AtomicReference<List<TrustedKnowledgeReference>> trustedKnowledgeRef,
                                    KnowledgeState knowledgeState) {
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
@@ -56,17 +56,17 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                  Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
                                  AtomicLong eventSequence, String messageId, String taskId, long taskRevision,
                                  ToolOutcomeLedger outcomes, AtomicBoolean clarificationProduced,
-                                 AtomicReference<List<TrustedItemReference>> trustedItemsRef) {
+                                 AtomicReference<List<TrustedReference>> trustedReferencesRef) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, outcomes, clarificationProduced, trustedItemsRef, new AtomicReference<>(List.of()), new KnowledgeState());
+                taskId, taskRevision, outcomes, clarificationProduced, trustedReferencesRef, new AtomicReference<>(List.of()), new KnowledgeState());
     }
 
-    public void setTrustedItemReferences(List<TrustedItemReference> references) {
-        trustedItemsRef.set(references == null ? List.of() : List.copyOf(references));
+    public void setTrustedReferences(List<TrustedReference> references) {
+        trustedReferencesRef.set(references == null ? List.of() : List.copyOf(references));
     }
 
-    public List<TrustedItemReference> trustedItemReferences() {
-        return trustedItemsRef.get();
+    public List<TrustedReference> trustedReferences() {
+        return trustedReferencesRef.get();
     }
 
     public void setTrustedKnowledgeReferences(List<TrustedKnowledgeReference> references) {
@@ -77,8 +77,8 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         return trustedKnowledgeRef.get();
     }
 
-    public record TrustedItemReference(String taskId, long revision, String scopeFingerprint,
-                                       Instant expiresAt, String code, String name, String baseUnit) { }
+    public record TrustedReference(String taskId, long revision, String scopeFingerprint,
+                                   Instant expiresAt, String code, String name, String unit) { }
 
     /** Server-owned citation/document identity used for bounded follow-up reads. */
     public record TrustedKnowledgeReference(String conversationId, String messageId, String scopeFingerprint,

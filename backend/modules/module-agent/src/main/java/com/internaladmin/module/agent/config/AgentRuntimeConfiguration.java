@@ -1,5 +1,7 @@
 package com.internaladmin.module.agent.config;
 
+import com.internaladmin.module.agent.api.AgentAdapter;
+import com.internaladmin.module.agent.api.AgentAdapterRegistry;
 import com.internaladmin.module.agent.api.AgentToolProvider;
 import com.internaladmin.module.agent.api.AgentErrorCode;
 import com.internaladmin.module.agent.api.AgentToolException;
@@ -20,6 +22,8 @@ import org.springframework.beans.factory.ObjectProvider;
 import io.micrometer.observation.ObservationRegistry;
 
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /** Gate B runtime wiring. Explicitly installs one ToolCallingAdvisor and no auto tool registry. */
 @Configuration
@@ -28,9 +32,23 @@ public class AgentRuntimeConfiguration {
 
     @Bean
     @ConditionalOnBean(AgentToolProvider.class)
-    public ToolCallback[] gateToolCallbacks(ObjectProvider<AgentToolProvider> providers) {
-        return providers.orderedStream().flatMap(provider -> Arrays.stream(provider.getToolCallbacks()))
-                .toArray(ToolCallback[]::new);
+    public ToolCallback[] gateToolCallbacks(AgentAdapterRegistry adapters,
+                                            ObjectProvider<AgentToolProvider> providers) {
+        Map<String, ToolCallback> callbacks = new LinkedHashMap<>();
+        adapters.callbacks().forEach(callback -> registerCallback(callbacks, callback));
+        providers.orderedStream()
+                .filter(provider -> !(provider instanceof AgentAdapter))
+                .flatMap(provider -> Arrays.stream(provider.getToolCallbacks()))
+                .forEach(callback -> registerCallback(callbacks, callback));
+        return callbacks.values().toArray(ToolCallback[]::new);
+    }
+
+    private static void registerCallback(Map<String, ToolCallback> callbacks, ToolCallback callback) {
+        if (callback == null || callback.getToolDefinition() == null
+                || callback.getToolDefinition().name() == null
+                || callbacks.putIfAbsent(callback.getToolDefinition().name(), callback) != null) {
+            throw new IllegalStateException("AI_ADAPTER_CONFLICT: Tool 名称重复或为空");
+        }
     }
 
     @Bean
@@ -44,7 +62,7 @@ public class AgentRuntimeConfiguration {
                     String code = toolErrorCode(error);
                     String message = AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode().equals(code)
                             ? AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getMessage()
-                            : "库存查询暂时未完成";
+                            : "工具执行暂时未完成";
                     return "{\"success\":false,\"code\":\"" + code
                             + "\",\"message\":\"" + message + "\",\"data\":null}";
                 })
