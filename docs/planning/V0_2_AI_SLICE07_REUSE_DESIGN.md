@@ -1,8 +1,8 @@
 # SLICE-07 通用 AI 边界、受信工具组合与学习路径设计
 
-> 状态：已确认，允许按 07A → 07B → 07C → 07D 顺序进入研发
-> 版本：0.2
-> 确认日期：2026-09-09
+> 状态：已确认；07A 已完成并提交，07B 已完成启动前复核
+> 版本：0.3
+> 确认日期：2026-09-10
 > 适用范围：`module-agent`、`module-knowledge`、`module-ai-observability`、业务 Agent Adapter、前端 AI 助手及 `docs/learning/`
 > 需求依据：`REQ-V02-AI-009`、`FUN-10`、`SCN-RU-01`
 > 方向输入：`requirements/CUSTOMER_ORDER_SYSTEM.md` 为草稿，只用于检验扩展方向，不授权实现客户或订单功能
@@ -25,11 +25,10 @@ SLICE-07 的目标不是建设独立 AI 平台、插件市场或通用工作流�
 
 ## 2. 当前事实与根因
 
-仓储 Adapter 已有独立 Maven 模块，仓储语义索引和四个仓储 Tool 也已部分归位，但当前仍是“目录分离，协议未分离”：
+07A 已在提交 `97e8326` 建立编译期 Adapter 注册并完成第一阶段边界收敛：能力发现与运行链使用同一可信 Actor，仓储 Task、候选、卡片、恢复和提示语义由仓储 Adapter 的 Policy/Provider 拥有，通用 Core 不再选择默认仓储 Adapter。当前剩余事实是：
 
-- `module-agent` 仍包含仓储权限、提示词、工具名、业务意图、候选字段、重试计划及默认 Adapter 等领域语义；
-- `AgentExecutionContext`、Task 和结果账本仍理解仓储专用引用或字段；
-- `AiCapabilitiesController` 仍按仓储能力硬编码可用性；
+- `module-agent` 已拥有通用 Adapter、Tool、Task Policy 注册与冲突失败入口，但 Artifact 的生产/消费声明仍停留在 Adapter 级，尚不能作为具体 Tool 的消费授权；
+- `AgentExecutionContext` 已是同一 Run 的服务端可信状态载体，现有 `DeepSeekToolCallingAdvisor` 与 `MixedToolCallingManager` 已使用 Spring AI 扩展点，但尚无 Run 内 Artifact 注册表；
 - `module-knowledge` 仍拥有仓储合成资料、目录排序、检索指令和仓储权限语义；
 - `module-ai-observability` 仍内置仓储评测资源；
 - `WarehouseAgentPanel.vue` 同时承担通用会话壳和仓储卡片、路由等业务资产；
@@ -131,13 +130,12 @@ Adapter 只能依赖对应业务模块公开 `api/`，不得访问业务 Mapper�
 - `adapterId`；
 - `isAvailable(actor)`；
 - 有长度上限且顺序确定的 `trustedInstructions`；
-- Tool 列表及其所有权；
-- `produces/consumes` 的版本化 Artifact 类型；
+- Tool 列表及其所有权；每个 Tool 分别声明自己的 `produces/consumes` 版本化 Artifact 类型；
 - Task Policy；
 - cardType 与 routeKey；
 - 可选的知识内容包和评测数据集。
 
-Adapter ID、Tool 名、Artifact 类型、cardType、routeKey、知识文档编码或评测数据集发生冲突时必须装配失败，不静默覆盖。首版只使用编译期静态注册，不接受脚本、远程地址、类名字符串、任意 Map 执行协议或运行时上传。
+Adapter ID、Tool 名、Artifact 生产者、cardType、routeKey、知识文档编码或评测数据集发生冲突时必须装配失败，不静默覆盖。一个 `artifactType@version` 只允许一个明确的生产 Tool，但可以被多个明确登记的消费 Tool 使用；重复的同一 Tool 声明仍是冲突。Adapter 级 `produces/consumes` 只能作为汇总展示，不能代替具体 Tool 的授权。首版只使用编译期静态注册，不接受脚本、远程地址、类名字符串、任意 Map 执行协议或运行时上传。
 
 ### 5.2 Tool 结果顶层契约
 
@@ -178,14 +176,17 @@ privatePayload
 
 1. `artifactId` 由服务端随机生成，只在当前 Run 的内部 Tool Calling Loop 中作为不透明引用供模型传递；模型不能解析、构造、续期或改变其归属。
 2. `privatePayload` 只存在于服务端内存注册表，不发送给模型、浏览器、SSE、History、Memory或Observability。
-3. Core 在消费前校验同一 Run、生产者、类型与版本、scope 指纹、有效期和消费者的 `consumes` 声明；任一失败均稳定拒绝。
-4. Adapter 解码私有载荷后仍必须调用业务 Service 重新鉴权；Artifact 不是权限凭据。
-5. Artifact 不跨 Run 复用，不落新表；Run 结束、取消、失败或超时后立即失效并从注册表移除。
-6. `safeSummary` 和 `safeProjection` 只包含下一次模型决策或用户结果真正需要的有限字段，必须由生产者 Adapter 定义并受长度与字段白名单约束。
+3. Core 在消费前校验同一 Run、生产 Tool、类型与版本、有效期，以及**当前消费 Tool**的显式 `consumes` 声明；不能只校验其所属 Adapter。
+4. 消费 Tool 必须使用服务端 `userId` 重新解析当前 Actor，Core 用新的 `scopeFingerprint` 与 Artifact 比较；Run 启动快照只决定初始 Tool 白名单，不能充当整轮持续权限凭据。随后业务 Service 仍须再次鉴权，Artifact 不是权限凭据。
+5. `privatePayload` 由 Core 作为不透明对象保管，Core 不序列化、不解释业务字段。生产与消费 Tool 共享的 Java 类型只能放在提供方公开 `api/` 或明确的组合 Adapter 中；测试链使用测试源码内的不可变类型，禁止用任意 `Map<String,Object>` 模拟生产契约，也禁止让一个 Adapter 依赖另一个业务模块的内部实现。
+6. Artifact 不跨 Run 复用，不落新表；注册表随 `AgentExecutionContext` 建立，并由 Spring AI Tool Calling Loop 的 finalize 钩子及现有 Run 终态 `finally` 做幂等关闭。Run 结束、取消、失败或超时后，注册表先标记关闭、拒绝新消费，再清除全部私有载荷。
+7. `safeSummary` 和 `safeProjection` 只包含下一次模型决策或用户结果真正需要的有限字段，必须由生产者 Tool 定义字段白名单并受现有 Tool 结果预算约束；`artifactId` 只出现在返回模型的窄 `data` 中，不进入业务卡片。
 
 ### 5.4 临时模型上下文与长期History
 
-Spring AI 为完成 Tool Calling Loop，会把当前模型回复、Tool请求和Tool结果加入本轮内部模型上下文。因此 `artifactId` 可以短暂存在于本 Run 的内部工具消息中。
+项目继续使用锁定的 Spring AI 2.0.0：`ToolCallingAdvisor` 负责递归 Tool Calling Loop，`ToolCallingManager` 负责 Tool 执行与下一轮消息，`ToolContext` 携带模型不可见的服务端运行状态。现有 `DeepSeekToolCallingAdvisor`、`MixedToolCallingManager` 和 `AgentExecutionContext` 是07B唯一允许扩展的主路径，不引入 LangGraph、OpenAI Agents SDK 或第二套 Agent Runtime，也不自行重写完整模型循环。
+
+Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部模型上下文。因此 `artifactId` 可以短暂存在于本 Run 的内部工具消息中；`privatePayload` 不得放入 Tool 返回值。
 
 项目必须将其与持久化用户History区分：
 
@@ -196,6 +197,13 @@ Spring AI 为完成 Tool Calling Loop，会把当前模型回复、Tool请求和
 
 如果现有 Spring AI 默认循环无法满足上述分离，研发只能在现有 Tool Calling 扩展点内增加最小控制；一旦需要完整自研模型循环，停止07B并回到设计复核。
 
+本决定不是项目自创协议。Spring AI 2.0 将 Tool Calling Loop 作为 `ChatClient` Advisor 链的一等能力，并明确由 `ToolCallingAdvisor` 驱动循环、`ToolCallingManager` 执行工具；其 Advisor 文档还提供生命周期钩子和单 Tool Advisor 约束。LangChain/LangGraph 与 OpenAI Agents SDK 的官方方案同样把运行期依赖和权限上下文留在本地 Run Context，而不是暴露给模型。它们用于交叉验证设计原则，不作为本项目新增依赖：
+
+- [Spring AI Tool Calling](https://docs.spring.io/spring-ai/reference/api/tools.html)
+- [Spring AI ToolCallingAdvisor](https://docs.spring.io/spring-ai/reference/api/tools/tool-calling-advisor.html)
+- [OpenAI Agents SDK Context Management](https://openai.github.io/openai-agents-python/context/)
+- [LangChain Tools](https://docs.langchain.com/oss/python/langchain/tools)
+
 ### 5.5 Task、PARTIAL与恢复
 
 保留现有 `ai_task`，不新增工作流表或Artifact表。通用核心只理解 Adapter归属、意图、状态、修订、scope、有效期和版本化受控payload，不理解物品、客户、订单或库位字段。
@@ -204,9 +212,11 @@ Spring AI 为完成 Tool Calling Loop，会把当前模型回复、Tool请求和
 
 - 本 Run 保留已经验证的成功结果并以 `PARTIAL` 结束；
 - 不重新执行已经成功的业务动作；
-- Adapter 可以在现有 Task 受控payload中保存不含私有载荷、可重新鉴权和重建的 ResumeRef；
+- Adapter 可以在现有 Task 受控payload中保存不含私有载荷、可重新鉴权和重建的版本化 ResumeRef；
 - 新 Run 恢复时重新解析当前 Actor、scope 和业务事实，再重建所需Artifact并仅执行失败消费者；
 - 无法安全重建时必须明确不可重试，不得持久化 `privatePayload` 或偷偷重放整条链。
+
+现有 RetryPlan 不能原样持久化含 `artifactId` 的消费 Tool 参数。持久化边界必须拒绝 `artifactId`、`privatePayload` 或未知字段；Artifact 消费失败只能保存 Adapter 生成的字段白名单 ResumeRef。普通且已经过现有严格校验的非 Artifact Tool 参数可继续使用原重试合同，不为07B重写全部重试机制。
 
 权限失败、参数错误、业务拒绝、Artifact伪造/过期/错类型和scope变化均不可自动重试。
 
@@ -237,11 +247,11 @@ Spring AI 为完成 Tool Calling Loop，会把当前模型回复、Tool请求和
 
 1. Controller只提供可信Run上下文，不接受客户端声明Adapter、身份、权限或scope。
 2. 注册中心按当前Actor过滤Adapter，形成该Run的Tool白名单和受信提示。
-3. 模型选择一个允许的Tool；Core校验预算和所有权后执行。
+3. 模型每次迭代只能选择一个允许的Tool；Core校验预算和所有权后执行。Spring AI 默认会依次执行同一模型响应中的多个 ToolCall，因此 `MixedToolCallingManager` 必须在委托前稳定拒绝多 ToolCall 批次，不能靠提示词或事后账本补救。
 4. Tool可以返回最终安全结果，也可以产生一个版本化ToolArtifact。
 5. 后续Tool只能消费其注册契约声明的Artifact类型；Core完成引用校验后才交给消费者Adapter。
 6. 每个业务Service在执行时重新鉴权；上一步成功和Artifact存在均不能替代权限。
-7. 首版顺序执行，遇首个失败停止；已有成功结果保留，终态按现有唯一终态契约确定。
+7. 首版顺序执行，遇首个失败立即闭锁后续业务回调；已有成功结果保留，终态按现有唯一终态契约确定。同一 Run 内相同 Tool 与服务端规范化参数已经成功时，返回已有安全结果或 Artifact 引用，不再次调用业务 Service；不能只按 Tool 名去重。
 8. 不可信Knowledge正文不能决定新业务Tool或Artifact消费；知识只提供受控事实和引用。
 9. 每个Run执行现有Model Iteration、Attempt、Tool次数和总预算；不得依靠提示词限制无限循环。
 10. 不引入跨业务并行、写操作、分布式事务、补偿、DAG或通用流程编排。
@@ -251,6 +261,8 @@ Spring AI 为完成 Tool Calling Loop，会把当前模型回复、Tool请求和
 ### 07A：Adapter注册与仓储硬编码解除
 
 **目标**：建立编译期注册、能力发现和失败即停，先证明边界，不建设Artifact链。
+
+**状态**：已完成并提交，提交为 `97e8326`。
 
 范围：
 
@@ -269,14 +281,16 @@ Spring AI 为完成 Tool Calling Loop，会把当前模型回复、Tool请求和
 范围：
 
 - Run内不可变内存注册表和生命周期；
-- `produces/consumes` 类型与版本校验；
+- Tool级 `produces/consumes`、单一生产者与多显式消费者的类型和版本校验；
 - 模型只传递不透明 `artifactId`；
+- 消费时重新解析当前Actor并校验Run、scope、Tool所有权和有效期；
+- 每个模型迭代最多一个ToolCall，首个失败闭锁后续回调，相同成功调用不重放；
 - 临时Tool Loop与长期History/Memory/Observability分离；
-- 通用结果账本、PARTIAL和安全ResumeRef；
+- 通用结果账本、PARTIAL和不含Artifact引用的安全ResumeRef；
 - 测试Adapter A → B 的真实依赖链；
 - 现有仓储Tool和四字段结果不回归。
 
-完成门：正常链通过；伪造、跨Run、错类型、错版本、过期、scope变化和未声明消费者均被拒绝；私有载荷不进入模型、页面或持久化；重试不重放成功Tool。
+完成门：正常链通过；伪造、跨Run、错类型、错版本、过期、消费时scope变化、未声明消费Tool和同次迭代多个ToolCall均被拒绝；一个生产者可被多个显式消费者安全使用；私有载荷不进入模型、页面或持久化，`artifactId`不进入SSE、History、Memory、Observability或RetryPlan；Run所有终态均清空注册表；同一Run及安全恢复均不重放成功Tool。
 
 ### 07C：Knowledge与Observability业务资产归位
 
@@ -337,8 +351,11 @@ docs/learning/
 
 - Adapter并存、权限过滤和冲突失败；
 - A产生Artifact，B按声明消费；
-- Artifact伪造、跨Run、错类型、错版本、过期、scope变化和未声明消费全部失败；
+- Artifact声明落在具体Tool；同一类型只允许一个生产Tool并允许多个显式消费Tool；
+- Artifact伪造、跨Run、错类型、错版本、过期、消费时scope变化和未声明消费Tool全部失败；
+- 同一模型迭代返回多个ToolCall时在任何业务回调执行前稳定拒绝；相同Tool与规范化参数的成功调用不重复访问业务Service；
 - A成功、B技术失败形成PARTIAL；安全恢复只执行失败消费者；
+- RetryPlan/ResumeRef、SSE、History、Memory、日志和Observability均不含`artifactId`或私有载荷；成功、失败、取消和超时终态后注册表为空且拒绝继续消费；
 - 测试Adapter仅存在于测试源码，不作为真实业务复用证据。
 
 ### 10.3 移除仓储Adapter的临时派生副本
@@ -365,7 +382,7 @@ docs/learning/
 - 不新增 `knowledgeSpace`、Artifact持久化表或长期私有结果存储；
 - 不建立永久“一键卸载”生成器；一次临时派生副本足以证明裁剪；
 - 不用测试Adapter宣称第二真实业务复用完成；
-- 不重复调用真实Provider证明确定性注册、类型、冲突和裁剪。
+- 确定性注册、类型、冲突和清理不重复调用真实Provider；07B只在最终工具选择确实受影响时执行一次有预算的真实Provider协议回归。
 
 出现以下任一情况立即停止当前分段并返回总设计师复核：
 
@@ -374,6 +391,7 @@ docs/learning/
 3. 需要修改已确认的四字段Tool结果、SSE、History、Memory或唯一终态语义；
 4. 测试Adapter被迫承载客户、订单等生产业务，或者通用Core开始理解测试业务字段；
 5. 同一实质实现或验证路径连续两次失败且没有产生新证据。
+6. 现有 Spring AI `ToolCallingAdvisor`、`ToolCallingManager`、`ToolContext` 扩展点无法承载Run内状态、单调用约束或最终清理，必须改为完整自研模型循环。
 
 ## 12. 复杂度、责任与执行方式
 
@@ -393,7 +411,7 @@ SLICE-07 属于 L2：它改变公共模块边界、Tool组合方式、业务资�
 
 ## 13. 已确认决定
 
-截至2026-09-09，项目负责人已确认：
+截至2026-09-10，项目负责人已确认：
 
 1. 采用本设计的通用AI模板方向，不建设生成器或独立万能AI平台；
 2. `knowledgeSpace`及相关数据库、权限和页面改造推迟到第二个真实知识消费者；
@@ -401,3 +419,7 @@ SLICE-07 属于 L2：它改变公共模块边界、Tool组合方式、业务资�
 4. 采用Run内服务端ToolArtifact，模型只传递不透明 `artifactId`，私有载荷不暴露、不持久化；
 5. 07按四阶段顺序实施，禁止整块开发；
 6. `docs/learning/`是07交付组成，内容必须追随实际代码与验证结果。
+7. 07B优先使用项目锁定的Spring AI Tool Calling框架能力；不引入第二框架，不自研完整模型循环。
+8. Artifact授权落到具体Tool；同一类型允许一个生产Tool和多个显式消费Tool。
+9. Artifact消费与恢复前重新解析当前Actor；`artifactId`和私有载荷不得进入RetryPlan或任何持久化/用户可见通道。
+10. 依赖链每个模型迭代最多一个ToolCall，首个失败闭锁后续回调，相同成功调用不得重放业务Service。
