@@ -1,6 +1,7 @@
 package com.internaladmin.module.agent.service;
 
 import com.internaladmin.module.agent.api.AgentRunContext;
+import com.internaladmin.module.agent.api.AgentErrorCode;
 import com.internaladmin.module.agent.api.AgentToolProvider;
 import com.internaladmin.module.agent.api.AgentAdapter;
 import com.internaladmin.module.agent.api.AgentAdapterDescriptor;
@@ -14,6 +15,7 @@ import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
 import com.internaladmin.platform.kernel.error.BusinessException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.ai.chat.client.ChatClient;
@@ -24,13 +26,20 @@ import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.DefaultToolDefinition;
+import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.sqlite.SQLiteDataSource;
+import liquibase.integration.spring.SpringLiquibase;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Optional;
 import java.time.Duration;
+import java.nio.file.Path;
+import java.time.Instant;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -43,6 +52,8 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 class AgentConversationServiceTest {
+    @TempDir
+    Path tempDir;
     @Test
     void rejectsExplicitWriteAndExternalExecutionRequestsBeforeAnyProviderOrTool() {
         AgentStore store = mock(AgentStore.class);
@@ -959,8 +970,8 @@ class AgentConversationServiceTest {
         assertTrue(system.getValue().contains("询问当前收录资料目录时用LIST_ACTIVE"));
         assertTrue(system.getValue().contains("要求完整或全部条款时用READ_ACTIVE（服务端先定位并确认唯一资料）"));
         assertTrue(system.getValue().contains("同一问题涉及多个知识主题时只调用一次knowledge_search"));
-        assertTrue(system.getValue().contains("同一个初始工具决策若同时包含知识查询和一个或多个完整的实时仓储子任务"));
-        assertTrue(system.getValue().contains("只有该批次结束、知识调用已受理后，后续模型迭代才只允许知识回答"));
+        assertTrue(system.getValue().contains("同一问题若同时包含知识查询和一个或多个完整的实时仓储子任务"));
+        assertTrue(system.getValue().contains("知识调用受理后，后续模型迭代只允许知识回答"));
         assertFalse(system.getValue().contains("同时涉及当前库存和最近变化时，先确认用户要查询哪一种"));
     }
 
@@ -1837,6 +1848,170 @@ class AgentConversationServiceTest {
         assertEquals(List.of("run.started", "message.completed", "run.completed"), events.stream()
                 .map(AgentConversationService.StreamEvent::name).toList());
         assertTrue(events.get(1).data().contains("\"code\":\"SUCCESS\""));
+    }
+
+    @Test
+    void adapterResumeRefSurvivesStoreRoundTripAndRechecksCurrentActor() throws Exception {
+        JdbcTemplate jdbc = database("adapter-resume-ref");
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of());
+        ResumeChainAdapter adapter = new ResumeChainAdapter();
+        AgentAdapterRegistry registry = new AgentAdapterRegistry(List.of(adapter));
+        AgentStore store = new AgentStore(jdbc, registry);
+        String conversationId = store.createConversation(7L).conversationId();
+        AgentStore.StartRun source = store.startRun(conversationId, "resume-source", "查询链路", 7L,
+                actor.scopeFingerprint());
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
+        AgentConversationService service = new AgentConversationService(store, mock(ChatClient.class),
+                observations, new AiProperties(), List.of(adapter), registry, null);
+        AgentExecutionContext sourceExecution = new AgentExecutionContext(actor, source.runId(),
+                source.effectiveUserMessage(), ignored -> { }, registry, ignored -> actor);
+        sourceExecution.recordToolSuccess("chain_producer", "{\"code\":\"alpha\"}", "A完成");
+        sourceExecution.recordToolFailure("chain_consumer", "{\"artifactId\":\"transient\",\"code\":\"alpha\"}",
+                AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), "B暂不可用");
+
+        AgentStore.RetryPlan plan = service.buildRetryPlan(source, sourceExecution, 1, "CHAIN");
+        assertNotNull(plan);
+        assertEquals(1, plan.subtasks().size());
+        assertEquals("{\"kind\":\"CHAIN_RESUME\",\"version\":1,\"code\":\"alpha\"}",
+                plan.subtasks().getFirst().arguments());
+        assertTrue(store.completePartial(conversationId, source.runId(), source.assistantMessageId(),
+                "部分查询未完成", actor.scopeFingerprint(), 1L,
+                AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), observations, plan));
+        String persisted = store.task(source.taskId()).confirmedConditions();
+        assertTrue(persisted.contains("CHAIN_RESUME"));
+        assertFalse(persisted.contains("artifactId"));
+        AgentStore.StartRun child = store.startRetryRun(conversationId, "resume-child", source.runId(),
+                7L, actor.scopeFingerprint(), Duration.ofHours(1));
+        List<AgentConversationService.StreamEvent> events = new ArrayList<>();
+        AgentExecutionContext retryExecution = new AgentExecutionContext(actor, child.runId(),
+                child.effectiveUserMessage(), ignored -> { }, registry, ignored -> actor);
+
+        service.execute(child, retryExecution, events::add, new AtomicBoolean());
+
+        assertEquals(1, adapter.consumerCalls.get());
+        assertEquals(0, adapter.producerCalls.get(), "重试不得重放已成功的生产Tool");
+        assertEquals(AgentStore.COMPLETE, store.status(child.runId()));
+        assertEquals(List.of("run.started", "message.completed", "run.completed"),
+                events.stream().map(AgentConversationService.StreamEvent::name).toList());
+    }
+
+    @Test
+    void buildRetryPlanRequiresOwnerCanonicalResumeRefWithoutOriginalArgumentFallback() {
+        AgentAdapter owner = new RejectingResumeAdapter("owner", "retry-tool", Set.of("retry-tool"));
+        AgentAdapter rogue = new RejectingResumeAdapter("rogue", "rogue-tool", Set.of("retry-tool"));
+        AgentAdapterRegistry registry = new AgentAdapterRegistry(List.of(owner, rogue));
+        AgentConversationService service = new AgentConversationService(mock(AgentStore.class), mock(ChatClient.class),
+                mock(AiObservationRecorder.class), new AiProperties(), List.of(owner, rogue), registry, null);
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of());
+        AgentExecutionContext execution = new AgentExecutionContext(actor, "retry-run", "查询",
+                ignored -> { }, registry, ignored -> actor);
+        execution.recordToolFailure("retry-tool", "{\"value\":\"original\"}",
+                AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), null);
+
+        assertNull(service.buildRetryPlan(new AgentStore.StartRun("c-1", "retry-run", true,
+                AgentStore.RUNNING), execution, 0, "TASK"),
+                "owner 未生成 canonical ResumeRef 时不得回退持久化原始参数");
+    }
+
+    private JdbcTemplate database(String name) throws Exception {
+        SQLiteDataSource dataSource = new SQLiteDataSource();
+        dataSource.setUrl("jdbc:sqlite:file:" + tempDir.resolve(name + ".db")
+                + "?cache=shared&busy_timeout=5000");
+        SpringLiquibase liquibase = new SpringLiquibase();
+        liquibase.setDataSource(dataSource);
+        liquibase.setChangeLog("classpath:/db/changelog/agent-concurrency-master.xml");
+        liquibase.setShouldRun(true);
+        liquibase.afterPropertiesSet();
+        return new JdbcTemplate(dataSource);
+    }
+
+    private static final class ResumeChainAdapter implements AgentAdapter {
+        private final AtomicInteger producerCalls = new AtomicInteger();
+        private final AtomicInteger consumerCalls = new AtomicInteger();
+        private final ToolCallback producer = new ToolCallback() {
+            private final ToolDefinition definition = new DefaultToolDefinition("chain_producer", "producer", "{}");
+            @Override public ToolDefinition getToolDefinition() { return definition; }
+            @Override public String call(String input) { throw new IllegalStateException("not used in retry"); }
+            @Override public String call(String input, ToolContext context) {
+                producerCalls.incrementAndGet();
+                return "{\"success\":true}";
+            }
+        };
+        private final ToolCallback consumer = new ToolCallback() {
+            private final ToolDefinition definition = new DefaultToolDefinition("chain_consumer", "test", "{}");
+
+            @Override public ToolDefinition getToolDefinition() { return definition; }
+            @Override public String call(String input) { throw new IllegalStateException("ToolContext required"); }
+            @Override public String call(String input, ToolContext context) {
+                AgentExecutionContext execution = (AgentExecutionContext) context.getContext().get("agent.execution");
+                if (!execution.consumeRetryTool("chain_consumer")) throw new IllegalStateException("retry not authorized");
+                execution.beginToolInvocation("chain_consumer", input);
+                consumerCalls.incrementAndGet();
+                String result = "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"B完成\",\"data\":null}";
+                execution.recordToolSuccess("chain_consumer", input, result);
+                return result;
+            }
+        };
+
+        @Override public AgentAdapterDescriptor descriptor() {
+            return new AgentAdapterDescriptor("chain-adapter", List.of(), List.of(
+                    new AgentAdapterDescriptor.Tool("chain_producer", "producer", "{}"),
+                    new AgentAdapterDescriptor.Tool("chain_consumer", "consumer", "{}")),
+                    "READ_ONLY", List.of(), List.of(), Set.of(), true);
+        }
+        @Override public ToolCallback[] getToolCallbacks() { return new ToolCallback[]{producer, consumer}; }
+        @Override public Set<String> retryableToolNames() { return Set.of("chain_consumer"); }
+        @Override public Optional<RetryResumeRef> validateRetryResumeRef(String toolName, String arguments,
+                                                                          AgentRunContext actor) {
+            if (!"chain_consumer".equals(toolName) || arguments == null || !arguments.contains("\"code\":\"alpha\"")) {
+                return Optional.empty();
+            }
+            return Optional.of(new RetryResumeRef("CHAIN_RESUME", 1,
+                    "{\"kind\":\"CHAIN_RESUME\",\"version\":1,\"code\":\"alpha\"}"));
+        }
+    }
+
+    private static final class RejectingResumeAdapter implements AgentAdapter {
+        private final String id;
+        private final String toolName;
+        private final Set<String> retryable;
+
+        private RejectingResumeAdapter(String id, String toolName, Set<String> retryable) {
+            this.id = id;
+            this.toolName = toolName;
+            this.retryable = retryable;
+        }
+
+        @Override
+        public AgentAdapterDescriptor descriptor() {
+            return new AgentAdapterDescriptor(id, List.of(), List.of(
+                    new AgentAdapterDescriptor.Tool(toolName, "retry", "{}")),
+                    "READ_ONLY", List.of(), List.of(), Set.of(), true);
+        }
+
+        @Override
+        public ToolCallback[] getToolCallbacks() {
+            return new ToolCallback[]{new ToolCallback() {
+                private final ToolDefinition definition = new DefaultToolDefinition(toolName, "retry", "{}");
+
+                @Override
+                public ToolDefinition getToolDefinition() { return definition; }
+
+                @Override
+                public String call(String input) { return "{}"; }
+            }};
+        }
+
+        @Override
+        public Set<String> retryableToolNames() { return retryable; }
+
+        @Override
+        public Optional<RetryResumeRef> validateRetryResumeRef(String toolName, String arguments,
+                                                                AgentRunContext actor) {
+            return Optional.empty();
+        }
     }
 
     private static void assertEnvelope(List<AgentConversationService.StreamEvent> events) {

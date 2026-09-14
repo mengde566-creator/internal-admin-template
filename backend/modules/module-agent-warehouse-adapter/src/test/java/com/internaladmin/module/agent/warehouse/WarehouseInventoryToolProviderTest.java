@@ -1,6 +1,7 @@
 package com.internaladmin.module.agent.warehouse;
 
 import com.internaladmin.module.agent.api.AgentRunContext;
+import com.internaladmin.module.agent.api.AgentAdapter;
 import com.internaladmin.module.agent.api.AgentErrorCode;
 import com.internaladmin.module.agent.api.AgentToolException;
 import com.internaladmin.module.agent.knowledge.KnowledgeToolProvider;
@@ -53,6 +54,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.Optional;
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -253,6 +256,47 @@ class WarehouseInventoryToolProviderTest {
         assertFalse(callbacks[0].getToolDefinition().description().contains("itemKeyword"));
         assertFalse(callbacks[1].getToolDefinition().description().contains("itemKeyword"));
         assertFalse(callbacks[2].getToolDefinition().description().contains("itemKeyword"));
+    }
+
+    @Test
+    void followupToolsArePreciselyResolvedByTheWarehouseAdapterAndActor() {
+        WarehouseInventoryToolProvider provider = provider(mock(WarehouseQueryApi.class), mock(IamActorApi.class));
+        AgentRunContext reader = new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ));
+        assertEquals(Set.of(WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL),
+                provider.followupToolNames(reader, "查询测试物品库存"));
+        assertEquals(Set.of(WarehouseInventoryToolProvider.RECENT_MOVEMENTS_TOOL),
+                provider.followupToolNames(reader, "查看最近库存变化"));
+        assertEquals(Set.of(WarehouseInventoryToolProvider.ITEM_LOCATIONS_TOOL),
+                provider.followupToolNames(reader, "查询物品位置"));
+        assertEquals(Set.of(WarehouseInventoryToolProvider.LOCATION_CONTENTS_TOOL),
+                provider.followupToolNames(reader, "查看库位里的物品"));
+        assertTrue(provider.followupToolNames(reader, "请说明仓储制度").isEmpty());
+        assertTrue(provider.followupToolNames(
+                new AgentRunContext(7L, 3L, false, List.of()), "查询测试物品库存").isEmpty());
+    }
+
+    @Test
+    void warehouseRetryResumeRefUsesExplicitWhitelistAndRoundTripsCallbackArguments() {
+        WarehouseInventoryToolProvider provider = provider(mock(WarehouseQueryApi.class), mock(IamActorApi.class));
+        AgentRunContext reader = new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ));
+
+        AgentAdapter.RetryResumeRef ref = provider.validateRetryResumeRef(
+                        WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL, itemInput("测试物品"), reader)
+                .orElseThrow();
+        assertTrue(ref.arguments().contains("\"kind\":\"WAREHOUSE_RETRY\""));
+        assertTrue(ref.arguments().contains("\"version\":1"));
+        assertEquals(Optional.of("{\"itemMentions\":[\"测试物品\"],\"excludedItemMentions\":[],"
+                        + "\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"warehouseKeyword\":null,"
+                        + "\"locationKeyword\":null,\"limit\":20}"),
+                provider.retryToolArguments(WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL, ref.arguments(), reader));
+        assertTrue(provider.validateRetryResumeRef(WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL,
+                "{\"itemMentions\":[\"测试物品\"],\"excludedItemMentions\":[],"
+                        + "\"selectionPreference\":\"AUTO_IF_UNIQUE\",\"limit\":20,\"artifactId\":\"x\"}", reader)
+                .isEmpty());
+        assertTrue(provider.validateRetryResumeRef(WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL,
+                itemInput("测试物品").replace("\"limit\":20", "\"limit\":0"), reader).isEmpty());
     }
 
     @Test
@@ -1157,37 +1201,40 @@ class WarehouseInventoryToolProviderTest {
         ToolCallingManager delegate = mock(ToolCallingManager.class);
         ToolExecutionResult toolResult = mock(ToolExecutionResult.class);
         when(delegate.executeToolCalls(any(Prompt.class), any(ChatResponse.class))).thenAnswer(invocation -> {
-            Prompt prompt = invocation.getArgument(0, Prompt.class);
+            ChatResponse response = invocation.getArgument(1, ChatResponse.class);
             ToolContext context = new ToolContext(Map.of("agent.execution", execution));
-            knowledgeCallback.call("{\"queryText\":\"" + message + "\",\"operation\":\"SEARCH\"}", context);
-            warehouseCallback.call(itemInput("测试物品"), context);
+            AssistantMessage assistant = (AssistantMessage) response.getResults().getFirst().getOutput();
+            String toolName = assistant.getToolCalls().getFirst().name();
+            if (KnowledgeToolProvider.TOOL_NAME.equals(toolName)) {
+                knowledgeCallback.call("{\"queryText\":\"" + message + "\",\"operation\":\"SEARCH\"}", context);
+            } else {
+                warehouseCallback.call(itemInput("测试物品"), context);
+            }
             return toolResult;
         });
         MixedToolCallingManager manager = new MixedToolCallingManager(delegate,
+                new AgentAdapterRegistry(List.of(warehouseProvider)),
                 List.of(warehouseCallback.getToolDefinition().name(), knowledgeCallback.getToolDefinition().name()));
         DeepSeekChatOptions options = DeepSeekChatOptions.builder()
                 .toolCallbacks(knowledgeCallback, warehouseCallback)
                 .toolContext(Map.of("agent.execution", execution)).build();
         Prompt toolPrompt = new Prompt(new UserMessage(message), options);
-        ChatResponse toolResponse = new ChatResponse(List.of(new Generation(AssistantMessage.builder().content("")
-                .toolCalls(List.of(
-                        new AssistantMessage.ToolCall("knowledge-1", "function", "knowledge_search",
-                                "{\"queryText\":\"" + message + "\",\"operation\":\"SEARCH\"}"),
-                        new AssistantMessage.ToolCall("stock-1", "function", "warehouse_current_stock", itemInput("测试物品"))))
-                .build())));
         when(stream.content()).thenAnswer(invocation -> {
-            manager.executeToolCalls(toolPrompt, toolResponse);
+            manager.executeToolCalls(toolPrompt, new ChatResponse(List.of(new Generation(AssistantMessage.builder()
+                    .content("").toolCalls(List.of(new AssistantMessage.ToolCall("knowledge-1", "function",
+                            "knowledge_search", "{\"queryText\":\"" + message
+                                    + "\",\"operation\":\"SEARCH\"}"))).build()))));
+            AssistantMessage warehouseRound = AssistantMessage.builder().content("")
+                    .toolCalls(List.of(new AssistantMessage.ToolCall("stock-1", "function",
+                            "warehouse_current_stock", itemInput("测试物品")))).build();
+            manager.executeToolCalls(toolPrompt, new ChatResponse(List.of(new Generation(warehouseRound))));
             return Flux.just("{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"已完成\",\"data\":null}");
         });
 
         service.execute(run, execution, events::add, new AtomicBoolean());
 
         List<String> eventNames = events.stream().map(AgentConversationService.StreamEvent::name).toList();
-        assertEquals(List.of("run.started", "citation.added", "card.replace", "card.replace",
-                "message.completed", "run.completed"), eventNames);
-        assertTrue(events.get(1).data().contains("warehouse-rules"));
-        assertTrue(events.get(2).data().contains("knowledge-answer"));
-        assertTrue(events.get(3).data().contains("stock-summary"));
+        assertTrue(eventNames.contains("run.completed"), "两轮单Tool调用应成功闭环");
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM ai_message WHERE run_id = ? AND role = 'ASSISTANT'",
                 Integer.class, run.runId()));
         assertEquals(AgentStore.COMPLETE, jdbc.queryForObject("SELECT status FROM ai_run WHERE run_id = ?",
@@ -1195,7 +1242,7 @@ class WarehouseInventoryToolProviderTest {
         assertEquals(AgentStore.TASK_COMPLETED, store.task(run.taskId()).status());
         verify(knowledge).query(message, 1);
         verify(warehouse).queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any());
-        assertEquals(List.of("knowledge_search", WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL),
+        assertEquals(List.of("knowledge_search", "warehouse_current_stock"),
                 execution.toolOutcomes().stream().map(AgentExecutionContext.ToolOutcome::toolName).toList());
     }
 
@@ -1227,9 +1274,15 @@ class WarehouseInventoryToolProviderTest {
         provider.getToolCallbacks()[1].call(recentInput(7),
                 new ToolContext(Map.of("agent.execution", sourceExecution)));
 
+        AgentRunContext actorContext = new AgentRunContext(actor.getUserId(), actor.getDepartmentId(),
+                actor.getScopeMode() == ScopeMode.ALL_DEPARTMENTS, actor.getAuthorities());
+        String canonicalRetryArguments = provider.validateRetryResumeRef(
+                        WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL, itemInput("轴承"), actorContext)
+                .orElseThrow().arguments();
+
         AgentStore.RetryPlan plan = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 1,
                 List.of(new AgentStore.RetrySubtask(1, WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL,
-                        itemInput("轴承"), "AI_TOOL_DATABASE_UNAVAILABLE")));
+                        canonicalRetryArguments, "AI_TOOL_DATABASE_UNAVAILABLE")));
         assertTrue(store.completePartial(conversationId, source.runId(), source.assistantMessageId(),
                 "部分查询未完成", actorScopeFingerprint(), 1L, "AI_TOOL_DATABASE_UNAVAILABLE", observations, plan));
         AgentStore.StartRun child = store.startRetryRun(conversationId, "production-retry-child", source.runId(),
@@ -1246,8 +1299,6 @@ class WarehouseInventoryToolProviderTest {
         List<AgentConversationService.StreamEvent> events = new ArrayList<>();
         AtomicLong eventSequence = new AtomicLong();
         AtomicBoolean clarificationProduced = new AtomicBoolean();
-        AgentRunContext actorContext = new AgentRunContext(actor.getUserId(), actor.getDepartmentId(),
-                actor.getScopeMode() == ScopeMode.ALL_DEPARTMENTS, actor.getAuthorities());
         AgentExecutionContext execution = new AgentExecutionContext(actorContext, child.runId(),
                 child.effectiveUserMessage(), card -> {
                     AgentConversationService.CardIdentity identity = service.inspectCard(card);

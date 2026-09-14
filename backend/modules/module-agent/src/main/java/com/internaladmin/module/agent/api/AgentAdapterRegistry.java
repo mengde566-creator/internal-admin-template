@@ -17,18 +17,21 @@ import java.util.Optional;
  *
  * <p>Registration is fail-fast: duplicate adapter, Tool, Artifact producer or
  * consumer declaration, cardType or routeKey identifiers are rejected during
- * bean creation instead of being silently overwritten. One producer and one
- * consumer may intentionally share an Artifact type for a later dependency
- * chain; duplicate producers or duplicate consumer declarations remain
- * failures.</p>
+ * bean creation instead of being silently overwritten. One producer and
+ * multiple consumers may intentionally share an Artifact type for a later
+ * dependency chain; duplicate producers or duplicate consumer declarations
+ * remain failures.</p>
  */
 public final class AgentAdapterRegistry {
     private static final int MAX_INSTRUCTIONS = 16;
     private static final int MAX_INSTRUCTION_CHARS = 4_000;
     private static final int MAX_IDENTIFIER_CHARS = 128;
+    private static final int MAX_FOLLOWUP_TOOLS = 20;
     private final List<AgentAdapter> adapters;
     private final Map<String, AgentAdapter> byId;
     private final Map<String, AgentAdapter> toolOwners;
+    private final Map<String, ToolContract> toolContracts;
+    private final Map<String, String> artifactProducerTools;
 
     /** Builds and validates a sorted registry snapshot. */
     public AgentAdapterRegistry(Collection<? extends AgentAdapter> adapters) {
@@ -37,6 +40,8 @@ public final class AgentAdapterRegistry {
         this.adapters = List.copyOf(candidates);
         this.byId = new LinkedHashMap<>();
         this.toolOwners = new LinkedHashMap<>();
+        this.toolContracts = new LinkedHashMap<>();
+        this.artifactProducerTools = new LinkedHashMap<>();
         validate();
     }
 
@@ -87,6 +92,16 @@ public final class AgentAdapterRegistry {
         return java.util.Optional.ofNullable(toolOwners.get(toolName));
     }
 
+    /** Returns the concrete Tool-level Artifact contract, if registered. */
+    public Optional<ToolContract> toolContract(String toolName) {
+        return Optional.ofNullable(toolContracts.get(toolName));
+    }
+
+    /** Returns the unique Tool that produces a versioned Artifact type. */
+    public Optional<String> artifactProducer(AgentAdapterDescriptor.ArtifactType type) {
+        return type == null ? Optional.empty() : Optional.ofNullable(artifactProducerTools.get(type.key()));
+    }
+
     /** Returns whether a Tool is available to the actor. */
     public boolean isToolAvailable(String toolName, AgentRunContext actor) {
         AgentAdapter owner = toolOwners.get(toolName);
@@ -116,6 +131,80 @@ public final class AgentAdapterRegistry {
         return available(actor).stream()
                 .flatMap(adapter -> adapter.retryableToolNames().stream())
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    /**
+     * Resolves precise, actor-filtered follow-up Tools declared by each owning
+     * adapter.  Unknown, unowned or over-budget names fail closed and are not
+     * forwarded to the execution context.
+     */
+    public List<String> followupToolNames(AgentRunContext actor, String originalUserMessage) {
+        if (actor == null || originalUserMessage == null || originalUserMessage.isBlank()) return List.of();
+        Set<String> resolved = new LinkedHashSet<>();
+        for (AgentAdapter adapter : available(actor)) {
+            Set<String> candidates;
+            try {
+                candidates = adapter.followupToolNames(actor, originalUserMessage);
+            } catch (RuntimeException invalid) {
+                continue;
+            }
+            if (candidates == null || candidates.isEmpty()) continue;
+            if (candidates.size() > MAX_FOLLOWUP_TOOLS) return List.of();
+            for (String toolName : candidates) {
+                AgentAdapter owner = toolOwners.get(toolName);
+                if (owner != adapter || !isToolAvailable(toolName, actor)) continue;
+                resolved.add(toolName);
+                if (resolved.size() > MAX_FOLLOWUP_TOOLS) return List.of();
+            }
+        }
+        return resolved.stream().sorted().toList();
+    }
+
+    /** Returns a validated, canonical ResumeRef owned by the tool's adapter. */
+    public Optional<AgentAdapter.RetryResumeRef> retryResumeRef(AgentRunContext actor,
+                                                                 String toolName,
+                                                                 String arguments) {
+        AgentAdapter owner = toolOwners.get(toolName);
+        if (owner == null) return Optional.empty();
+        try {
+            if (!owner.isAvailable(actor)) return Optional.empty();
+            Set<String> retryableTools = owner.retryableToolNames();
+            if (retryableTools == null || !retryableTools.contains(toolName)) return Optional.empty();
+            Optional<AgentAdapter.RetryResumeRef> validated = owner.validateRetryResumeRef(toolName, arguments, actor);
+            if (validated == null || validated.isEmpty()) return Optional.empty();
+            AgentAdapter.RetryResumeRef ref = validated.get();
+            return AgentAdapter.RetryResumeRef.isValidArguments(ref.arguments())
+                    ? Optional.of(ref) : Optional.empty();
+        } catch (RuntimeException invalid) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Converts a persisted canonical ResumeRef to the owning callback's
+     * arguments.  Ownership, availability, retry declaration and canonical
+     * shape are checked before the adapter can expose a callback payload.
+     */
+    public Optional<String> retryToolArguments(AgentRunContext actor, String toolName,
+                                                String canonicalArguments) {
+        AgentAdapter owner = toolOwners.get(toolName);
+        if (owner == null) return Optional.empty();
+        try {
+            if (!owner.isAvailable(actor)) return Optional.empty();
+            Set<String> retryableTools = owner.retryableToolNames();
+            if (retryableTools == null || !retryableTools.contains(toolName)
+                    || !AgentAdapter.RetryResumeRef.isValidArguments(canonicalArguments)) {
+                return Optional.empty();
+            }
+            Optional<String> callbackArguments = owner.retryToolArguments(toolName, canonicalArguments, actor);
+            if (callbackArguments == null || callbackArguments.isEmpty()
+                    || !AgentAdapter.RetryResumeRef.isSafeToolArguments(callbackArguments.get())) {
+                return Optional.empty();
+            }
+            return callbackArguments;
+        } catch (RuntimeException invalid) {
+            return Optional.empty();
+        }
     }
 
     /** Resolves an owned tool to the adapter task intent, without core-side names. */
@@ -170,8 +259,6 @@ public final class AgentAdapterRegistry {
     }
 
     private void validate() {
-        Set<String> artifactProducers = new LinkedHashSet<>();
-        Set<String> artifactConsumers = new LinkedHashSet<>();
         Set<String> cardTypes = new LinkedHashSet<>();
         Set<String> routeKeys = new LinkedHashSet<>();
         for (AgentAdapter adapter : adapters) {
@@ -193,10 +280,15 @@ public final class AgentAdapterRegistry {
             });
             validateInstructions(descriptor);
             validateTools(adapter, descriptor);
-            descriptor.produces().forEach(type -> registerArtifact(artifactProducers, type, adapterId, "producer"));
-            descriptor.consumes().forEach(type -> registerArtifact(artifactConsumers, type, adapterId, "consumer"));
             descriptor.cardTypes().forEach(cardType -> registerUnique(cardTypes, cardType, "cardType", adapterId));
             descriptor.routeKeys().forEach(routeKey -> registerUnique(routeKeys, routeKey, "routeKey", adapterId));
+        }
+        for (ToolContract contract : toolContracts.values()) {
+            for (AgentAdapterDescriptor.ArtifactType type : contract.consumes()) {
+                if (!artifactProducerTools.containsKey(type.key())) {
+                    throw conflict("Artifact consumer 无对应生产Tool: " + type.key());
+                }
+            }
         }
     }
 
@@ -207,6 +299,8 @@ public final class AgentAdapterRegistry {
 
     private void validateTools(AgentAdapter adapter, AgentAdapterDescriptor descriptor) {
         Map<String, AgentAdapterDescriptor.Tool> declarations = new LinkedHashMap<>();
+        Set<String> toolProduces = new LinkedHashSet<>();
+        Set<String> toolConsumes = new LinkedHashSet<>();
         for (AgentAdapterDescriptor.Tool tool : descriptor.tools()) {
             String name = tool == null ? null : tool.name();
             if (name == null || name.isBlank()) throw conflict("Tool 名称不能为空: " + descriptor.adapterId());
@@ -215,6 +309,11 @@ public final class AgentAdapterRegistry {
             if (tool.description().isBlank() || tool.inputSchema().isBlank()) {
                 throw conflict("Tool 声明不完整: " + name);
             }
+            validateArtifactTypes(tool.produces(), descriptor.adapterId(), "producer");
+            validateArtifactTypes(tool.consumes(), descriptor.adapterId(), "consumer");
+            tool.produces().forEach(type -> toolProduces.add(type.key()));
+            tool.consumes().forEach(type -> toolConsumes.add(type.key()));
+            registerToolContract(descriptor.adapterId(), tool);
         }
         Set<String> callbacks = new LinkedHashSet<>();
         for (ToolCallback callback : adapter.getToolCallbacks()) {
@@ -229,6 +328,57 @@ public final class AgentAdapterRegistry {
         }
         if (!callbacks.equals(declarations.keySet())) {
             throw conflict("Tool 声明与回调不一致: " + descriptor.adapterId());
+        }
+        validateAdapterArtifactSummary(descriptor, toolProduces, toolConsumes);
+    }
+
+    /** Adapter-level lists are derived display summaries, never a second authorization source. */
+    private static void validateAdapterArtifactSummary(AgentAdapterDescriptor descriptor,
+                                                        Set<String> toolProduces,
+                                                        Set<String> toolConsumes) {
+        Set<String> declaredProduces = artifactKeys(descriptor.produces(), descriptor.adapterId(), "producer");
+        Set<String> declaredConsumes = artifactKeys(descriptor.consumes(), descriptor.adapterId(), "consumer");
+        if (!declaredProduces.isEmpty() && !declaredProduces.equals(toolProduces)) {
+            throw conflict("Adapter Artifact producer 汇总与 Tool 声明不一致: " + descriptor.adapterId());
+        }
+        if (!declaredConsumes.isEmpty() && !declaredConsumes.equals(toolConsumes)) {
+            throw conflict("Adapter Artifact consumer 汇总与 Tool 声明不一致: " + descriptor.adapterId());
+        }
+    }
+
+    private static Set<String> artifactKeys(List<AgentAdapterDescriptor.ArtifactType> types,
+                                             String adapterId, String direction) {
+        validateArtifactTypes(types, adapterId, direction);
+        return types.stream().map(AgentAdapterDescriptor.ArtifactType::key)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private void registerToolContract(String adapterId, AgentAdapterDescriptor.Tool tool) {
+        ToolContract contract = new ToolContract(adapterId, tool.name(), tool.produces(), tool.consumes());
+        toolContracts.put(tool.name(), contract);
+        for (AgentAdapterDescriptor.ArtifactType type : tool.produces()) {
+            String previous = artifactProducerTools.putIfAbsent(type.key(), tool.name());
+            if (previous != null) {
+                throw conflict("Artifact 生产Tool重复: " + type.key());
+            }
+        }
+    }
+
+    private static void validateArtifactTypes(List<AgentAdapterDescriptor.ArtifactType> types,
+                                              String adapterId, String direction) {
+        Set<String> seen = new LinkedHashSet<>();
+        for (AgentAdapterDescriptor.ArtifactType type : types) {
+            if (type == null || type.type() == null || type.type().isBlank()
+                    || type.version() == null || type.version().isBlank()) {
+                throw conflict("Tool Artifact " + direction + " 类型声明不完整: " + adapterId);
+            }
+            for (String field : type.safeProjectionFields()) {
+                if (field == null || field.isBlank() || field.length() > MAX_IDENTIFIER_CHARS
+                        || Set.of("artifactId", "privatePayload").contains(field)) {
+                    throw conflict("Tool Artifact 安全投影字段无效: " + adapterId);
+                }
+            }
+            registerUnique(seen, type.key(), "Tool Artifact 类型", adapterId);
         }
     }
 
@@ -254,15 +404,6 @@ public final class AgentAdapterRegistry {
         if (!values.add(value)) throw conflict(kind + "重复: " + value);
     }
 
-    private static void registerArtifact(Set<String> values, AgentAdapterDescriptor.ArtifactType type,
-                                         String adapterId, String direction) {
-        if (type == null || type.type() == null || type.type().isBlank()
-                || type.version() == null || type.version().isBlank()) {
-            throw conflict("Artifact " + direction + " 类型声明不完整: " + adapterId);
-        }
-        registerUnique(values, type.key(), "Artifact 类型", adapterId);
-    }
-
     private static String safeId(AgentAdapter adapter) {
         if (adapter == null || adapter.descriptor() == null || adapter.descriptor().adapterId() == null) return "";
         return adapter.descriptor().adapterId();
@@ -270,5 +411,15 @@ public final class AgentAdapterRegistry {
 
     private static IllegalStateException conflict(String message) {
         return new IllegalStateException("AI_ADAPTER_CONFLICT: " + message);
+    }
+
+    /** Immutable Tool-level Artifact declaration used by the run registry. */
+    public record ToolContract(String adapterId, String toolName,
+                               List<AgentAdapterDescriptor.ArtifactType> produces,
+                               List<AgentAdapterDescriptor.ArtifactType> consumes) {
+        public ToolContract {
+            produces = produces == null ? List.of() : List.copyOf(produces);
+            consumes = consumes == null ? List.of() : List.copyOf(consumes);
+        }
     }
 }

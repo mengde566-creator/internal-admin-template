@@ -54,6 +54,7 @@ public class AgentRuntimeConfiguration {
     @Bean
     @ConditionalOnBean(AgentToolProvider.class)
     public ToolCallingManager gateToolCallingManager(ToolCallback[] callbacks,
+                                                     AgentAdapterRegistry adapters,
                                                      ObjectProvider<ObservationRegistry> observations) {
         ToolCallingManager delegate = DefaultToolCallingManager.builder()
                 .observationRegistry(observations.getIfAvailable(() -> ObservationRegistry.NOOP))
@@ -67,7 +68,7 @@ public class AgentRuntimeConfiguration {
                             + "\",\"message\":\"" + message + "\",\"data\":null}";
                 })
                 .build();
-        return new MixedToolCallingManager(delegate,
+        return new MixedToolCallingManager(delegate, adapters,
                 Arrays.stream(callbacks).map(callback -> callback.getToolDefinition().name()).toList());
     }
 

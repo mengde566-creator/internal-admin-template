@@ -526,6 +526,19 @@ class AgentStoreConversationContractTest {
     }
 
     @Test
+    void retryPlanRejectsTransientArtifactReferences() {
+        AgentStore store = new AgentStore(mock(JdbcTemplate.class), TestAgentAdapterFixtures.warehouseRegistry());
+        String transientReference = "{\"kind\":\"AGENT_RETRY_PLAN\",\"version\":1,"
+                + "\"sourceRunId\":\"run-1\",\"taskIntent\":\"CHAIN\",\"successfulCount\":1,"
+                + "\"subtasks\":[{\"order\":2,\"toolName\":\"artifact_consumer\","
+                + "\"arguments\":\"{\\\"artifactId\\\":\\\"run-private\\\"}\","
+                + "\"errorCode\":\"AI_TOOL_EXECUTION_FAILED\"}]}";
+
+        assertNull(store.parseRetryPlan(transientReference, "run-1"),
+                "瞬时 artifactId 不能穿过持久化 RetryPlan 边界");
+    }
+
+    @Test
     void concurrentRetryPlanConsumersHaveOneAtomicWinner() throws Exception {
         JdbcTemplate jdbc = database("conversation-retry-concurrent");
         AgentStore store = new AgentStore(jdbc, TestAgentAdapterFixtures.warehouseRegistry());

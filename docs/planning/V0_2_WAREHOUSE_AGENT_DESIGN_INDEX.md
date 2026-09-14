@@ -190,4 +190,4 @@ SLICE-06的正式产品行为以已确认需求[`V0_2_FILE_IMPORT_EXPORT.md`](..
 | SLICE-04 | 已确认（04A～04D） | 04A～04D已完成；分片完成 | 已通过；知识资产与dense&sparse检索、纯知识问答、混合查询、目录与完整资料读取均已收口 |
 | SLICE-05 | 已确认（05A～05C） | 05A～05C已完成；分片功能交付完成 | 05A完整观测、05B反馈与管理员诊断已通过；05C离线评测能力及确定性证据已通过，历史端到端Provider Gate为NOT_PASSED，当前只读边界修复状态为FIXED_NOT_REEVALUATED，不将其误报为Provider质量通过 |
 | SLICE-06 | 已确认（06A～06F） | 06A～06E已完成；06F有界维护与后端定向验证已完成，知识PostgreSQL/pgvector发布Gate已通过，浏览器两条用户链待合法登录会话 | 06A～06E已通过；06F确定性维护与Qwen发布Gate已通过；浏览器两条用户链待登录环境，MySQL/Oracle运行时未具备环境且不作为本轮06F闭环条件 |
-| SLICE-07 | 已确认 | 未开始 | 未开始 |
+| SLICE-07 | 已确认 | 07A、07B已完成；07C、07D未开始 | 07A、07B已通过 |

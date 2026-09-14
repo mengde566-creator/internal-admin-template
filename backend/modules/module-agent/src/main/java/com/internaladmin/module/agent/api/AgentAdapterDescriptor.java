@@ -46,19 +46,33 @@ public record AgentAdapterDescriptor(String adapterId,
     }
 
     /** One model-visible tool declaration owned by this adapter. */
-    public record Tool(String name, String description, String inputSchema) {
+    public record Tool(String name, String description, String inputSchema,
+                       List<ArtifactType> produces, List<ArtifactType> consumes) {
+        /** Tool declaration without an Artifact dependency contract. */
+        public Tool(String name, String description, String inputSchema) {
+            this(name, description, inputSchema, List.of(), List.of());
+        }
+
         public Tool {
             name = name == null ? null : name.trim();
             description = description == null ? "" : description;
             inputSchema = inputSchema == null ? "" : inputSchema;
+            produces = immutableList(produces);
+            consumes = immutableList(consumes);
         }
     }
 
     /** Versioned intermediate type declaration reserved for the Artifact stage. */
-    public record ArtifactType(String type, String version) {
+    public record ArtifactType(String type, String version, Set<String> safeProjectionFields) {
+        /** Versioned type without a producer projection declaration. */
+        public ArtifactType(String type, String version) {
+            this(type, version, Set.of());
+        }
+
         public ArtifactType {
             type = type == null ? null : type.trim();
             version = version == null ? null : version.trim();
+            safeProjectionFields = safeProjectionFields == null ? Set.of() : Set.copyOf(safeProjectionFields);
         }
 
         /** Stable key used by registry conflict checks. */

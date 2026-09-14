@@ -141,7 +141,7 @@ class KnowledgeToolProviderTest {
     }
 
     @Test
-    void repeatedLookupIsRejectedBeforeSecondKnowledgeCall() throws Exception {
+    void repeatedSuccessfulLookupIsDeduplicatedBeforeSecondKnowledgeCall() throws Exception {
         KnowledgeQueryApi knowledge = mock(KnowledgeQueryApi.class);
         when(knowledge.query("制度", 1)).thenReturn(KnowledgeQueryApi.Result.noEvidence(NOW));
         KnowledgeToolProvider provider = new KnowledgeToolProvider(knowledge);
@@ -150,7 +150,7 @@ class KnowledgeToolProviderTest {
         callback.call("{\"queryText\":\"制度\",\"operation\":\"SEARCH\"}", context(execution));
         JsonNode second = JSON.readTree(callback.call("{\"queryText\":\"制度\",\"operation\":\"SEARCH\"}", context(execution)));
 
-        assertEquals("AI_BUSINESS_REJECTED", second.get("code").asText());
+        assertEquals("SUCCESS", second.get("code").asText());
         verify(knowledge).query("制度", 1);
     }
 

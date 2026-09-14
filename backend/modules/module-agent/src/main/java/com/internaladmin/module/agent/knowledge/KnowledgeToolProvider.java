@@ -85,6 +85,10 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                         throw new IllegalArgumentException("queryText必须与当前用户问题一致");
                     }
                 }
+                String normalizedArguments = retryArguments(operation, normalized);
+                AgentExecutionContext.InvocationDecision invocation = execution.beginToolInvocation(
+                        TOOL_NAME, normalizedArguments);
+                if (invocation.duplicate()) return invocation.safeResult();
                 if (!execution.actor().hasAuthority("warehouse:read")) {
                     return failure(execution, AgentErrorCode.TOOL_FORBIDDEN);
                 }
@@ -105,7 +109,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                     execution.recordKnowledgeResult(result);
                     observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                     String output = catalogSuccessJson(catalog);
-                    execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
+                    execution.recordToolSuccess(TOOL_NAME, normalizedArguments, output);
                     execution.markToolOutputProduced();
                     emitCatalogCard(execution, catalog);
                     return output;
@@ -122,7 +126,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                         KnowledgeQueryApi.Result choice = KnowledgeQueryApi.Result.found(List.of(), Instant.now(), false);
                         execution.recordKnowledgeResult(choice);
                         String output = successJson(choice, "SECTION_SEARCH", List.of());
-                        execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
+                        execution.recordToolSuccess(TOOL_NAME, normalizedArguments, output);
                         return output;
                     }
                     KnowledgeQueryApi.DocumentResult document;
@@ -140,7 +144,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                             observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                             emitLocatedDocumentChoice(execution, locatedReferences);
                             String output = successJson(located, "SECTION_SEARCH", List.of());
-                            execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
+                            execution.recordToolSuccess(TOOL_NAME, normalizedArguments, output);
                             return output;
                         }
                         if (locatedReferences.isEmpty()) {
@@ -148,7 +152,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                             execution.recordKnowledgeResult(KnowledgeQueryApi.Result.noEvidence(located.queriedAt()));
                             observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                             String output = successJson(execution.knowledgeResult(), "ACTIVE_DOCUMENT", List.of());
-                            execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
+                            execution.recordToolSuccess(TOOL_NAME, normalizedArguments, output);
                             execution.markToolOutputProduced();
                             emitCard(execution, execution.knowledgeResult(), "NO_EVIDENCE", "ACTIVE_DOCUMENT", List.of());
                             return output;
@@ -168,7 +172,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                         execution.recordKnowledgeResult(stale);
                         observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                         String output = successJson(stale, "ACTIVE_DOCUMENT", List.of());
-                        execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
+                        execution.recordToolSuccess(TOOL_NAME, normalizedArguments, output);
                         execution.markToolOutputProduced();
                         emitCard(execution, stale, "NO_EVIDENCE", "ACTIVE_DOCUMENT", List.of());
                         return output;
@@ -179,7 +183,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                     execution.recordKnowledgeResult(result);
                     observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                     String output = successJson(result, "ACTIVE_DOCUMENT", List.of());
-                    execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
+                    execution.recordToolSuccess(TOOL_NAME, normalizedArguments, output);
                     execution.markToolOutputProduced();
                     emitCard(execution, result, result.status() == KnowledgeQueryApi.Status.NO_EVIDENCE ? "NO_EVIDENCE" : "ANSWERED",
                             "ACTIVE_DOCUMENT", List.of());
@@ -193,21 +197,22 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                             AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode());
                     String output = failureJson(AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(),
                             AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getMessage());
-                    execution.recordToolFailure(TOOL_NAME, retryArguments(operation, normalized),
+                    execution.recordToolFailure(TOOL_NAME, normalizedArguments,
                             AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode(), output);
                     emitCard(execution, result, "DEGRADED");
                     return output;
                 }
                 observe(execution, operation, "SUCCEEDED", retrievalStartedAt, null);
                 String output = successJson(result);
-                execution.recordToolSuccess(TOOL_NAME, retryArguments(operation, normalized), output);
+                execution.recordToolSuccess(TOOL_NAME, normalizedArguments, output);
                 execution.markToolOutputProduced();
                 emitCard(execution, result, result.status() == KnowledgeQueryApi.Status.NO_EVIDENCE ? "NO_EVIDENCE" : "ANSWERED");
                 return output;
             } catch (IllegalArgumentException invalid) {
                 String output = failureJson(AgentErrorCode.PARAMETER_INVALID.getCode(),
                         AgentErrorCode.PARAMETER_INVALID.getMessage());
-                execution.recordToolFailure(TOOL_NAME, null, AgentErrorCode.PARAMETER_INVALID.getCode(), output);
+                execution.recordNonTerminalToolFailure(TOOL_NAME, null,
+                        AgentErrorCode.PARAMETER_INVALID.getCode(), output);
                 return output;
             } catch (RuntimeException unavailable) {
                 if (retrievalInProgress) {
@@ -253,6 +258,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
             if (toolContext == null || !(toolContext.getContext().get(CONTEXT_KEY) instanceof AgentExecutionContext value)) {
                 throw new IllegalArgumentException("缺少可信运行上下文");
             }
+            value.ensureToolInvocationAllowed(TOOL_NAME);
             return value;
         }
 
@@ -353,14 +359,21 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
 
         private String failure(AgentExecutionContext execution, AgentErrorCode code) {
             String output = failureJson(code.getCode(), code.getMessage());
-            execution.recordToolFailure(TOOL_NAME, null, code.getCode(), output);
+            if (execution.knowledgeCallAttempted()) {
+                execution.recordToolFailure(TOOL_NAME, null, code.getCode(), output);
+            } else {
+                execution.recordNonTerminalToolFailure(TOOL_NAME, null, code.getCode(), output);
+            }
             return output;
         }
 
         private String retryArguments(String operation, String queryText) {
             if (queryText == null || queryText.isBlank()) return null;
             try {
-                return JSON.writeValueAsString(Map.of("operation", operation, "queryText", queryText));
+                Map<String, Object> arguments = new LinkedHashMap<>();
+                arguments.put("operation", operation);
+                arguments.put("queryText", queryText);
+                return JSON.writeValueAsString(arguments);
             } catch (RuntimeException ignored) {
                 return null;
             }

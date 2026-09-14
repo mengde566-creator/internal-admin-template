@@ -680,6 +680,11 @@ public class AgentStore implements FeedbackEligibilityApi {
             // over-budget plan is never made retryable or silently truncated.
             return;
         }
+        if (plan.subtasks().stream().anyMatch(item -> containsTransientArtifactToken(item.arguments()))) {
+            // A transient Artifact reference must never cross the in-memory
+            // run boundary.  The adapter must provide a safe ResumeRef first.
+            return;
+        }
         String taskId = jdbc.queryForObject("SELECT task_id FROM ai_run WHERE run_id = ?", String.class, runId);
         if (taskId == null || taskId.isBlank()) throw new SuccessBoundaryException(SuccessBoundaryFailure.TERMINAL_CAS);
         TaskRow task = task(taskId);
@@ -712,6 +717,7 @@ public class AgentStore implements FeedbackEligibilityApi {
         try {
             JsonNode root = JSON.readTree(value);
             if (root == null || !root.isObject()) return null;
+            if (containsArtifactData(root)) return null;
             java.util.Set<String> names = new java.util.HashSet<>();
             root.propertyNames().forEach(names::add);
             if (!names.equals(java.util.Set.of("kind", "version", "sourceRunId", "taskIntent", "successfulCount", "subtasks"))) return null;
@@ -733,6 +739,7 @@ public class AgentStore implements FeedbackEligibilityApi {
                         || arguments == null || arguments.length() > 8_000) return null;
                 JsonNode argumentObject = JSON.readTree(arguments);
                 if (argumentObject == null || !argumentObject.isObject()) return null;
+                if (containsArtifactData(argumentObject)) return null;
                 if ("knowledge_search".equals(toolName)) {
                     java.util.Set<String> argumentFields = new java.util.HashSet<>();
                     argumentObject.propertyNames().forEach(argumentFields::add);
@@ -754,6 +761,27 @@ public class AgentStore implements FeedbackEligibilityApi {
         catch (RuntimeException ignored) {
             return null;
         }
+    }
+
+    /** Artifact IDs and private payloads are transient and never valid retry data. */
+    private static boolean containsArtifactData(JsonNode node) {
+        if (node == null) return false;
+        if (node.isObject()) {
+            for (String field : node.propertyNames()) {
+                if ("artifactId".equals(field) || "privatePayload".equals(field)) return true;
+                if (containsArtifactData(node.get(field))) return true;
+            }
+        }
+        if (node.isArray()) {
+            for (JsonNode value : node) {
+                if (containsArtifactData(value)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsTransientArtifactToken(String value) {
+        return value != null && (value.contains("artifactId") || value.contains("privatePayload"));
     }
 
     private String retryPlanJson(RetryPlan plan) {

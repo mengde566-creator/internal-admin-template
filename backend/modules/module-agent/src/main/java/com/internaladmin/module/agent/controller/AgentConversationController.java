@@ -1,6 +1,7 @@
 package com.internaladmin.module.agent.controller;
 
 import com.internaladmin.module.agent.api.AgentRunContext;
+import com.internaladmin.module.agent.api.AgentAdapterRegistry;
 import com.internaladmin.module.agent.model.dto.ConversationDTO;
 import com.internaladmin.module.agent.model.dto.ConversationPageDTO;
 import com.internaladmin.module.agent.model.dto.MessagePageDTO;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -39,10 +41,18 @@ import java.util.Set;
 public class AgentConversationController {
     private final AgentActorResolver actors;
     private final AgentConversationService service;
+    private final AgentAdapterRegistry adapterRegistry;
 
     public AgentConversationController(AgentActorResolver actors, AgentConversationService service) {
+        this(actors, service, AgentAdapterRegistry.empty());
+    }
+
+    @Autowired
+    public AgentConversationController(AgentActorResolver actors, AgentConversationService service,
+                                       AgentAdapterRegistry adapterRegistry) {
         this.actors = actors;
         this.service = service;
+        this.adapterRegistry = adapterRegistry == null ? AgentAdapterRegistry.empty() : adapterRegistry;
     }
 
     /**
@@ -155,7 +165,8 @@ public class AgentConversationController {
                         }
                     }
                 },
-                new AtomicBoolean(), eventSequence, messageId, run.taskId(), run.taskRevision(), clarificationProduced);
+                new AtomicBoolean(), eventSequence, messageId, run.taskId(), run.taskRevision(), clarificationProduced,
+                adapterRegistry, actors::resolve);
         CompletableFuture.runAsync(() -> service.execute(run, execution,
                 event -> send(emitter, event), cancelled));
         return emitter;

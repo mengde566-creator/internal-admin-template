@@ -1,6 +1,6 @@
 # SLICE-07 通用 AI 边界、受信工具组合与学习路径设计
 
-> 状态：已确认；07A 已完成并提交，07B 已完成启动前复核
+> 状态：已确认；07A、07B 已完成并通过验收，下一步复核 07C
 > 版本：0.3
 > 确认日期：2026-09-10
 > 适用范围：`module-agent`、`module-knowledge`、`module-ai-observability`、业务 Agent Adapter、前端 AI 助手及 `docs/learning/`

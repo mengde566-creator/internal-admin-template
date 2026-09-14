@@ -1,11 +1,18 @@
 package com.internaladmin.module.agent.service;
 
+import com.internaladmin.module.agent.api.AgentAdapter;
 import com.internaladmin.module.agent.api.AgentRunContext;
+import com.internaladmin.module.agent.api.AgentAdapterRegistry;
+import com.internaladmin.module.agent.api.AgentErrorCode;
+import com.internaladmin.module.agent.api.AgentToolException;
 import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -21,25 +28,26 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                    AtomicBoolean clarificationProduced,
                                    AtomicReference<List<TrustedReference>> trustedReferencesRef,
                                    AtomicReference<List<TrustedKnowledgeReference>> trustedKnowledgeRef,
-                                   KnowledgeState knowledgeState) {
+                                   KnowledgeState knowledgeState,
+                                   AgentArtifactRegistry artifacts) {
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter) {
         this(actor, runId, message, toolCardEmitter, new AtomicBoolean(), new AtomicLong(),
-                java.util.UUID.randomUUID().toString(), null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState());
+                java.util.UUID.randomUUID().toString(), null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState(), new AgentArtifactRegistry(runId, actor, AgentAdapterRegistry.empty()));
     }
 
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
                                  AtomicLong eventSequence, String messageId) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState());
+                null, 0L, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState(), new AgentArtifactRegistry(runId, actor, AgentAdapterRegistry.empty()));
     }
 
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
                                  AtomicLong eventSequence, String messageId, String taskId, long taskRevision) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState());
+                taskId, taskRevision, new ToolOutcomeLedger(), new AtomicBoolean(), new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState(), new AgentArtifactRegistry(runId, actor, AgentAdapterRegistry.empty()));
     }
 
     /** Constructor used by the HTTP callback to share the trusted clarification marker. */
@@ -48,7 +56,7 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                  AtomicLong eventSequence, String messageId, String taskId, long taskRevision,
                                  AtomicBoolean clarificationProduced) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, new ToolOutcomeLedger(), clarificationProduced, new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState());
+                taskId, taskRevision, new ToolOutcomeLedger(), clarificationProduced, new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState(), new AgentArtifactRegistry(runId, actor, AgentAdapterRegistry.empty()));
     }
 
     /** Compatibility constructor retained for adapter fixtures that carry mutable state explicitly. */
@@ -58,7 +66,28 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                  ToolOutcomeLedger outcomes, AtomicBoolean clarificationProduced,
                                  AtomicReference<List<TrustedReference>> trustedReferencesRef) {
         this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
-                taskId, taskRevision, outcomes, clarificationProduced, trustedReferencesRef, new AtomicReference<>(List.of()), new KnowledgeState());
+                taskId, taskRevision, outcomes, clarificationProduced, trustedReferencesRef, new AtomicReference<>(List.of()), new KnowledgeState(), new AgentArtifactRegistry(runId, actor, AgentAdapterRegistry.empty()));
+    }
+
+    /** Creates a run context with static Tool contracts and current-actor re-resolution. */
+    public AgentExecutionContext(AgentRunContext actor, String runId, String message,
+                                 Consumer<String> toolCardEmitter, AtomicBoolean toolOutputProduced,
+                                 AtomicLong eventSequence, String messageId, String taskId, long taskRevision,
+                                 AtomicBoolean clarificationProduced, AgentAdapterRegistry adapterRegistry,
+                                 Function<Long, AgentRunContext> actorResolver) {
+        this(actor, runId, message, toolCardEmitter, toolOutputProduced, eventSequence, messageId,
+                taskId, taskRevision, new ToolOutcomeLedger(), clarificationProduced,
+                new AtomicReference<>(List.of()), new AtomicReference<>(List.of()), new KnowledgeState(),
+                new AgentArtifactRegistry(runId, actor, adapterRegistry, actorResolver));
+    }
+
+    /** Convenience constructor for focused Tool-chain fixtures. */
+    public AgentExecutionContext(AgentRunContext actor, String runId, String message,
+                                 Consumer<String> toolCardEmitter, AgentAdapterRegistry adapterRegistry,
+                                 Function<Long, AgentRunContext> actorResolver) {
+        this(actor, runId, message, toolCardEmitter, new AtomicBoolean(), new AtomicLong(),
+                java.util.UUID.randomUUID().toString(), null, 0L, new AtomicBoolean(),
+                adapterRegistry, actorResolver);
     }
 
     public void setTrustedReferences(List<TrustedReference> references) {
@@ -108,6 +137,26 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         outcomes.record(toolName, arguments, false, code, safeResult);
     }
 
+    /** Records a rejected pre-flight request without closing unrelated tools in this run. */
+    public void recordNonTerminalToolFailure(String toolName, String arguments,
+                                              String code, String safeResult) {
+        outcomes.record(toolName, arguments, false, code, safeResult, false);
+    }
+
+    /** Records an adapter-owned, versioned ResumeRef without persisting transient Artifact IDs. */
+    public void recordToolFailureResumeRef(String toolName, String resumeRefArguments,
+                                           String code, String safeResult) {
+        if (!isVersionedResumeRef(resumeRefArguments)) {
+            throw new AgentToolException(AgentErrorCode.ARTIFACT_INVALID,
+                    "ResumeRef必须是版本化且不含瞬时Artifact数据的对象");
+        }
+        outcomes.record(toolName, resumeRefArguments, false, code, safeResult);
+    }
+
+    private static boolean isVersionedResumeRef(String arguments) {
+        return AgentAdapter.RetryResumeRef.isValidArguments(arguments);
+    }
+
     public void recordToolSuccess(String toolName, String safeResult) {
         outcomes.record(toolName, null, true, null, safeResult);
     }
@@ -148,6 +197,39 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
 
     public int failedToolCount() {
         return outcomes.failureCount();
+    }
+
+    /** Rejects callbacks after the first failed Tool has closed this run's chain. */
+    public void ensureToolInvocationAllowed(String toolName) {
+        if (outcomes.closed()) {
+            throw new AgentToolException(AgentErrorCode.BUSINESS_REJECTED,
+                    "本次工具链已因前序失败闭锁");
+        }
+    }
+
+    /**
+     * Starts a callback after its server-side normalized arguments are known.
+     * A successful same-tool/same-arguments invocation is returned for safe
+     * deduplication and must not call its business Service again.
+     */
+    public InvocationDecision beginToolInvocation(String toolName, String normalizedArguments) {
+        ensureToolInvocationAllowed(toolName);
+        return outcomes.beginInvocation(toolName, normalizedArguments);
+    }
+
+    /** Clears all private Artifact payloads at every terminal run boundary. */
+    public void closeArtifacts() {
+        artifacts.close();
+    }
+
+    /** Alias that makes the server-only registry boundary explicit to adapters. */
+    public AgentArtifactRegistry artifactRegistry() {
+        return artifacts;
+    }
+
+    /** True after the first Tool failure or an explicit terminal closure. */
+    public boolean toolChainClosed() {
+        return outcomes.closed();
     }
 
     public boolean hasOutcomeOverflow() {
@@ -230,6 +312,16 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         return knowledgeState.consumeMixedAuthorization(toolName);
     }
 
+    /** Opens a one-shot, server-preflighted follow-up window for a later model round. */
+    public boolean openMixedFollowupAuthorization(List<String> toolNames) {
+        return knowledgeState.openMixedFollowupAuthorization(toolNames);
+    }
+
+    /** Consumes a one-shot follow-up authorization; model text cannot create it. */
+    public boolean consumeMixedFollowupAuthorization(String toolName) {
+        return knowledgeState.consumeMixedFollowupAuthorization(toolName);
+    }
+
     /** Always clear a batch authorization, including delegate failures. */
     public void closeMixedToolAuthorization() {
         knowledgeState.closeMixedAuthorization();
@@ -278,6 +370,7 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         private KnowledgeQueryApi.Result result;
         private String cardJson;
         private final List<String> mixedAuthorizedTools = new ArrayList<>();
+        private final List<String> mixedFollowupAuthorizedTools = new ArrayList<>();
         private String retryQuery;
         private String retryOperation;
         private String retryTool;
@@ -315,6 +408,24 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
             int index = mixedAuthorizedTools.indexOf(toolName);
             if (index < 0) return false;
             mixedAuthorizedTools.remove(index);
+            return true;
+        }
+
+        private synchronized boolean openMixedFollowupAuthorization(List<String> toolNames) {
+            if (attempted || !mixedFollowupAuthorizedTools.isEmpty() || toolNames == null
+                    || toolNames.isEmpty() || toolNames.size() > ToolOutcomeLedger.MAX_OUTCOMES) {
+                return false;
+            }
+            mixedFollowupAuthorizedTools.clear();
+            mixedFollowupAuthorizedTools.addAll(toolNames);
+            return true;
+        }
+
+        private synchronized boolean consumeMixedFollowupAuthorization(String toolName) {
+            if (toolName == null || mixedFollowupAuthorizedTools.isEmpty()) return false;
+            int index = mixedFollowupAuthorizedTools.indexOf(toolName);
+            if (index < 0) return false;
+            mixedFollowupAuthorizedTools.remove(index);
             return true;
         }
 
@@ -362,6 +473,16 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         private boolean overflowed;
         private boolean correctionOverflowed;
         private int correctionChars;
+        private boolean closed;
+        private final Map<String, ToolOutcome> successfulInvocations = new LinkedHashMap<>();
+
+        public synchronized InvocationDecision beginInvocation(String toolName, String arguments) {
+            String normalizedToolName = toolName == null ? "" : toolName;
+            String key = invocationKey(normalizedToolName, arguments);
+            ToolOutcome previous = successfulInvocations.get(key);
+            return previous == null ? InvocationDecision.proceed()
+                    : InvocationDecision.duplicate(previous.safeResult());
+        }
 
         public synchronized void record(String toolName, boolean success, String errorCode, String safeResult) {
             record(toolName, null, success, errorCode, safeResult);
@@ -369,6 +490,11 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
 
         public synchronized void record(String toolName, String arguments, boolean success,
                                         String errorCode, String safeResult) {
+            record(toolName, arguments, success, errorCode, safeResult, true);
+        }
+
+        public synchronized void record(String toolName, String arguments, boolean success,
+                                        String errorCode, String safeResult, boolean closeOnFailure) {
             if (outcomes.size() >= MAX_OUTCOMES) {
                 overflowed = true;
                 return;
@@ -389,6 +515,13 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
             }
             outcomes.add(new ToolOutcome(outcomes.size() + 1L,
                     normalizedToolName, arguments, success, errorCode, boundedSafeResult));
+            if (!success && closeOnFailure) closed = true;
+            if (success) successfulInvocations.put(invocationKey(normalizedToolName, arguments),
+                    outcomes.get(outcomes.size() - 1));
+        }
+
+        private static String invocationKey(String toolName, String arguments) {
+            return toolName + "\u0000" + (arguments == null ? "" : arguments);
         }
 
         public synchronized List<ToolOutcome> snapshot() {
@@ -419,6 +552,10 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
             return (int) outcomes.stream().filter(outcome -> !outcome.success()).count();
         }
 
+        public synchronized boolean closed() {
+            return closed;
+        }
+
         public synchronized String selectedFailureCode() {
             return outcomes.stream().filter(outcome -> !outcome.success()
                             && "AI_TOOL_FORBIDDEN".equals(outcome.errorCode()))
@@ -427,6 +564,12 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                             .map(ToolOutcome::errorCode).filter(code -> code != null && !code.isBlank())
                             .findFirst().orElse(null));
         }
+    }
+
+    /** Decision returned to a Tool after server-side invocation normalization. */
+    public record InvocationDecision(boolean duplicate, String safeResult) {
+        private static InvocationDecision proceed() { return new InvocationDecision(false, null); }
+        private static InvocationDecision duplicate(String safeResult) { return new InvocationDecision(true, safeResult); }
     }
 
     public record ToolOutcome(long sequence, String toolName, String arguments, boolean success,

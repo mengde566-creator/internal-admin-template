@@ -4,6 +4,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
 /**
  * Static business adapter contract for Agent capability composition.
  *
@@ -37,9 +40,37 @@ public interface AgentAdapter extends AgentToolProvider {
         return Optional.empty();
     }
 
+    /**
+     * Resolves the precise Tool names this adapter may authorize for a later
+     * model round after one accepted knowledge lookup.  Implementations must
+     * derive the result only from the original user message and trusted actor;
+     * returning an adapter's whole Tool set is not a valid implementation.
+     */
+    default Set<String> followupToolNames(AgentRunContext actor, String originalUserMessage) {
+        return Set.of();
+    }
+
     /** Tool names for which this adapter owns a safe, server-issued retry plan. */
     default Set<String> retryableToolNames() {
         return Set.of();
+    }
+
+    /** Validates and canonicalizes one adapter-owned persisted retry reference. */
+    default Optional<RetryResumeRef> validateRetryResumeRef(String toolName, String arguments,
+                                                             AgentRunContext actor) {
+        return Optional.empty();
+    }
+
+    /**
+     * Converts a validated canonical ResumeRef into the callback arguments for
+     * one retry.  Adapters whose canonical payload is already callback input
+     * may keep the default; adapters that wrap metadata around tool fields
+     * must unwrap only their own payload here.
+     */
+    default Optional<String> retryToolArguments(String toolName, String canonicalArguments,
+                                                 AgentRunContext actor) {
+        return canonicalArguments == null || canonicalArguments.isBlank()
+                ? Optional.empty() : Optional.of(canonicalArguments);
     }
 
     /** Maps one owned tool to its adapter task intent. */
@@ -59,5 +90,67 @@ public interface AgentAdapter extends AgentToolProvider {
 
     /** Stable failure raised by an adapter's user-input policy. */
     record ValidationFailure(String code, String message) {
+    }
+
+    /** Versioned, adapter-owned retry payload with no transient run state. */
+    record RetryResumeRef(String kind, int version, String arguments) {
+        private static final JsonMapper JSON = JsonMapper.builder().build();
+
+        public RetryResumeRef {
+            if (kind == null || kind.isBlank() || version <= 0
+                    || arguments == null || arguments.isBlank()) {
+                throw new IllegalArgumentException("无效的Adapter ResumeRef");
+            }
+            if (!metadataMatchesArguments(kind, version, arguments)) {
+                throw new IllegalArgumentException("Adapter ResumeRef元数据与参数不一致");
+            }
+        }
+
+        /** Returns whether arguments are a versioned object without transient run state. */
+        public static boolean isValidArguments(String arguments) {
+            try {
+                JsonNode root = JSON.readTree(arguments);
+                return root != null && root.isObject() && root.path("kind").isTextual()
+                        && !root.path("kind").asText().isBlank()
+                        && root.path("version").isIntegralNumber() && root.path("version").asInt() > 0
+                        && !containsTransientData(root);
+            } catch (RuntimeException invalid) {
+                return false;
+            }
+        }
+
+        /** Returns whether callback arguments are a JSON object without transient run state. */
+        public static boolean isSafeToolArguments(String arguments) {
+            try {
+                JsonNode root = JSON.readTree(arguments);
+                return root != null && root.isObject() && !containsTransientData(root);
+            } catch (RuntimeException invalid) {
+                return false;
+            }
+        }
+
+        private static boolean metadataMatchesArguments(String kind, int version, String arguments) {
+            try {
+                JsonNode root = JSON.readTree(arguments);
+                return isValidArguments(arguments)
+                        && kind.equals(root.path("kind").asText())
+                        && version == root.path("version").asInt();
+            } catch (RuntimeException invalid) {
+                return false;
+            }
+        }
+
+        private static boolean containsTransientData(JsonNode node) {
+            if (node == null) return false;
+            if (node.isObject()) {
+                if (node.has("artifactId") || node.has("privatePayload")) return true;
+                for (String field : node.propertyNames()) {
+                    if (containsTransientData(node.get(field))) return true;
+                }
+            } else if (node.isArray()) {
+                for (JsonNode child : node) if (containsTransientData(child)) return true;
+            }
+            return false;
+        }
     }
 }

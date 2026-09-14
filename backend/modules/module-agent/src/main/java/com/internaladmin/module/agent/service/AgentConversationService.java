@@ -328,6 +328,10 @@ public class AgentConversationService {
     /** 在发送卡片前持久化候选/结果修订，并返回与数据库实际revision一致的JSON。 */
     public PreparedCard recordCard(AgentStore.StartRun run, CardIdentity identity, String scopeFingerprint) {
         try {
+            if (identity == null || identity.json() == null
+                    || identity.json().contains("artifactId") || identity.json().contains("privatePayload")) {
+                throw new BusinessException(ErrorCode.CONFLICT, "卡片不得包含瞬时工具中间结果");
+            }
             ObjectNode object = (ObjectNode) JSON.readTree(identity.json());
             if ("clarification-choice".equals(identity.cardType())) {
                 if (run.taskId() == null || identity.optionsJson() == null) {
@@ -656,8 +660,18 @@ public class AgentConversationService {
         try { return Instant.parse(value); } catch (RuntimeException ignored) { return null; }
     }
 
+    /** Executes one run and always releases its in-memory Artifact registry. */
     public void execute(AgentStore.StartRun run, AgentExecutionContext execution,
                         Consumer<StreamEvent> emitter, AtomicBoolean cancelled) {
+        try {
+            executeInternal(run, execution, emitter, cancelled);
+        } finally {
+            execution.closeArtifacts();
+        }
+    }
+
+    private void executeInternal(AgentStore.StartRun run, AgentExecutionContext execution,
+                                 Consumer<StreamEvent> emitter, AtomicBoolean cancelled) {
         AiObservationRecorder.RunHandle observationRun = new AiObservationRecorder.RunHandle(run.runId());
         if (run.newRun()) {
             try {
@@ -774,7 +788,7 @@ public class AgentConversationService {
                 if (!adapterRegistry.isEmpty()) {
                     List<ToolCallback> callbacks = toolCallbacksFor(execution.actor());
                     if (!callbacks.isEmpty()) {
-                        request = request.toolCallbacks(callbacks);
+                        request.toolCallbacks(callbacks);
                     }
                 }
                 Flux<String> content = request.toolContext(java.util.Map.of("agent.execution", execution))
@@ -1090,6 +1104,7 @@ public class AgentConversationService {
             previousOrder = subtask.order();
             int before = execution.toolOutcomes().size();
             boolean knowledgeRetry = "knowledge_search".equals(subtask.toolName());
+            String callbackArguments = subtask.arguments();
             if (knowledgeRetry) {
                 KnowledgeRetryArguments retryArguments = retryKnowledgeArguments(subtask.arguments());
                 if (retryArguments == null) {
@@ -1099,6 +1114,16 @@ public class AgentConversationService {
                 }
                 execution.authorizeRetryKnowledgeQuery(retryArguments.operation(), retryArguments.queryText());
             } else {
+                if (adapterRegistry.ownerOf(subtask.toolName()).isPresent()) {
+                    java.util.Optional<String> decoded = adapterRegistry.retryToolArguments(
+                            execution.actor(), subtask.toolName(), subtask.arguments());
+                    if (decoded.isEmpty()) {
+                        execution.recordToolFailure(subtask.toolName(), subtask.arguments(),
+                                AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), null);
+                        break;
+                    }
+                    callbackArguments = decoded.get();
+                }
                 // A retry plan is a server-owned sequence.  If an earlier
                 // retried knowledge lookup has already locked the run, this
                 // one callback still needs an explicit one-shot authorization;
@@ -1106,12 +1131,12 @@ public class AgentConversationService {
                 execution.authorizeRetryTool(subtask.toolName());
             }
             try {
-                callbacks.get(subtask.toolName()).call(subtask.arguments(),
+                callbacks.get(subtask.toolName()).call(callbackArguments,
                         new ToolContext(Map.of("agent.execution", execution)));
             }
             catch (RuntimeException failure) {
                 if (execution.toolOutcomes().size() == before) {
-                    execution.recordToolFailure(subtask.toolName(), subtask.arguments(),
+                    execution.recordToolFailure(subtask.toolName(), callbackArguments,
                             subtask.errorCode(), null);
                 }
             } finally {
@@ -1119,7 +1144,7 @@ public class AgentConversationService {
                 else execution.clearRetryToolAuthorization();
             }
             if (execution.toolOutcomes().size() == before) {
-                execution.recordToolFailure(subtask.toolName(), subtask.arguments(),
+                execution.recordToolFailure(subtask.toolName(), callbackArguments,
                         AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), null);
             }
         }
@@ -1197,8 +1222,8 @@ public class AgentConversationService {
         }
     }
 
-    private AgentStore.RetryPlan buildRetryPlan(AgentStore.StartRun run, AgentExecutionContext execution,
-                                                int successfulCount, String taskIntent) {
+    AgentStore.RetryPlan buildRetryPlan(AgentStore.StartRun run, AgentExecutionContext execution,
+                                        int successfulCount, String taskIntent) {
         if (!execution.hasToolFailure() || execution.hasOutcomeOverflow() || execution.hasCorrectionOverflow()) return null;
         List<AgentStore.RetrySubtask> failures = new java.util.ArrayList<>();
         for (AgentExecutionContext.ToolOutcome outcome : execution.toolOutcomes()) {
@@ -1206,11 +1231,8 @@ public class AgentConversationService {
                 if (outcome.arguments() == null || outcome.arguments().isBlank()
                         || !java.util.Set.of("AI_TOOL_TIMEOUT", "AI_TOOL_DATABASE_UNAVAILABLE", "AI_TOOL_EXECUTION_FAILED",
                         AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode()).contains(outcome.errorCode())) return null;
-                boolean adapterRetryable = adapterRegistry.retryableToolNames(execution.actor())
-                        .contains(outcome.toolName());
                 // Knowledge remains a core provider until its dedicated adapter
                 // slice; keep its existing strict retry parser during that cut.
-                if (!adapterRetryable && !"knowledge_search".equals(outcome.toolName())) return null;
                 if ("knowledge_search".equals(outcome.toolName())) {
                     KnowledgeRetryArguments knowledgeArguments = retryKnowledgeArguments(outcome.arguments());
                     if (knowledgeArguments == null) return null;
@@ -1222,9 +1244,17 @@ public class AgentConversationService {
                         // would have to guess its document again.
                         return null;
                     }
+                    failures.add(new AgentStore.RetrySubtask(outcome.sequence(), outcome.toolName(),
+                            outcome.arguments(), outcome.errorCode()));
+                    continue;
                 }
+                // Adapter-owned Tools must provide a validated canonical
+                // ResumeRef.  Never fall back to the original model JSON.
+                java.util.Optional<AgentAdapter.RetryResumeRef> resumeRef = adapterRegistry.retryResumeRef(
+                        execution.actor(), outcome.toolName(), outcome.arguments());
+                if (resumeRef.isEmpty()) return null;
                 failures.add(new AgentStore.RetrySubtask(outcome.sequence(), outcome.toolName(),
-                        outcome.arguments(), outcome.errorCode()));
+                        resumeRef.get().arguments(), outcome.errorCode()));
             }
         }
         return failures.isEmpty() ? null : new AgentStore.RetryPlan(run.runId(), taskIntent, successfulCount, failures);
