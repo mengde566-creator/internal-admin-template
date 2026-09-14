@@ -1,12 +1,12 @@
 # 0.2 通用 AI 能力体系与仓储业务适配
 
 > 状态：已确认
-> 版本：0.2
+> 版本：0.3
 > 适用模块：通用 AI 能力、IAM、仓储参考业务
 > 关联前端：仓储资产已建立于 `frontend/src/modules/warehouse/`；AI 通用交互待建立
 > 关联后端：`module-warehouse` 已建立；`module-agent`、`module-knowledge`、`module-ai-observability` 和仓储 Agent 适配模块待建立
 > 关联材料：[`docs/PROJECT_VISION.md`](../docs/PROJECT_VISION.md)、[`docs/architecture/AI_CAPABILITY_SYSTEM.md`](../docs/architecture/AI_CAPABILITY_SYSTEM.md)、[`docs/architecture/DEPARTMENT_WAREHOUSE_DESIGN.md`](../docs/architecture/DEPARTMENT_WAREHOUSE_DESIGN.md)、[`docs/frontend/WAREHOUSE_UI_DESIGN.md`](../docs/frontend/WAREHOUSE_UI_DESIGN.md)
-> 更新日期：2026-08-27
+> 更新日期：2026-09-14
 
 ## 1. 一句话意图
 
@@ -35,6 +35,7 @@
 - DeepSeek使用Flash模型；该示例项目允许用户问题、业务工具结果和知识片段发送给外部模型，不设置业务字段合规过滤；Cookie、Session、密钥和系统凭据仍禁止发送；
 - Embedding模型使用阿里云百炼`qwen3.7-text-embedding`，固定1024维，通过外部API生成知识与查询向量；
 - 用户调换部门后，历史对话仍仅本人可见；旧历史不自动进入新Memory，历史中的业务对象重新打开时按当前权限校验。
+- 知识读取使用独立的通用权限 `ai:knowledge:read`，不再由 `warehouse:read` 或其他业务权限隐含授予；系统管理员默认拥有，既有自定义角色由管理员按实际职责明确补选。
 
 ## 3. 产品范围
 
@@ -124,7 +125,7 @@
 
 - 状态：已确认
 - 使用者：仓储业务用户、知识维护人员
-- 前置条件：Agent 已启用，知识 PostgreSQL 可用
+- 前置条件：Agent 已启用，知识 PostgreSQL 可用，用户拥有 `ai:knowledge:read`
 - 触发：用户询问仓储制度、编码或操作规则
 - 主流程：
   1. 模拟知识明确标记为合成材料；
@@ -133,7 +134,7 @@
   4. 回答展示可核对引用；
   5. 失效版本不得进入正常回答。
 - 异常流程：知识库不可用、没有命中和命中失效版本分别表达；禁止把实时库存问题交给向量检索回答。
-- 权限：首版公共模拟知识默认对已获仓储查询权限的用户可见；未来部门知识需单独确认。
+- 权限：读取当前公共知识必须拥有独立的 `ai:knowledge:read`；管理、上传和发布仍要求 `ai:knowledge:manage`，两者互不隐含。系统管理员默认拥有知识读取权限，既有自定义角色不按 `warehouse:read` 自动迁移，由管理员明确补选。07仍不建设按业务、部门或文档划分的知识空间权限。
 - 数据：知识数据存放在 PostgreSQL/pgvector；结构和基础数据通过知识模块自己的 Liquibase 入口管理。
 - 验收标准：固定问题可以追溯到正确文档和版本；停用文档不再命中；知识故障不会阻断人工仓储页面。
 - 非目标：OCR、大规模多格式 ETL、自动抓取企业资料、自动改写知识和实时库存向量化。

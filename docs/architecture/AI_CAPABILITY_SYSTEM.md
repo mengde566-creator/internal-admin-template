@@ -1,8 +1,8 @@
 # 0.2 通用 AI 能力体系架构
 
 > 状态：已确认
-> 版本：0.2
-> 更新日期：2026-08-20
+> 版本：0.3
+> 更新日期：2026-09-14
 > 关联需求：[`requirements/V0_2_AI_WAREHOUSE.md`](../../requirements/V0_2_AI_WAREHOUSE.md)
 > 仓储基础设计：[`DEPARTMENT_WAREHOUSE_DESIGN.md`](DEPARTMENT_WAREHOUSE_DESIGN.md)
 > Agent设计入口：[`V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md`](../planning/V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md)（第一版场景、功能与模块分片已确认）
@@ -78,7 +78,7 @@ module-warehouse
 
 这些契约只暴露DTO，禁止暴露DO、Mapper、MyBatis分页对象和内部Service。
 
-应用保留一个不触发模型、知识连接或AI数据写入的受保护能力发现接口，只返回`enabled`和已登记交互能力，供前端决定是否展示Agent入口；Agent关闭时不注册对话与SSE入口。0.2新增权限仅为`ai:knowledge:manage`、`ai:observability:view`和`ai:evaluation:run`并默认授予SYSTEM_ADMIN；普通仓储Agent用户继续由登录态和`warehouse:read`决定，不额外引入`ai:agent:use`。
+应用保留一个不触发模型、知识连接或AI数据写入的受保护能力发现接口，只返回`enabled`和已登记交互能力，供前端决定是否展示Agent入口；Agent关闭时不注册对话与SSE入口。0.2的AI权限为`ai:knowledge:read`、`ai:knowledge:manage`、`ai:observability:view`和`ai:evaluation:run`并默认授予SYSTEM_ADMIN；知识读取不再由任何业务权限隐含授予，既有自定义角色由管理员明确补选。仓储事实工具仍由登录态和`warehouse:read`决定，不额外引入`ai:agent:use`。
 
 ## 4. 后端技术组合
 

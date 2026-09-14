@@ -1,7 +1,7 @@
 # SLICE-07 通用 AI 边界、受信工具组合与学习路径设计
 
 > 状态：已确认；07A、07B 已完成并通过验收，07C 方案已细化、研发未开始
-> 版本：0.4
+> 版本：0.5
 > 确认日期：2026-09-10
 > 07C细化日期：2026-09-14
 > 适用范围：`module-agent`、`module-knowledge`、`module-ai-observability`、业务 Agent Adapter、前端 AI 助手及 `docs/learning/`
@@ -231,7 +231,7 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 
 ## 6. Knowledge 分域决定
 
-07 **不新增 `knowledgeSpace`、Adapter归属列、权限模型、管理页面或数据迁移**。
+07 **不新增 `knowledgeSpace`、Adapter归属列、管理页面或数据迁移**；只新增一个全局通用读取权限 `ai:knowledge:read`，替代Knowledge核心对 `warehouse:read` 的依赖。
 
 理由不是否认知识分域，而是当前只有一个真实业务知识消费者，尚不能可靠确定：一份文档属于一个还是多个空间、`shared`边界、部门/角色关系、编码唯一性、上传归属和跨业务混合检索规则。现在落表会把推测固化为持久化契约。
 
@@ -239,8 +239,10 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 
 - 将仓储合成资料、仓储检索提示、排序和评测资产归还仓储 Adapter；
 - Knowledge 核心通过服务端静态注册白名单接受内容包和检索策略；
+- Knowledge HTTP检索与Agent知识Tool统一要求`ai:knowledge:read`，不聚合各业务Adapter权限规则；仓储事实Tool仍独立要求`warehouse:read`；
 - 保持现有用户上传资料的产品语义，不用文档编码前缀或 `source_type` 伪装空间权限；
-- 不宣称已经完成多业务知识隔离。
+- `ai:knowledge:read`在07中表示可读取当前全部ACTIVE公共知识；它不授予知识管理、业务事实读取或部门数据范围。系统管理员默认拥有，既有自定义角色不自动迁移；
+- 不宣称已经完成多业务知识隔离。第二个真实业务出现受限知识时，必须先建立`knowledgeSpace`及权限模型，不能继续扩大这个全局权限的含义。
 
 当第二个真实业务知识消费者或明确的共享资料场景出现时，单独确认空间、唯一性、发布、检索、权限、迁移和页面语义后再实施。
 
@@ -300,9 +302,9 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 **当前代码事实**：
 
 - `module-knowledge` 的生产资源仍内置仓储合成资料，`KnowledgeService`、`KnowledgeMapper` 和 Embedding Client 仍持有仓储排序、兼容版本及检索指令；
-- `module-agent` 的 `KnowledgeToolProvider` 仍以默认 Spring Bean 注册，并内置 `warehouse:read`、仓储 Tool 描述和用户文案；
+- `module-agent` 的 `KnowledgeToolProvider` 仍以内置 Spring Bean 注册，并错误依赖 `warehouse:read`、仓储 Tool 描述和用户文案；
 - `module-ai-observability` 只认识一个仓储数据集，且资源加载失败后会读取仓库源码目录；其 manifest 还引用 `module-warehouse`、`module-knowledge` 的 `src/test/resources`。这条路径不能证明打包后的 JAR 可运行，必须在07C移除；
-- 通用 Agent 中仍有少量07A遗留的仓储字段和文案。它们不应被07C资产迁移掩盖：开工清单先逐项归属，属于07A边界缺口的在同一研发任务中先做最小修正，属于后续07D前端资产的明确留待07D。
+- 通用 Agent 中仍有07A遗留的仓储字段和文案。07C直接将通用澄清HTTP DTO的`warehouseCode/warehouseName`、`selectedWarehouseCode/selectedWarehouseName`改为`scopeCode/scopeName`、`selectedScopeCode/selectedScopeName`，同步OpenAPI、生成类型和仓储前端消费者；不保留旧字段兼容层，也不借此提前实施07D前端壳重构。
 
 **框架选择**：继续使用 Spring 的类型集合注入登记编译期 Provider，并由 Provider 显式提供 classpath `Resource`。资源必须能从依赖 JAR 以流读取，不使用 `Resource#getFile()`、仓库相对路径、`src/test/resources` 回退或运行时目录扫描。该方案只使用现有 Spring 能力，不引入插件框架和新运行时依赖：
 
@@ -315,14 +317,15 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 2. 所有仓储资源迁入 Adapter 唯一资源命名空间。内容导入、目录顺序、检索指令、后端测试和运行时读取必须消费同一内容包对象，不保留第二份测试拷贝或核心内置回退。
 3. 注册时校验内容包ID、文档/版本唯一性、ACTIVE版本、资源可读性、哈希及顺序；冲突、缺失或哈希不符时启动失败并给出稳定错误码，不静默跳过。
 4. `KnowledgeService` 保留文档生命周期、解析、发布、搜索和引用；Mapper移除仓储编码排序，固定资料顺序由注册表提供，用户上传资料保持稳定通用排序。
-5. `knowledge_search` 的执行桥可保留在通用 Agent，但 Tool 所有权、描述、权限和业务卡片必须由仓储Adapter登记；没有业务Adapter时不向模型暴露伪造的知识Tool。知识管理接口仍保持既有管理权限，07C不改变权限模型。
+5. `knowledge_search` 的通用执行桥、描述和安全结果合同由Agent/Knowledge公共能力拥有，统一要求`ai:knowledge:read`；业务Adapter只登记自己的内容包、检索指令和业务事实Tool，不提供或聚合Knowledge访问规则。知识管理接口继续要求`ai:knowledge:manage`，两个权限互不隐含。
+6. IAM注册`ai:knowledge:read`并加入系统管理员默认权限；既有自定义角色不按仓储权限自动补授。直接HTTP搜索与Agent知识Tool使用同一权限语义，避免两条访问链不一致。
 
 **评测数据集**：
 
 1. `module-ai-observability` 提供编译期 `AiEvaluationDatasetProvider` 与确定性注册表；核心负责版本、配置、哈希、类别、数量、执行和结果存储，不认识仓储数据集名称。
 2. 仓储Adapter拥有 manifest、case、config、召回与Embedding基线等全部运行期资源；所有 manifest 引用必须指向 Adapter JAR 内资源，历史Provider Gate结果只作为测试/历史证据，不作为核心运行时数据集。
 3. 数据集版本和配置版本全局唯一；配置与数据集的合法组合由 Provider 明确登记。未知版本、重复版本、错误组合、资源缺失和哈希不符必须稳定失败。
-4. 保持现有 `/api/ai/observability/evaluations` DTO 和前端调用方式；多数据集先由服务端返回确定顺序，07C不顺手建设数据集选择页面。
+4. `RunConfiguration`以加法字段明确所属`datasetVersion`，前端按同一登记组合启动，不能分别取两个列表的第一项拼接；07C不顺手建设数据集选择页面。
 5. 未安装任何评测Provider时，数据集和配置列表为空，应用仍可启动；发起未知评测必须明确拒绝。
 
 **可诊断性门槛**：日志不是故障后的补丁，必须随主链首轮实现进入测试。至少覆盖：内容包/数据集注册结果、固定资料导入阶段、资源校验阶段、评测运行开始与聚合终态。只记录 `runId/evaluationRunId`、Provider或内容包ID、版本、阶段、数量、状态、耗时和稳定错误码；禁止记录查询正文、知识正文、case步骤、预期/实际正文、向量、Provider响应、权限集合或资源内容。静态日志契约必须覆盖新增类。
@@ -330,12 +333,12 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 **执行顺序（同一研发主责，不拆成多人流水线）**：
 
 1. 边界清单：以生产代码、资源和POM的搜索结果冻结迁移前清单，区分07A遗留、07C资产和07D前端资产；不以文件名或旧报告代替事实。
-2. 先完成内容包与数据集注册契约、冲突/空注册/错误资源测试和安全日志，再迁移仓储资产；迁移过程中禁止同时维护旧、新两条运行路径。
+2. 先完成内容包与数据集注册契约、`ai:knowledge:read`权限传播、通用澄清DTO改名、冲突/空注册/错误资源测试和安全日志，再迁移仓储资产；迁移过程中禁止同时维护旧、新两条运行路径。
 3. 使用仓储Adapter中的同一资源族验证：注册与哈希异常测试、Knowledge导入/检索测试、评测执行测试、app-server装配测试。正常、异常和空注册场景只改变数据，不另造不同格式或不同来源的fixture。
 4. 构建真实 Adapter JAR，并从打包产物加载全部内容包和评测资源；测试必须在临时工作目录运行，以证明不依赖仓库源码路径。之后再进行一次现有知识与离线评测页面/API轻量走查。
 5. 在临时派生副本移除仓储Adapter，验证三个通用模块生产代码、资源和POM不含仓储语义且能够构建；不修改主工作区伪装裁剪。
 
-**完成门**：无仓储Adapter时通用模块生产代码、资源和POM无仓储语义，空注册行为明确且可构建；装回后，仓储内容包和评测数据集只能从同一个Adapter JAR资源族加载，既有知识导入/搜索/引用、离线评测API与页面不回归；日志能够按关联ID和阶段定位失败且不泄露内容。
+**完成门**：无仓储Adapter时通用模块生产代码、资源、POM和HTTP DTO无仓储语义，空注册行为明确且可构建；知识HTTP搜索与Agent知识Tool只认`ai:knowledge:read`，仓储事实Tool仍只认仓储权限；装回后，仓储内容包和评测数据集只能从同一个Adapter JAR资源族加载，既有知识导入/搜索/引用、离线评测API与页面不回归；日志能够按关联ID和阶段定位失败且不泄露内容。
 
 **本段止损**：同一实质路径连续两次失败，或者出现“单测通过但JAR/页面失败”，立即停止加补丁，先对照资源来源、构建产物、运行进程版本和日志关联ID复盘。不得通过恢复源码目录回退、复制fixture、放宽哈希或跳过打包验证让测试表面通过。
 
@@ -401,7 +404,7 @@ docs/learning/
 
 ### 10.4 数据与隐私
 
-- 不新增Knowledge或Artifact表，不修改Knowledge权限模型；
+- 不新增Knowledge或Artifact表；权限变化仅限新增全局`ai:knowledge:read`并与`ai:knowledge:manage`、业务权限分离，不建立Adapter权限聚合或知识空间授权；
 - `privatePayload`、完整Tool参数/结果和Artifact值不进入SSE、长期History、Memory、日志或Observability；
 - 每次Tool和Resume重新解析当前Actor并调用业务Service鉴权；
 - 无权、无数据、业务拒绝、技术失败和安全拒绝保持不同稳定语义。
@@ -420,7 +423,7 @@ docs/learning/
 出现以下任一情况立即停止当前分段并返回总设计师复核：
 
 1. 需要完整自研模型循环、DAG或新的持久化私有payload；
-2. Knowledge资产归位被迫改变未确认的数据或权限模型；
+2. Knowledge资产归位被迫增加已确认的`ai:knowledge:read`之外的数据或权限模型；
 3. 需要修改已确认的四字段Tool结果、SSE、History、Memory或唯一终态语义；
 4. 测试Adapter被迫承载客户、订单等生产业务，或者通用Core开始理解测试业务字段；
 5. 同一实质实现或验证路径连续两次失败且没有产生新证据。
@@ -444,7 +447,7 @@ SLICE-07 属于 L2：它改变公共模块边界、Tool组合方式、业务资�
 
 ## 13. 已确认决定
 
-截至2026-09-10，项目负责人已确认：
+截至2026-09-14，项目负责人已确认：
 
 1. 采用本设计的通用AI模板方向，不建设生成器或独立万能AI平台；
 2. `knowledgeSpace`及相关数据库、权限和页面改造推迟到第二个真实知识消费者；
@@ -456,3 +459,5 @@ SLICE-07 属于 L2：它改变公共模块边界、Tool组合方式、业务资�
 8. Artifact授权落到具体Tool；同一类型允许一个生产Tool和多个显式消费Tool。
 9. Artifact消费与恢复前重新解析当前Actor；`artifactId`和私有载荷不得进入RetryPlan或任何持久化/用户可见通道。
 10. 依赖链每个模型迭代最多一个ToolCall，首个失败闭锁后续回调，相同成功调用不得重放业务Service。
+11. 新增独立全局权限`ai:knowledge:read`；Knowledge读取不复用或聚合仓储及其他业务权限，系统管理员默认拥有，既有自定义角色由管理员明确补选。
+12. 07C直接完成通用澄清DTO的`scopeCode/scopeName`改名及必要前后端合同传播，不留到07D，也不建立旧字段兼容层。
