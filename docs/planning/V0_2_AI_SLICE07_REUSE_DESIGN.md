@@ -1,8 +1,9 @@
 # SLICE-07 通用 AI 边界、受信工具组合与学习路径设计
 
-> 状态：已确认；07A、07B 已完成并通过验收，下一步复核 07C
-> 版本：0.3
+> 状态：已确认；07A、07B 已完成并通过验收，07C 方案已细化、研发未开始
+> 版本：0.4
 > 确认日期：2026-09-10
+> 07C细化日期：2026-09-14
 > 适用范围：`module-agent`、`module-knowledge`、`module-ai-observability`、业务 Agent Adapter、前端 AI 助手及 `docs/learning/`
 > 需求依据：`REQ-V02-AI-009`、`FUN-10`、`SCN-RU-01`
 > 方向输入：`requirements/CUSTOMER_ORDER_SYSTEM.md` 为草稿，只用于检验扩展方向，不授权实现客户或订单功能
@@ -296,15 +297,47 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 
 **目标**：三个通用后端模块不再拥有仓储资料、提示和评测语义。
 
-范围：
+**当前代码事实**：
 
-- 仓储合成资料、目录排序和仓储检索提示迁入仓储Adapter内容包；
-- Knowledge核心保留通用生命周期、检索和引用；
-- 仓储评测manifest、case及资源迁入仓储Adapter数据集；
-- Observability核心支持多个编译期固定数据集并校验版本与哈希；
-- 严格遵守第6节，不增加Knowledge字段、权限或迁移。
+- `module-knowledge` 的生产资源仍内置仓储合成资料，`KnowledgeService`、`KnowledgeMapper` 和 Embedding Client 仍持有仓储排序、兼容版本及检索指令；
+- `module-agent` 的 `KnowledgeToolProvider` 仍以默认 Spring Bean 注册，并内置 `warehouse:read`、仓储 Tool 描述和用户文案；
+- `module-ai-observability` 只认识一个仓储数据集，且资源加载失败后会读取仓库源码目录；其 manifest 还引用 `module-warehouse`、`module-knowledge` 的 `src/test/resources`。这条路径不能证明打包后的 JAR 可运行，必须在07C移除；
+- 通用 Agent 中仍有少量07A遗留的仓储字段和文案。它们不应被07C资产迁移掩盖：开工清单先逐项归属，属于07A边界缺口的在同一研发任务中先做最小修正，属于后续07D前端资产的明确留待07D。
 
-完成门：无仓储Adapter时通用模块生产代码、资源和POM无仓储语义；装回后既有知识与评测能力不回归。
+**框架选择**：继续使用 Spring 的类型集合注入登记编译期 Provider，并由 Provider 显式提供 classpath `Resource`。资源必须能从依赖 JAR 以流读取，不使用 `Resource#getFile()`、仓库相对路径、`src/test/resources` 回退或运行时目录扫描。该方案只使用现有 Spring 能力，不引入插件框架和新运行时依赖：
+
+- [Spring Resource](https://docs.spring.io/spring-framework/reference/core/resources.html)
+- [Spring 集合注入](https://docs.spring.io/spring-framework/reference/core/beans/annotation-config/autowired.html)
+
+**Knowledge内容包**：
+
+1. `module-knowledge` 提供窄的编译期内容包契约和确定性注册表；仓储Adapter实现 `WarehouseKnowledgeContentPack`，拥有仓储 Markdown、索引、固定文档顺序、兼容版本标识和检索指令。
+2. 所有仓储资源迁入 Adapter 唯一资源命名空间。内容导入、目录顺序、检索指令、后端测试和运行时读取必须消费同一内容包对象，不保留第二份测试拷贝或核心内置回退。
+3. 注册时校验内容包ID、文档/版本唯一性、ACTIVE版本、资源可读性、哈希及顺序；冲突、缺失或哈希不符时启动失败并给出稳定错误码，不静默跳过。
+4. `KnowledgeService` 保留文档生命周期、解析、发布、搜索和引用；Mapper移除仓储编码排序，固定资料顺序由注册表提供，用户上传资料保持稳定通用排序。
+5. `knowledge_search` 的执行桥可保留在通用 Agent，但 Tool 所有权、描述、权限和业务卡片必须由仓储Adapter登记；没有业务Adapter时不向模型暴露伪造的知识Tool。知识管理接口仍保持既有管理权限，07C不改变权限模型。
+
+**评测数据集**：
+
+1. `module-ai-observability` 提供编译期 `AiEvaluationDatasetProvider` 与确定性注册表；核心负责版本、配置、哈希、类别、数量、执行和结果存储，不认识仓储数据集名称。
+2. 仓储Adapter拥有 manifest、case、config、召回与Embedding基线等全部运行期资源；所有 manifest 引用必须指向 Adapter JAR 内资源，历史Provider Gate结果只作为测试/历史证据，不作为核心运行时数据集。
+3. 数据集版本和配置版本全局唯一；配置与数据集的合法组合由 Provider 明确登记。未知版本、重复版本、错误组合、资源缺失和哈希不符必须稳定失败。
+4. 保持现有 `/api/ai/observability/evaluations` DTO 和前端调用方式；多数据集先由服务端返回确定顺序，07C不顺手建设数据集选择页面。
+5. 未安装任何评测Provider时，数据集和配置列表为空，应用仍可启动；发起未知评测必须明确拒绝。
+
+**可诊断性门槛**：日志不是故障后的补丁，必须随主链首轮实现进入测试。至少覆盖：内容包/数据集注册结果、固定资料导入阶段、资源校验阶段、评测运行开始与聚合终态。只记录 `runId/evaluationRunId`、Provider或内容包ID、版本、阶段、数量、状态、耗时和稳定错误码；禁止记录查询正文、知识正文、case步骤、预期/实际正文、向量、Provider响应、权限集合或资源内容。静态日志契约必须覆盖新增类。
+
+**执行顺序（同一研发主责，不拆成多人流水线）**：
+
+1. 边界清单：以生产代码、资源和POM的搜索结果冻结迁移前清单，区分07A遗留、07C资产和07D前端资产；不以文件名或旧报告代替事实。
+2. 先完成内容包与数据集注册契约、冲突/空注册/错误资源测试和安全日志，再迁移仓储资产；迁移过程中禁止同时维护旧、新两条运行路径。
+3. 使用仓储Adapter中的同一资源族验证：注册与哈希异常测试、Knowledge导入/检索测试、评测执行测试、app-server装配测试。正常、异常和空注册场景只改变数据，不另造不同格式或不同来源的fixture。
+4. 构建真实 Adapter JAR，并从打包产物加载全部内容包和评测资源；测试必须在临时工作目录运行，以证明不依赖仓库源码路径。之后再进行一次现有知识与离线评测页面/API轻量走查。
+5. 在临时派生副本移除仓储Adapter，验证三个通用模块生产代码、资源和POM不含仓储语义且能够构建；不修改主工作区伪装裁剪。
+
+**完成门**：无仓储Adapter时通用模块生产代码、资源和POM无仓储语义，空注册行为明确且可构建；装回后，仓储内容包和评测数据集只能从同一个Adapter JAR资源族加载，既有知识导入/搜索/引用、离线评测API与页面不回归；日志能够按关联ID和阶段定位失败且不泄露内容。
+
+**本段止损**：同一实质路径连续两次失败，或者出现“单测通过但JAR/页面失败”，立即停止加补丁，先对照资源来源、构建产物、运行进程版本和日志关联ID复盘。不得通过恢复源码目录回退、复制fixture、放宽哈希或跳过打包验证让测试表面通过。
 
 ### 07D：前端通用壳、学习资产与裁剪证明
 
