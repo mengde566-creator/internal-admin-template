@@ -5,6 +5,8 @@ import com.internaladmin.module.agent.api.AgentAdapterRegistry;
 import com.internaladmin.module.agent.api.AgentErrorCode;
 import com.internaladmin.module.agent.api.AgentRunContext;
 import com.internaladmin.module.agent.api.AgentToolException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -26,6 +28,7 @@ import java.util.function.Function;
  * only the producing or consuming Tool receives that object.</p>
  */
 public final class AgentArtifactRegistry implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(AgentArtifactRegistry.class);
     private static final Duration MAX_TTL = Duration.ofMinutes(15);
     private static final int MAX_SUMMARY_CHARS = 2_000;
     private static final int MAX_ARTIFACTS = 20;
@@ -68,34 +71,46 @@ public final class AgentArtifactRegistry implements AutoCloseable {
                                              String safeSummary,
                                              Object safeProjection,
                                              Duration ttl) {
-        ensureOpen();
-        AgentAdapterRegistry.ToolContract contract = contract(producerToolName);
-        AgentAdapterDescriptor.ArtifactType declaredType = type == null ? null : contract.produces().stream()
-                .filter(candidate -> candidate.key().equals(type.key())).findFirst().orElse(null);
-        if (declaredType == null) {
-            throw invalid("生产Tool未声明该Artifact类型");
+        long started = System.nanoTime();
+        try {
+            ensureOpen();
+            AgentAdapterRegistry.ToolContract contract = contract(producerToolName);
+            AgentAdapterDescriptor.ArtifactType declaredType = type == null ? null : contract.produces().stream()
+                    .filter(candidate -> candidate.key().equals(type.key())).findFirst().orElse(null);
+            if (declaredType == null) {
+                throw invalid("生产Tool未声明该Artifact类型");
+            }
+            if (privatePayload == null) throw invalid("Artifact私有载荷不能为空");
+            if (entries.size() >= MAX_ARTIFACTS) throw invalid("本次运行Artifact数量超限");
+            String step = requireText(producerStepId, "producerStepId");
+            String summary = safeSummary == null ? "" : safeSummary;
+            if (summary.length() > MAX_SUMMARY_CHARS) throw invalid("Artifact摘要超出预算");
+            Duration effectiveTtl = ttl == null ? Duration.ofMinutes(5) : ttl;
+            if (effectiveTtl.isNegative() || effectiveTtl.isZero() || effectiveTtl.compareTo(MAX_TTL) > 0) {
+                throw invalid("Artifact有效期超出允许范围");
+            }
+            AgentRunContext actor = resolveActor();
+            if (contracts.ownerOf(producerToolName).filter(owner -> owner.isAvailable(actor)).isEmpty()) {
+                throw invalid("当前身份无权生产该Artifact");
+            }
+            Instant createdAt = Instant.now();
+            ArtifactMetadata metadata = new ArtifactMetadata(UUID.randomUUID().toString(), runId,
+                    contract.adapterId(), producerToolName, step, type.type(), type.version(),
+                    actor.scopeFingerprint(), createdAt, createdAt.plus(effectiveTtl), summary,
+                    immutableProjection(safeProjection, declaredType.safeProjectionFields()));
+            entries.put(metadata.artifactId(), new Entry(metadata, privatePayload));
+            ArtifactRef reference = new ArtifactRef(metadata.artifactId(), metadata.artifactType(),
+                    metadata.artifactTypeVersion(), metadata.safeSummary(), metadata.safeProjection());
+            LOG.debug("event=agent_artifact_produce stage=produce result=accepted runId={} producerTool={} artifactType={} artifactVersion={} count={} durationMs={}",
+                    runId, logToken(producerToolName), logToken(type.type()), logToken(type.version()),
+                    entries.size(), elapsedMillis(started));
+            return reference;
+        } catch (AgentToolException failure) {
+            LOG.warn("event=agent_artifact_produce stage=produce result=rejected runId={} producerTool={} artifactType={} artifactVersion={} code={} count={} durationMs={}",
+                    runId, logToken(producerToolName), artifactType(type), artifactVersion(type),
+                    errorCode(failure), entries.size(), elapsedMillis(started));
+            throw failure;
         }
-        if (privatePayload == null) throw invalid("Artifact私有载荷不能为空");
-        if (entries.size() >= MAX_ARTIFACTS) throw invalid("本次运行Artifact数量超限");
-        String step = requireText(producerStepId, "producerStepId");
-        String summary = safeSummary == null ? "" : safeSummary;
-        if (summary.length() > MAX_SUMMARY_CHARS) throw invalid("Artifact摘要超出预算");
-        Duration effectiveTtl = ttl == null ? Duration.ofMinutes(5) : ttl;
-        if (effectiveTtl.isNegative() || effectiveTtl.isZero() || effectiveTtl.compareTo(MAX_TTL) > 0) {
-            throw invalid("Artifact有效期超出允许范围");
-        }
-        AgentRunContext actor = resolveActor();
-        if (contracts.ownerOf(producerToolName).filter(owner -> owner.isAvailable(actor)).isEmpty()) {
-            throw invalid("当前身份无权生产该Artifact");
-        }
-        Instant createdAt = Instant.now();
-        ArtifactMetadata metadata = new ArtifactMetadata(UUID.randomUUID().toString(), runId,
-                contract.adapterId(), producerToolName, step, type.type(), type.version(),
-                actor.scopeFingerprint(), createdAt, createdAt.plus(effectiveTtl), summary,
-                immutableProjection(safeProjection, declaredType.safeProjectionFields()));
-        entries.put(metadata.artifactId(), new Entry(metadata, privatePayload));
-        return new ArtifactRef(metadata.artifactId(), metadata.artifactType(), metadata.artifactTypeVersion(),
-                metadata.safeSummary(), metadata.safeProjection());
     }
 
     /** Convenience producer overload using the bounded default TTL. */
@@ -113,33 +128,47 @@ public final class AgentArtifactRegistry implements AutoCloseable {
     public synchronized ArtifactConsumption consume(String consumerToolName,
                                                      String artifactId,
                                                      AgentAdapterDescriptor.ArtifactType expectedType) {
-        ensureOpen();
-        AgentAdapterRegistry.ToolContract contract = contract(consumerToolName);
-        if (artifactId == null || artifactId.isBlank() || expectedType == null
-                || contract.consumes().stream().noneMatch(type -> type.key().equals(expectedType.key()))) {
-            throw invalid("消费Tool未声明该Artifact类型");
+        long started = System.nanoTime();
+        String producerTool = "unknown";
+        try {
+            ensureOpen();
+            AgentAdapterRegistry.ToolContract contract = contract(consumerToolName);
+            if (artifactId == null || artifactId.isBlank() || expectedType == null
+                    || contract.consumes().stream().noneMatch(type -> type.key().equals(expectedType.key()))) {
+                throw invalid("消费Tool未声明该Artifact类型");
+            }
+            Entry entry = entries.get(artifactId);
+            if (entry == null) throw invalid("Artifact不属于当前运行");
+            ArtifactMetadata metadata = entry.metadata;
+            producerTool = metadata.producerToolName();
+            if (!runId.equals(metadata.runId())) throw invalid("Artifact不属于当前运行");
+            if (contracts.artifactProducer(expectedType)
+                    .filter(metadata.producerToolName()::equals).isEmpty()) {
+                throw invalid("Artifact生产Tool不匹配");
+            }
+            if (!metadata.artifactType().equals(expectedType.type())
+                    || !metadata.artifactTypeVersion().equals(expectedType.version())) {
+                throw invalid("Artifact类型或版本不匹配");
+            }
+            if (Instant.now().isAfter(metadata.expiresAt())) throw invalid("Artifact已过期");
+            AgentRunContext actor = resolveActor();
+            if (contracts.ownerOf(consumerToolName).filter(owner -> owner.isAvailable(actor)).isEmpty()) {
+                throw invalid("当前身份无权消费该Artifact");
+            }
+            if (!Objects.equals(metadata.scopeFingerprint(), actor.scopeFingerprint())) {
+                throw invalid("Artifact权限范围已变化");
+            }
+            LOG.debug("event=agent_artifact_consume stage=consume result=accepted runId={} producerTool={} consumerTool={} artifactType={} artifactVersion={} count={} durationMs={}",
+                    runId, logToken(metadata.producerToolName()), logToken(consumerToolName),
+                    logToken(metadata.artifactType()), logToken(metadata.artifactTypeVersion()),
+                    entries.size(), elapsedMillis(started));
+            return new ArtifactConsumption(metadata, entry.privatePayload);
+        } catch (AgentToolException failure) {
+            LOG.warn("event=agent_artifact_consume stage=consume result=rejected runId={} producerTool={} consumerTool={} artifactType={} artifactVersion={} code={} count={} durationMs={}",
+                    runId, logToken(producerTool), logToken(consumerToolName), artifactType(expectedType), artifactVersion(expectedType),
+                    errorCode(failure), entries.size(), elapsedMillis(started));
+            throw failure;
         }
-        Entry entry = entries.get(artifactId);
-        if (entry == null) throw invalid("Artifact不属于当前运行");
-        ArtifactMetadata metadata = entry.metadata;
-        if (!runId.equals(metadata.runId())) throw invalid("Artifact不属于当前运行");
-        if (contracts.artifactProducer(expectedType)
-                .filter(metadata.producerToolName()::equals).isEmpty()) {
-            throw invalid("Artifact生产Tool不匹配");
-        }
-        if (!metadata.artifactType().equals(expectedType.type())
-                || !metadata.artifactTypeVersion().equals(expectedType.version())) {
-            throw invalid("Artifact类型或版本不匹配");
-        }
-        if (Instant.now().isAfter(metadata.expiresAt())) throw invalid("Artifact已过期");
-        AgentRunContext actor = resolveActor();
-        if (contracts.ownerOf(consumerToolName).filter(owner -> owner.isAvailable(actor)).isEmpty()) {
-            throw invalid("当前身份无权消费该Artifact");
-        }
-        if (!Objects.equals(metadata.scopeFingerprint(), actor.scopeFingerprint())) {
-            throw invalid("Artifact权限范围已变化");
-        }
-        return new ArtifactConsumption(metadata, entry.privatePayload);
     }
 
     /** Convenience consumer overload for callers that hold type and version separately. */
@@ -162,8 +191,11 @@ public final class AgentArtifactRegistry implements AutoCloseable {
     /** Closes the run registry and releases all private payload references. */
     @Override
     public synchronized void close() {
+        int released = entries.size();
         closed = true;
         entries.clear();
+        LOG.debug("event=agent_artifact_close stage=close result=closed runId={} producerTool=none consumerTool=none artifactType=none artifactVersion=none count={} durationMs=0",
+                runId, released);
     }
 
     private AgentAdapterRegistry.ToolContract contract(String toolName) {
@@ -192,6 +224,27 @@ public final class AgentArtifactRegistry implements AutoCloseable {
 
     private static AgentToolException invalid(String message) {
         return new AgentToolException(AgentErrorCode.ARTIFACT_INVALID, message);
+    }
+
+    private static String artifactType(AgentAdapterDescriptor.ArtifactType type) {
+        return type == null ? "none" : logToken(type.type());
+    }
+
+    private static String artifactVersion(AgentAdapterDescriptor.ArtifactType type) {
+        return type == null ? "none" : logToken(type.version());
+    }
+
+    private static String errorCode(AgentToolException failure) {
+        return failure.getErrorCode() == null ? "UNKNOWN" : failure.getErrorCode().getCode();
+    }
+
+    private static String logToken(String value) {
+        if (value == null || value.isBlank()) return "none";
+        return value.replaceAll("[^A-Za-z0-9_.:-]", "_");
+    }
+
+    private static long elapsedMillis(long startedNanos) {
+        return Math.max(0L, (System.nanoTime() - startedNanos) / 1_000_000L);
     }
 
     private static Object immutableProjection(Object projection, Set<String> allowedFields) {

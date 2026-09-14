@@ -6,6 +6,8 @@ import com.internaladmin.module.agent.api.AgentAdapterRegistry;
 import com.internaladmin.module.agent.api.AgentErrorCode;
 import com.internaladmin.module.agent.api.AgentToolException;
 import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -30,6 +32,7 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                    AtomicReference<List<TrustedKnowledgeReference>> trustedKnowledgeRef,
                                    KnowledgeState knowledgeState,
                                    AgentArtifactRegistry artifacts) {
+    private static final Logger LOG = LoggerFactory.getLogger(AgentExecutionContext.class);
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter) {
         this(actor, runId, message, toolCardEmitter, new AtomicBoolean(), new AtomicLong(),
@@ -126,21 +129,26 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
     /** Compatibility marker used by narrow tests; production callbacks use recordToolFailure. */
     public void markToolFailure(String code) {
         outcomes.record("", null, false, code, null);
+        logToolOutcome("", false, code);
     }
 
     public void recordToolFailure(String toolName, String code, String safeResult) {
         outcomes.record(toolName, null, false, code, safeResult);
+        logToolOutcome(toolName, false, code);
     }
 
     /** Records the post-validation, default-filled arguments used by a retryable callback. */
     public void recordToolFailure(String toolName, String arguments, String code, String safeResult) {
         outcomes.record(toolName, arguments, false, code, safeResult);
+        logToolOutcome(toolName, false, code);
     }
 
     /** Records a rejected pre-flight request without closing unrelated tools in this run. */
     public void recordNonTerminalToolFailure(String toolName, String arguments,
                                               String code, String safeResult) {
         outcomes.record(toolName, arguments, false, code, safeResult, false);
+        LOG.warn("event=agent_tool_call stage=preflight result=rejected runId={} tool={} code={} durationMs={}",
+                runId, logToken(toolName), logToken(code), outcomes.lastDurationMillis());
     }
 
     /** Records an adapter-owned, versioned ResumeRef without persisting transient Artifact IDs. */
@@ -151,6 +159,7 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                     "ResumeRef必须是版本化且不含瞬时Artifact数据的对象");
         }
         outcomes.record(toolName, resumeRefArguments, false, code, safeResult);
+        logToolOutcome(toolName, false, code);
     }
 
     private static boolean isVersionedResumeRef(String arguments) {
@@ -159,11 +168,13 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
 
     public void recordToolSuccess(String toolName, String safeResult) {
         outcomes.record(toolName, null, true, null, safeResult);
+        logToolOutcome(toolName, true, "SUCCESS");
     }
 
     /** Records the post-validation, default-filled arguments used by a retryable callback. */
     public void recordToolSuccess(String toolName, String arguments, String safeResult) {
         outcomes.record(toolName, arguments, true, null, safeResult);
+        logToolOutcome(toolName, true, "SUCCESS");
     }
 
     public String toolErrorCode() {
@@ -202,6 +213,8 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
     /** Rejects callbacks after the first failed Tool has closed this run's chain. */
     public void ensureToolInvocationAllowed(String toolName) {
         if (outcomes.closed()) {
+            LOG.warn("event=agent_tool_call stage=guard result=rejected runId={} tool={} code={}",
+                    runId, logToken(toolName), AgentErrorCode.BUSINESS_REJECTED.getCode());
             throw new AgentToolException(AgentErrorCode.BUSINESS_REJECTED,
                     "本次工具链已因前序失败闭锁");
         }
@@ -214,7 +227,11 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
      */
     public InvocationDecision beginToolInvocation(String toolName, String normalizedArguments) {
         ensureToolInvocationAllowed(toolName);
-        return outcomes.beginInvocation(toolName, normalizedArguments);
+        InvocationDecision decision = outcomes.beginInvocation(toolName, normalizedArguments);
+        LOG.debug("event=agent_tool_call stage=begin result={} runId={} tool={} code={}",
+                decision.duplicate() ? "duplicate" : "started", runId, logToken(toolName),
+                decision.duplicate() ? "DEDUPLICATED" : "PENDING");
+        return decision;
     }
 
     /** Clears all private Artifact payloads at every terminal run boundary. */
@@ -309,7 +326,11 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
 
     /** Consume one pre-registered callback invocation in the current batch. */
     public boolean consumeMixedToolAuthorization(String toolName) {
-        return knowledgeState.consumeMixedAuthorization(toolName);
+        boolean consumed = knowledgeState.consumeMixedAuthorization(toolName);
+        LOG.debug("event=agent_mixed_authorization stage=consume result={} runId={} tool={} reason={}",
+                consumed ? "granted" : "denied", runId, logToken(toolName),
+                consumed ? "registered" : "not_registered");
+        return consumed;
     }
 
     /** Opens a one-shot, server-preflighted follow-up window for a later model round. */
@@ -319,12 +340,33 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
 
     /** Consumes a one-shot follow-up authorization; model text cannot create it. */
     public boolean consumeMixedFollowupAuthorization(String toolName) {
-        return knowledgeState.consumeMixedFollowupAuthorization(toolName);
+        boolean consumed = knowledgeState.consumeMixedFollowupAuthorization(toolName);
+        LOG.debug("event=agent_followup_authorization stage=consume result={} runId={} tool={} reason={}",
+                consumed ? "granted" : "denied", runId, logToken(toolName),
+                consumed ? "registered" : "not_registered");
+        return consumed;
     }
 
     /** Always clear a batch authorization, including delegate failures. */
     public void closeMixedToolAuthorization() {
         knowledgeState.closeMixedAuthorization();
+        LOG.debug("event=agent_mixed_authorization stage=close result=closed runId={} toolCount=0", runId);
+    }
+
+    private void logToolOutcome(String toolName, boolean success, String code) {
+        String result = success ? "success" : "failed";
+        if (success) {
+            LOG.debug("event=agent_tool_call stage=callback result={} runId={} tool={} code={} durationMs={}",
+                    result, runId, logToken(toolName), logToken(code), outcomes.lastDurationMillis());
+        } else {
+            LOG.warn("event=agent_tool_call stage=callback result={} runId={} tool={} code={} durationMs={}",
+                    result, runId, logToken(toolName), logToken(code), outcomes.lastDurationMillis());
+        }
+    }
+
+    private static String logToken(String value) {
+        if (value == null || value.isBlank()) return "none";
+        return value.replaceAll("[^A-Za-z0-9_.:-]", "_");
     }
 
     /** Server-only authorization used by a persisted Knowledge retry child. */
@@ -475,13 +517,16 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         private int correctionChars;
         private boolean closed;
         private final Map<String, ToolOutcome> successfulInvocations = new LinkedHashMap<>();
+        private final Map<String, Long> invocationStartedNanos = new LinkedHashMap<>();
+        private long lastDurationMillis;
 
         public synchronized InvocationDecision beginInvocation(String toolName, String arguments) {
             String normalizedToolName = toolName == null ? "" : toolName;
             String key = invocationKey(normalizedToolName, arguments);
             ToolOutcome previous = successfulInvocations.get(key);
-            return previous == null ? InvocationDecision.proceed()
-                    : InvocationDecision.duplicate(previous.safeResult());
+            if (previous != null) return InvocationDecision.duplicate(previous.safeResult());
+            invocationStartedNanos.putIfAbsent(key, System.nanoTime());
+            return InvocationDecision.proceed();
         }
 
         public synchronized void record(String toolName, boolean success, String errorCode, String safeResult) {
@@ -495,11 +540,22 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
 
         public synchronized void record(String toolName, String arguments, boolean success,
                                         String errorCode, String safeResult, boolean closeOnFailure) {
+            String normalizedToolName = toolName == null ? "" : toolName;
+            String invocationKey = invocationKey(normalizedToolName, arguments);
+            Long started = invocationStartedNanos.remove(invocationKey);
+            if (started == null && (arguments == null || arguments.isBlank())) {
+                String prefix = normalizedToolName + "\u0000";
+                String latestKey = null;
+                for (String key : invocationStartedNanos.keySet()) {
+                    if (key.startsWith(prefix)) latestKey = key;
+                }
+                if (latestKey != null) started = invocationStartedNanos.remove(latestKey);
+            }
+            lastDurationMillis = started == null ? 0L : elapsedMillis(started);
             if (outcomes.size() >= MAX_OUTCOMES) {
                 overflowed = true;
                 return;
             }
-            String normalizedToolName = toolName == null ? "" : toolName;
             String boundedSafeResult = safeResult;
             if (boundedSafeResult != null && !boundedSafeResult.isBlank()) {
                 String prefix = normalizedToolName + (success ? "成功工具结果：" : "失败工具结果：");
@@ -516,8 +572,16 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
             outcomes.add(new ToolOutcome(outcomes.size() + 1L,
                     normalizedToolName, arguments, success, errorCode, boundedSafeResult));
             if (!success && closeOnFailure) closed = true;
-            if (success) successfulInvocations.put(invocationKey(normalizedToolName, arguments),
+            if (success) successfulInvocations.put(invocationKey,
                     outcomes.get(outcomes.size() - 1));
+        }
+
+        public synchronized long lastDurationMillis() {
+            return lastDurationMillis;
+        }
+
+        private static long elapsedMillis(long startedNanos) {
+            return Math.max(0L, (System.nanoTime() - startedNanos) / 1_000_000L);
         }
 
         private static String invocationKey(String toolName, String arguments) {

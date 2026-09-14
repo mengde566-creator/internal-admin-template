@@ -38,3 +38,9 @@ module-agent 持有 Conversation、Run、Message、知识卡片 History 字段�
 ## 8. 素材与许可证
 
 无外部素材。
+
+## 9. 诊断信号及禁止字段
+
+复杂 Agent 链路使用统一的英文事件名和 `key=value` 字段：`agent_registry_initialized`（INFO，注册快照）、`agent_registry_registration`（WARN，注册冲突）、`agent_capability_filter`/`agent_followup_authorization`（DEBUG，能力与后续授权数量/结果）、`agent_tool_batch_rejected`（WARN，批次拒绝）、`agent_tool_call`（DEBUG/WARN，Tool 调用阶段、稳定结果码和耗时）、`agent_artifact_*`（DEBUG/WARN，Artifact 生产/消费/关闭阶段）、`agent_retry_plan`（INFO/DEBUG，计划生成或拒绝）和 `agent_retry_resume`（INFO/WARN，恢复开始、解包、Tool 完成及终态）。日志只用于定位首个偏差层，不替代业务结果或权限校验。
+
+上述事件禁止记录 Tool 参数、用户原始问题、卡片或安全结果正文，以及 `arguments`、`safeResult`、`artifactId`、`privatePayload`、`safeSummary`、`safeProjection` 等字段；允许字段仅限 `runId`、Tool/Adapter 安全标识、阶段、结果/稳定错误码、数量、顺序和耗时。

@@ -4,6 +4,8 @@ import com.internaladmin.module.agent.api.AgentErrorCode;
 import com.internaladmin.module.agent.api.AgentAdapterRegistry;
 import com.internaladmin.module.agent.api.AgentToolException;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -24,6 +26,7 @@ import java.util.Set;
  * copy the framework's callback protocol; it only brackets the existing delegate.
  */
 public final class MixedToolCallingManager implements ToolCallingManager {
+    private static final Logger LOG = LoggerFactory.getLogger(MixedToolCallingManager.class);
     public static final String EXECUTION_CONTEXT_KEY = "agent.execution";
     public static final String KNOWLEDGE_TOOL = "knowledge_search";
 
@@ -51,27 +54,40 @@ public final class MixedToolCallingManager implements ToolCallingManager {
     @Override
     public ToolExecutionResult executeToolCalls(Prompt prompt, ChatResponse response) {
         int callCount = toolCallCount(response);
+        AgentExecutionContext execution = execution(prompt);
         if (callCount > 1) {
             // The project contract is deliberately stricter than Spring AI's
             // default batch behavior: one model iteration owns one ToolCall.
             // Reject before the delegate can resolve or invoke any callback.
+            LOG.warn("event=agent_tool_batch_rejected stage=preflight result=rejected runId={} callCount={} code={}",
+                    runId(execution), callCount, AgentErrorCode.TOOL_CALL_BATCH_INVALID.getCode());
             throw new AgentToolException(AgentErrorCode.TOOL_CALL_BATCH_INVALID,
                     "本轮只允许一个工具调用");
         }
-        AgentExecutionContext execution = execution(prompt);
         List<String> authorized = mixedBatchTools(response);
         boolean opened = execution != null && !execution.knowledgeCallAttempted()
                 && !authorized.isEmpty() && execution.openMixedToolAuthorization(authorized);
+        if (execution != null && !authorized.isEmpty()) {
+            LOG.debug("event=agent_mixed_authorization stage=open result={} runId={} toolCount={}",
+                    opened ? "granted" : "denied", execution.runId(), authorized.size());
+        }
         if (execution != null && singleKnowledgeCall(response)) {
             List<String> followupTools = adapterRegistry.followupToolNames(execution.actor(), execution.message())
                     .stream().filter(registeredTools::contains).toList();
-            execution.openMixedFollowupAuthorization(followupTools);
+            boolean followupOpened = execution.openMixedFollowupAuthorization(followupTools);
+            LOG.debug("event=agent_followup_authorization stage=open result={} runId={} toolCount={} tools={} reason={}",
+                    followupOpened ? "granted" : "denied", execution.runId(), followupTools.size(),
+                    String.join(",", followupTools), followupOpened ? "owner_filtered" : "no_match_or_closed");
         }
         try {
             return delegate.executeToolCalls(prompt, response);
         } finally {
             if (opened) execution.closeMixedToolAuthorization();
         }
+    }
+
+    private static String runId(AgentExecutionContext execution) {
+        return execution == null ? "none" : execution.runId();
     }
 
     private int toolCallCount(ChatResponse response) {

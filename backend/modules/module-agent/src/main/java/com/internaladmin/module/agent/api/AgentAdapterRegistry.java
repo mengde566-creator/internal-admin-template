@@ -1,5 +1,7 @@
 package com.internaladmin.module.agent.api;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.util.ArrayList;
@@ -23,6 +25,7 @@ import java.util.Optional;
  * remain failures.</p>
  */
 public final class AgentAdapterRegistry {
+    private static final Logger LOG = LoggerFactory.getLogger(AgentAdapterRegistry.class);
     private static final int MAX_INSTRUCTIONS = 16;
     private static final int MAX_INSTRUCTION_CHARS = 4_000;
     private static final int MAX_IDENTIFIER_CHARS = 128;
@@ -42,7 +45,16 @@ public final class AgentAdapterRegistry {
         this.toolOwners = new LinkedHashMap<>();
         this.toolContracts = new LinkedHashMap<>();
         this.artifactProducerTools = new LinkedHashMap<>();
-        validate();
+        try {
+            validate();
+        } catch (IllegalStateException conflict) {
+            LOG.warn("event=agent_registry_registration stage=validate result=rejected code=AI_ADAPTER_CONFLICT");
+            throw conflict;
+        }
+        long artifactConsumers = toolContracts.values().stream()
+                .mapToLong(contract -> contract.consumes().size()).sum();
+        LOG.info("event=agent_registry_initialized stage=registration result=ready adapters={} tools={} artifactProducers={} artifactConsumers={}",
+                adapters.size(), toolOwners.size(), artifactProducerTools.size(), artifactConsumers);
     }
 
     /** Returns an empty registry for narrow non-Spring fixtures. */
@@ -62,7 +74,10 @@ public final class AgentAdapterRegistry {
 
     /** Returns adapters available to an actor in deterministic order. */
     public List<AgentAdapter> available(AgentRunContext actor) {
-        return adapters.stream().filter(adapter -> adapter.isAvailable(actor)).toList();
+        List<AgentAdapter> result = adapters.stream().filter(adapter -> adapter.isAvailable(actor)).toList();
+        LOG.debug("event=agent_capability_filter stage=available result={} adapterCount={} availableCount={}",
+                result.isEmpty() ? "none" : "ready", adapters.size(), result.size());
+        return result;
     }
 
     /** Returns capability-visible adapter IDs available to an actor. */
@@ -139,25 +154,43 @@ public final class AgentAdapterRegistry {
      * forwarded to the execution context.
      */
     public List<String> followupToolNames(AgentRunContext actor, String originalUserMessage) {
-        if (actor == null || originalUserMessage == null || originalUserMessage.isBlank()) return List.of();
+        if (actor == null || originalUserMessage == null || originalUserMessage.isBlank()) {
+            LOG.debug("event=agent_followup_authorization stage=resolve result=denied reason=invalid_input candidateCount=0 acceptedCount=0");
+            return List.of();
+        }
         Set<String> resolved = new LinkedHashSet<>();
+        int candidateCount = 0;
         for (AgentAdapter adapter : available(actor)) {
             Set<String> candidates;
             try {
                 candidates = adapter.followupToolNames(actor, originalUserMessage);
             } catch (RuntimeException invalid) {
+                LOG.debug("event=agent_followup_authorization stage=resolve result=denied reason=adapter_error candidateCount={} acceptedCount={}",
+                        candidateCount, resolved.size());
                 continue;
             }
             if (candidates == null || candidates.isEmpty()) continue;
-            if (candidates.size() > MAX_FOLLOWUP_TOOLS) return List.of();
+            candidateCount += candidates.size();
+            if (candidates.size() > MAX_FOLLOWUP_TOOLS) {
+                LOG.debug("event=agent_followup_authorization stage=resolve result=denied reason=budget candidateCount={} acceptedCount={}",
+                        candidateCount, resolved.size());
+                return List.of();
+            }
             for (String toolName : candidates) {
                 AgentAdapter owner = toolOwners.get(toolName);
                 if (owner != adapter || !isToolAvailable(toolName, actor)) continue;
                 resolved.add(toolName);
-                if (resolved.size() > MAX_FOLLOWUP_TOOLS) return List.of();
+                if (resolved.size() > MAX_FOLLOWUP_TOOLS) {
+                    LOG.debug("event=agent_followup_authorization stage=resolve result=denied reason=budget candidateCount={} acceptedCount={}",
+                            candidateCount, resolved.size());
+                    return List.of();
+                }
             }
         }
-        return resolved.stream().sorted().toList();
+        List<String> result = resolved.stream().sorted().toList();
+        LOG.debug("event=agent_followup_authorization stage=resolve result={} reason=owner_filtered candidateCount={} acceptedCount={}",
+                result.isEmpty() ? "denied" : "granted", candidateCount, result.size());
+        return result;
     }
 
     /** Returns a validated, canonical ResumeRef owned by the tool's adapter. */

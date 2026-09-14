@@ -118,6 +118,14 @@ git diff --check
 8. `retryResumeRef` 曾遍历所有可用 Adapter，未锁定 Tool 所有者且未校验返回元数据。现先以 `ownerOf(toolName)` 锁定并检查 owner 的 retryable 声明，再调用唯一校验器；`RetryResumeRef` 构造和 Registry 共同确保 kind/version 与 arguments JSON 一致、无瞬时字段，冒领和不一致反例均通过。
 9. 本轮发现 `buildRetryPlan` 仍可通过全局 retryable 集合和原始 `outcome.arguments()` 绕过 Adapter 合同。现已删除该旁路：Adapter-owned Tool 必须由其唯一所有者返回 canonical ResumeRef，validator 返回空即不建计划；恢复阶段由同一所有者校验并解包 callback 参数。新增 owner-empty/rogue 反例与仓储 envelope round-trip 测试，定向回归均通过。
 
+## 10. 结构化诊断日志补充
+
+本轮在既有公共边界补齐可关联、脱敏的诊断事件：`agent_registry_initialized`（INFO，Adapter/Tool/Artifact 生产者与消费者计数）、`agent_registry_registration`（WARN，注册冲突稳定码）、`agent_capability_filter` 与 `agent_followup_authorization`（DEBUG，能力过滤和后续授权的数量/结果/安全 Tool 名）、`agent_tool_batch_rejected`（WARN，runId/callCount/稳定码）、`agent_tool_call`（DEBUG/WARN，Tool 开始、回调成功/失败、重复、闭锁拒绝、耗时）、`agent_artifact_produce`/`consume`/`close`（DEBUG/WARN，生产/消费/拒绝/关闭的 Tool、类型版本、数量和耗时）、`agent_retry_plan`（INFO/DEBUG，生成或拒绝原因和子任务数）以及 `agent_retry_resume`（INFO/WARN，恢复开始、解包拒绝、Tool 完成和终态）。
+
+日志只包含 `runId`、稳定 Tool/Adapter 标识、阶段、结果/错误码、计数、顺序和耗时；未记录参数、用户原始问题、卡片/安全结果正文、Artifact ID 或私有载荷。新增 `StructuredDiagnosticLogContractTest` 对上述源码中的结构化日志调用逐条机械检查，禁止出现 `arguments`、`safeResult`、`artifactId`、`privatePayload`、`safeSummary`、`safeProjection` 和 `message`。
+
+验证：module-agent JDK25 `test-compile` 退出 0；结构化日志契约测试退出 0；module-agent 受影响定向测试 110 tests / 0 failures / 0 errors / 0 skipped；warehouse-adapter `WarehouseInventoryToolProviderTest` 34 / 0 / 0 / 0；`git diff --check` 退出 0。未运行前端、主应用或真实 Provider，未改数据库、Liquibase、POM、依赖、运行配置，未提交/推送。
+
 ## 10. 总设计师交付复盘
 
 - **任务边界判断失误**：总设计师曾将SLICE-06F文件上传链的特定止损条件错误套用到SLICE-07B，造成一次没有当前任务依据的暂停。该问题与07B技术方案、Git未推送状态无关。

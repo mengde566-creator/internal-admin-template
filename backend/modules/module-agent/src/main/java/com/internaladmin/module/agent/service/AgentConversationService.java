@@ -1082,7 +1082,12 @@ public class AgentConversationService {
     private void executeRetry(AgentStore.StartRun run, AgentExecutionContext execution,
                               Consumer<StreamEvent> emitter, AtomicBoolean cancelled) {
         AgentStore.RetryPlan plan = run.retryPlan();
+        long retryStarted = System.nanoTime();
+        LOG.info("event=agent_retry_resume stage=start result=started runId={} subtaskCount={}",
+                logToken(run.runId()), plan == null ? 0 : plan.subtasks().size());
         if (cancelled.get()) {
+            LOG.info("event=agent_retry_resume stage=terminal result=cancelled runId={} tool=none order=0 code=CANCELLED durationMs={}",
+                    logToken(run.runId()), elapsedMillis(retryStarted));
             finishTerminal(run, execution, emitter, AgentStore.CANCELLED, null, System.nanoTime(), 0, null);
             return;
         }
@@ -1093,16 +1098,22 @@ public class AgentConversationService {
         long previousOrder = 0;
         for (AgentStore.RetrySubtask subtask : plan.subtasks()) {
             if (cancelled.get()) {
+                LOG.info("event=agent_retry_resume stage=terminal result=cancelled runId={} tool=none order={} code=CANCELLED durationMs={}",
+                        logToken(run.runId()), subtask.order(), elapsedMillis(retryStarted));
                 finishTerminal(run, execution, emitter, AgentStore.PARTIAL, execution.toolErrorCode(), System.nanoTime(), 0, null);
                 return;
             }
             if (subtask.order() <= previousOrder || !callbacks.containsKey(subtask.toolName())) {
+                LOG.warn("event=agent_retry_resume stage=validate result=rejected runId={} tool={} order={} code={} durationMs=0",
+                        logToken(run.runId()), logToken(subtask.toolName()), subtask.order(),
+                        logToken(AgentErrorCode.TOOL_EXECUTION_FAILED.getCode()));
                 execution.recordToolFailure(subtask.toolName(), subtask.arguments(),
                         AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), null);
                 break;
             }
             previousOrder = subtask.order();
             int before = execution.toolOutcomes().size();
+            long callbackStarted = System.nanoTime();
             boolean knowledgeRetry = "knowledge_search".equals(subtask.toolName());
             String callbackArguments = subtask.arguments();
             if (knowledgeRetry) {
@@ -1118,6 +1129,9 @@ public class AgentConversationService {
                     java.util.Optional<String> decoded = adapterRegistry.retryToolArguments(
                             execution.actor(), subtask.toolName(), subtask.arguments());
                     if (decoded.isEmpty()) {
+                        LOG.warn("event=agent_retry_resume stage=unwrap result=rejected runId={} tool={} order={} code={} durationMs={}",
+                                logToken(run.runId()), logToken(subtask.toolName()), subtask.order(),
+                                logToken(AgentErrorCode.TOOL_EXECUTION_FAILED.getCode()), elapsedMillis(callbackStarted));
                         execution.recordToolFailure(subtask.toolName(), subtask.arguments(),
                                 AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), null);
                         break;
@@ -1147,6 +1161,19 @@ public class AgentConversationService {
                 execution.recordToolFailure(subtask.toolName(), callbackArguments,
                         AgentErrorCode.TOOL_EXECUTION_FAILED.getCode(), null);
             }
+            AgentExecutionContext.ToolOutcome latest = latestOutcome(execution, before);
+            boolean success = latest != null && latest.success();
+            String resultCode = latest == null || latest.errorCode() == null
+                    ? (success ? "SUCCESS" : "UNKNOWN") : latest.errorCode();
+            if (success) {
+                LOG.info("event=agent_retry_resume stage=tool result=success runId={} tool={} order={} code={} durationMs={}",
+                        logToken(run.runId()), logToken(subtask.toolName()), subtask.order(), logToken(resultCode),
+                        elapsedMillis(callbackStarted));
+            } else {
+                LOG.warn("event=agent_retry_resume stage=tool result=failed runId={} tool={} order={} code={} durationMs={}",
+                        logToken(run.runId()), logToken(subtask.toolName()), subtask.order(), logToken(resultCode),
+                        elapsedMillis(callbackStarted));
+            }
         }
         if (execution.hasToolFailure()) {
             int totalSuccess = plan.successfulCount() + execution.successfulToolCount();
@@ -1175,8 +1202,15 @@ public class AgentConversationService {
                 return;
             }
             boolean retryAvailable = persistedRetryAvailable(run, execution, nextPlan);
-            if (partial) emitValidatedPartial(run, execution, emitter, failureResultJson(code, message), code, retryAvailable);
-            else emitValidatedFailure(run, execution, emitter, failureResultJson(code, message), code, retryAvailable);
+            if (partial) {
+                LOG.info("event=agent_retry_resume stage=terminal result=partial runId={} tool=none order={} code={} durationMs={}",
+                        logToken(run.runId()), plan.subtasks().size(), logToken(code), elapsedMillis(retryStarted));
+                emitValidatedPartial(run, execution, emitter, failureResultJson(code, message), code, retryAvailable);
+            } else {
+                LOG.warn("event=agent_retry_resume stage=terminal result=failed runId={} tool=none order={} code={} durationMs={}",
+                        logToken(run.runId()), plan.subtasks().size(), logToken(code), elapsedMillis(retryStarted));
+                emitValidatedFailure(run, execution, emitter, failureResultJson(code, message), code, retryAvailable);
+            }
             return;
         }
         String message = "未完成的查询已完成";
@@ -1201,6 +1235,13 @@ public class AgentConversationService {
         emitValidatedTerminal(run, execution, emitter,
                 "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"未完成的查询已完成\",\"data\":null}",
                 AgentStore.COMPLETE);
+        LOG.info("event=agent_retry_resume stage=terminal result=success runId={} tool=none order={} code=SUCCESS durationMs={}",
+                logToken(run.runId()), plan.subtasks().size(), elapsedMillis(retryStarted));
+    }
+
+    private AgentExecutionContext.ToolOutcome latestOutcome(AgentExecutionContext execution, int before) {
+        List<AgentExecutionContext.ToolOutcome> outcomes = execution.toolOutcomes();
+        return outcomes.size() <= before ? null : outcomes.get(outcomes.size() - 1);
     }
 
     private KnowledgeRetryArguments retryKnowledgeArguments(String arguments) {
@@ -1224,25 +1265,32 @@ public class AgentConversationService {
 
     AgentStore.RetryPlan buildRetryPlan(AgentStore.StartRun run, AgentExecutionContext execution,
                                         int successfulCount, String taskIntent) {
-        if (!execution.hasToolFailure() || execution.hasOutcomeOverflow() || execution.hasCorrectionOverflow()) return null;
+        if (!execution.hasToolFailure()) return null;
+        if (execution.hasOutcomeOverflow() || execution.hasCorrectionOverflow()) {
+            return rejectRetryPlan(run.runId(), "none", "budget", 0);
+        }
         List<AgentStore.RetrySubtask> failures = new java.util.ArrayList<>();
         for (AgentExecutionContext.ToolOutcome outcome : execution.toolOutcomes()) {
             if (!outcome.success()) {
                 if (outcome.arguments() == null || outcome.arguments().isBlank()
                         || !java.util.Set.of("AI_TOOL_TIMEOUT", "AI_TOOL_DATABASE_UNAVAILABLE", "AI_TOOL_EXECUTION_FAILED",
-                        AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode()).contains(outcome.errorCode())) return null;
+                        AgentErrorCode.KNOWLEDGE_UNAVAILABLE.getCode()).contains(outcome.errorCode())) {
+                    return rejectRetryPlan(run.runId(), outcome.toolName(), "outcome_invalid", failures.size());
+                }
                 // Knowledge remains a core provider until its dedicated adapter
                 // slice; keep its existing strict retry parser during that cut.
                 if ("knowledge_search".equals(outcome.toolName())) {
                     KnowledgeRetryArguments knowledgeArguments = retryKnowledgeArguments(outcome.arguments());
-                    if (knowledgeArguments == null) return null;
+                    if (knowledgeArguments == null) {
+                        return rejectRetryPlan(run.runId(), outcome.toolName(), "knowledge_contract", failures.size());
+                    }
                     if ("READ_ACTIVE".equals(knowledgeArguments.operation())
                             && execution.trustedKnowledgeReferences().size() != 1) {
                         // A full-document retry is safe only when the original
                         // server-owned document target can be restored from the
                         // current scoped Task/History; never advertise a READ that
                         // would have to guess its document again.
-                        return null;
+                        return rejectRetryPlan(run.runId(), outcome.toolName(), "knowledge_reference", failures.size());
                     }
                     failures.add(new AgentStore.RetrySubtask(outcome.sequence(), outcome.toolName(),
                             outcome.arguments(), outcome.errorCode()));
@@ -1252,12 +1300,26 @@ public class AgentConversationService {
                 // ResumeRef.  Never fall back to the original model JSON.
                 java.util.Optional<AgentAdapter.RetryResumeRef> resumeRef = adapterRegistry.retryResumeRef(
                         execution.actor(), outcome.toolName(), outcome.arguments());
-                if (resumeRef.isEmpty()) return null;
+                if (resumeRef.isEmpty()) {
+                    return rejectRetryPlan(run.runId(), outcome.toolName(), "adapter_resume_ref_unavailable", failures.size());
+                }
                 failures.add(new AgentStore.RetrySubtask(outcome.sequence(), outcome.toolName(),
                         resumeRef.get().arguments(), outcome.errorCode()));
             }
         }
-        return failures.isEmpty() ? null : new AgentStore.RetryPlan(run.runId(), taskIntent, successfulCount, failures);
+        if (failures.isEmpty()) return null;
+        AgentStore.RetryPlan plan = new AgentStore.RetryPlan(run.runId(), taskIntent, successfulCount, failures);
+        for (AgentStore.RetrySubtask failure : failures) {
+            LOG.info("event=agent_retry_plan stage=generate result=created runId={} tool={} reason=validated subtaskCount={}",
+                    logToken(run.runId()), logToken(failure.toolName()), failures.size());
+        }
+        return plan;
+    }
+
+    private AgentStore.RetryPlan rejectRetryPlan(String runId, String toolName, String reason, int subtaskCount) {
+        LOG.debug("event=agent_retry_plan stage=generate result=rejected runId={} tool={} reason={} subtaskCount={}",
+                logToken(runId), logToken(toolName), logToken(reason), subtaskCount);
+        return null;
     }
 
     /**
@@ -1965,6 +2027,11 @@ public class AgentConversationService {
 
     private static long elapsedMillis(long started) {
         return Duration.ofNanos(System.nanoTime() - started).toMillis();
+    }
+
+    private static String logToken(String value) {
+        if (value == null || value.isBlank()) return "none";
+        return value.replaceAll("[^A-Za-z0-9_.:-]", "_");
     }
 
     private static String statusPayload(String status) {
