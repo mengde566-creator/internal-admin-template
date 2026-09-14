@@ -117,3 +117,10 @@ git diff --check
 7. `safeProjection` 顶层曾允许标量/集合绕过字段白名单。现顶层仅接受 Map 或 record，顶层字符串/列表均有拒绝断言，嵌套 JSON 兼容投影继续执行白名单、敏感字段和结构预算检查。
 8. `retryResumeRef` 曾遍历所有可用 Adapter，未锁定 Tool 所有者且未校验返回元数据。现先以 `ownerOf(toolName)` 锁定并检查 owner 的 retryable 声明，再调用唯一校验器；`RetryResumeRef` 构造和 Registry 共同确保 kind/version 与 arguments JSON 一致、无瞬时字段，冒领和不一致反例均通过。
 9. 本轮发现 `buildRetryPlan` 仍可通过全局 retryable 集合和原始 `outcome.arguments()` 绕过 Adapter 合同。现已删除该旁路：Adapter-owned Tool 必须由其唯一所有者返回 canonical ResumeRef，validator 返回空即不建计划；恢复阶段由同一所有者校验并解包 callback 参数。新增 owner-empty/rogue 反例与仓储 envelope round-trip 测试，定向回归均通过。
+
+## 10. 总设计师交付复盘
+
+- **任务边界判断失误**：总设计师曾将SLICE-06F文件上传链的特定止损条件错误套用到SLICE-07B，造成一次没有当前任务依据的暂停。该问题与07B技术方案、Git未推送状态无关。
+- **契约替换检查不完整**：首轮实现增加了Tool所有者签发ResumeRef的新路径，但差异复核未第一时间沿 `buildRetryPlan` 检查新契约拒绝后的旧回退，导致原始参数重放旁路在后续复核才被发现。
+- **测试证据偏正向**：早期测试证明了canonical ResumeRef可成功往返，却没有先证明“所有者拒绝签发后，旧原始参数路径不可达”；同时曾通过改变已验收的知识+仓储正常场景预期来适配新限制，而不是保留正常链并增加独立反例。
+- **已固化的防复发机制**：`VERSION_DELIVERY_PROTOCOL.md` 2.5明确了止损条件不得跨任务继承；替换权限、重试、路由或数据源契约时必须搜索旧回退，并用“新权威拒绝后旧路径不可达”的反例作为完成证据；已验收正常场景不得为迎合新安全约束被改成拒绝。
