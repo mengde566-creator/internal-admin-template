@@ -1,10 +1,11 @@
 # SLICE-07 通用 AI 边界、受信工具组合与学习路径设计
 
 > 状态：已确认；07A、07B 已提交；07C 实现、公共契约校正、差异复核与当前源码运行冒烟已完成
-> 版本：0.6
+> 版本：0.7
 > 确认日期：2026-09-10
 > 07C细化日期：2026-09-14
 > 全计划复核日期：2026-09-15
+> 07D细化日期：2026-09-17
 > 适用范围：`module-agent`、`module-knowledge`、`module-ai-observability`、业务 Agent Adapter、前端 AI 助手及 `docs/learning/`
 > 需求依据：`REQ-V02-AI-009`、`FUN-10`、`SCN-RU-01`
 > 方向输入：`requirements/CUSTOMER_ORDER_SYSTEM.md` 为草稿，只用于检验扩展方向，不授权实现客户或订单功能
@@ -119,13 +120,14 @@ Adapter 只能依赖对应业务模块公开 `api/`，不得访问业务 Mapper�
 ### 4.5 前端通用助手壳拥有
 
 - 对话容器、SSE、History、取消、重试、加载和通用错误状态；
-- `DOCKED`、`COMPACT`、`DRAWER` 三种现有呈现；
+- `DOCKED`、`OVERLAY`、`COMPACT`、`DRAWER` 四种现有呈现；
+- `knowledge-answer`、`clarification-choice`及未知卡片的通用展示语义；
 - 按全局唯一的 `cardType` 分派业务卡片；当前SSE卡片契约不新增`adapterId`；
 - 未注册卡片或 routeKey 的稳定版本不匹配错误。
 
-07D将通用助手入口提升到应用级外壳；仓储页面保留快捷入口，但不再成为通用助手唯一宿主。业务前端资产仍随对应Adapter编译期装配，不建立运行时插件加载器。
+07D将通用助手入口提升到应用级外壳；仓储页面保留快捷入口，但不再成为通用助手唯一宿主。业务前端资产仍随对应Adapter由应用组合根编译期装配，通用助手壳不反向导入业务模块，也不建立运行时插件加载器。
 
-业务前端资产拥有卡片解析与展示、字段复制和受控路由。07不建立第二个前端应用、Node Agent Runtime或运行时前端插件加载器。
+业务前端资产拥有自己业务卡片的解析与展示、字段复制和受控路由；Core卡片不归业务资产重复登记。07不建立第二个前端应用、Node Agent Runtime或运行时前端插件加载器。
 
 ## 5. 最小公共契约
 
@@ -353,17 +355,55 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 
 **目标**：下一业务可以复用同一助手壳，并让开发者能沿真实代码完成接入与裁剪。
 
-范围：
+**当前代码事实**：
 
-- 从 `WarehouseAgentPanel.vue` 提取通用对话、SSE、History、取消、重试和状态壳；
-- 仓储卡片、copy和routeKey保留在仓储前端资产；
-- 建立以全局唯一`cardType`为键的编译期前端资产注册和未知资产失败语义；
-- 将助手容器装配到应用级外壳，仓储按钮仅作为打开同一助手的快捷入口；页面切换不创建第二会话壳；
-- 不新增`knowledge.degraded` SSE事件；知识降级使用既有降级卡片和唯一Run终态表达，避免同一状态双轨维护；
-- 研发提供已实现代码入口与验证事实，由总设计师据此建立 `docs/learning/`，只记录已经实现并验证的架构、场景和代码入口；
-- 在临时派生副本中完成仓储Adapter裁剪和构建证明。
+- `SystemLayout.vue` 仍从仓储目录加载通用能力接口，应用级布局尚未拥有助手实例；
+- `WarehouseManagePage.vue` 直接挂载 `WarehouseAgentPanel.vue`，对话状态、SSE连接和响应式尺寸均随仓储路由生命周期存在；
+- `WarehouseAgentPanel.vue` 同时拥有通用会话壳、`knowledge-answer`、`clarification-choice`、四类仓储卡片、仓储文案、复制和页面跳转；未知或无效卡片当前会被静默忽略；
+- 后端Core已经直接校验`knowledge-answer`与`clarification-choice`，但仓储Adapter描述仍登记`clarification-choice`。该登记会与未来业务共享通用澄清卡冲突，07D须完成最小归位。
 
-完成门：仓储真实助手用户链不回归；测试前端资产可登记但不进入生产包；移除仓储前端资产后通用壳可构建；学习文档中的每条路径和命令均可追溯到当前代码。
+**依赖与装配边界**：
+
+1. 前端通用Agent模块只拥有API、SSE、会话壳、Core卡片和注册契约，生产代码不得导入`modules/warehouse`或其他业务模块。
+2. 应用组合根是生产业务前端资产的唯一装配位置，由它同时导入通用Agent壳和各业务前端资产。依赖方向固定为`应用组合根 → 通用Agent前端模块`和`应用组合根 → 业务前端资产`，禁止通用模块反向发现或扫描业务目录。
+3. 每个业务前端资产至少声明非空且全局唯一的`adapterId`及自己的`cardType`渲染器集合；没有业务卡片的Adapter允许集合为空，不得为满足接口机械制造卡片。每个渲染器只声明非空`cardType`、严格解析函数和已静态导入的Vue组件，不加入优先级、覆盖、别名、远程组件、类名字符串或运行时热加载。
+4. 注册表以全局唯一`cardType`分派渲染器，并同时校验`adapterId`唯一性。重复或非法注册使AI前端子系统进入明确的装配失败状态并禁止发起Run，但不得导致用户管理、仓储人工页面等非AI功能白屏。测试资产只由测试组合根登记，不进入生产装配或生产包。
+5. `knowledge-answer`和`clarification-choice`是Core卡片，不虚构后端Adapter身份；四类仓储业务卡片`stock-summary`、`item-location`、`location-contents`、`movement-list`由仓储前端资产拥有。仓储后端Adapter不再把`clarification-choice`登记为业务`cardType`，但其Task Policy仍可按既有合同产生并校验仓储候选内容。
+
+**通用澄清与业务资产边界**：
+
+1. Core澄清渲染器只把后端已校验且有界的`question`作为纯文本展示，通用显示候选`name/code/scope`，选择后只提交`clarificationId + optionToken`。
+2. Core不得按`candidateKind`或`candidateIntent`拼接仓储、客户、订单或知识业务话术；本地选择回显只表达“已选择：候选名称”。`candidateKind`和`candidateIntent`继续用于后端Task校验与恢复，不成为前端扩展业务分支的理由。
+3. 仓储前端资产拥有四类仓储卡片的payload解析、展示、复制格式和受控路由动作。routeKey只映射业务资产内静态登记的项目路由，服务端不得下发任意URL、Vue组件名或可执行跳转内容；07D不为形式统一强行修改现有SSE卡片合同。
+4. 通用助手使用中性标题和空状态，不再自称“仓储助手”；仓储页面可保留“使用AI助手查询仓储”等快捷入口文案，但不得拥有第二份会话或运行状态。
+
+**唯一实例、能力和生命周期**：
+
+1. 助手实例挂载在登录后`SystemLayout`且位于业务`RouterView`之外。`SystemLayout`创建类型化的`open/close/toggle`控制器并提供给后代页面；仓储快捷入口只调用该控制器。
+2. 登录后业务路由切换、收起和重新展开不得销毁对话、卡片或正在执行的SSE；退出登录、身份变化或离开登录后布局时必须中止连接并清空内存状态。07D不新增LocalStorage会话副本，刷新后的恢复仍使用后端History。
+3. AI关闭或当前用户`availableAdapters`为空时隐藏助手入口，不建设未确认的“纯知识助手”。AI启用且能力非空时，`availableAdapters`必须全部存在于生产前端资产的`adapterId`集合；前端存在但当前用户不可用的业务资产不构成错误。
+4. 任一后端可用Adapter缺少前端资产时判定为前后端装配版本不一致，显示明确提示并禁止新Run。当前能力合同不返回业务cardType清单，因此具体漏登记的cardType仍由运行时未知卡片语义兜底，不为07D扩展Capabilities或SSE协议。
+5. DOCKED、OVERLAY、COMPACT和DRAWER模式改为依据应用内容容器测量；必须验证用户、部门、仓储、知识和观测页面，不得只在仓储页面证明布局成立。
+
+**失败语义与可诊断性**：
+
+- 重复或非法前端注册：AI子系统不可用，人工页面保持可用；
+- 无效业务卡片payload：在对应消息位置显示“结果格式无效”，保留同一Run的其他安全结果；
+- 未知`cardType`：显示“当前前端版本不支持此结果类型”，不展示原始JSON、不静默忽略，也不把后端已成功的Run改写为失败；
+- 前后端Adapter装配不一致：禁止新Run并提示部署版本不一致；
+- 首轮实现必须通过一个窄的前端诊断封装记录`agent_ui_registry_initialized`、`agent_ui_capability_match`、`agent_ui_shell_lifecycle`、`agent_ui_stream_lifecycle`、`agent_ui_card_dispatch`等稳定事件。只允许记录阶段、Adapter/cardType安全标识、`conversationId/runId/messageId`、状态、稳定错误码、数量和耗时；禁止记录用户问题、回答、知识内容、卡片payload、Cookie、权限集合或Provider响应。07D不建设远程日志平台。
+
+**执行顺序（同一研发主责端到端完成）**：
+
+1. 先以生产代码、测试和路由事实冻结通用壳、Core卡片、仓储卡片和应用装配边界；不复制旧组件后再长期维护两条路径。
+2. 将通用Agent API、SSE和类型移出仓储目录，建立最小注册契约与应用组合根；保持现有HTTP、SSE、History和唯一终态合同不变。
+3. 提取通用会话壳、`knowledge-answer`和真正通用的`clarification-choice`，同步移除仓储Adapter对Core澄清cardType的业务登记。
+4. 将四类仓储卡片、复制和受控跳转迁入仓储前端资产，再把唯一助手实例提升到`SystemLayout`，仓储页面改为快捷入口。
+5. 加入能力全量匹配、可见失败和脱敏诊断日志；完成组件契约、应用路由集成和真实浏览器用户链验证。
+6. 在临时派生副本只移除仓储后端Adapter装配、仓储AI前端资产及其组合根注册项并执行构建；仓储普通人工页面不是本次删除对象。
+7. 研发提交最终代码入口和实际验证事实后，由总设计师编写并逐条核验`docs/learning/`，不得把未实现构想写成现状。
+
+**完成门**：通用前端模块无仓储导入；应用组合根是唯一生产资产装配点；仓储与应用入口打开同一助手；登录后跨路由时对话、卡片和运行中SSE不丢失；Core知识与澄清链不依赖仓储资产；未知或错误卡片可见失败；能力装配不一致时禁止新Run但人工页面可用；测试资产不进入生产包；桌面、中屏和窄屏不破坏主要业务页面；仓储现有查询、知识引用、澄清、PARTIAL、取消、重试、复制和跳转链不回归；临时派生副本移除仓储AI资产与注册项后通用壳仍可构建；学习文档中的路径和命令均可追溯到最终代码。
 
 ## 9. 学习文档结构
 
@@ -375,11 +415,12 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 docs/learning/
   README.md                         学习顺序与适用读者
   01-agent-request-lifecycle.md     Conversation → Run → Iteration → Attempt → Tool → SSE
-  02-build-a-business-adapter.md    Adapter、Tool、权限、卡片和routeKey
-  03-compose-trusted-tools.md       ToolArtifact、依赖链、失败和恢复
-  04-knowledge-and-citations.md     内容包、检索、引用及当前分域边界
-  05-observability-and-evaluation.md Run/Step/Attempt与业务数据集
-  06-cut-or-add-an-adapter.md       裁剪仓储与接入下一业务的可执行路径
+  02-build-a-business-adapter.md    Adapter、Tool、权限和后端业务资产
+  03-build-the-frontend-shell.md    唯一助手壳、静态前端资产、卡片与受控路由
+  04-compose-trusted-tools.md       ToolArtifact、依赖链、失败和恢复
+  05-knowledge-and-citations.md     内容包、检索、引用及当前分域边界
+  06-observability-and-evaluation.md Run/Step/Attempt与业务数据集
+  07-cut-or-add-an-adapter.md       裁剪仓储与接入下一业务的可执行路径
 ```
 
 每篇必须包含：要解决的真实问题、关键设计取舍、主要代码位置、最小阅读路径、验证方式、常见失败和明确非目标。禁止复制大段源码、维护逐类索引、把未实现构想写成现状，或为了文档示例创建新的生产抽象。
@@ -426,7 +467,10 @@ docs/learning/
 
 - 两个测试内容包可以同时登记不同内容、顺序和哈希，并共享Knowledge核心的同一条通用查询检索指令；内容包不能覆盖查询策略；
 - 固定资料导入成功和失败均产生可关联、脱敏的结构化阶段日志，行为测试实际断言事件而非扫描源码字符串；
-- 前端按全局唯一`cardType`注册渲染器，SSE不虚构`adapterId`；应用级唯一助手壳可由仓储快捷入口打开；
+- 通用前端模块不导入仓储模块；应用组合根按全局唯一`adapterId/cardType`静态装配资产，SSE不虚构`adapterId`；
+- `knowledge-answer`和`clarification-choice`由Core渲染，仓储资产只拥有四类仓储卡片、复制与受控路由；通用澄清提交只传递不透明选择令牌，不按业务意图扩展前端分支；
+- 应用级唯一助手壳可由仓储快捷入口打开；登录后跨仓储、用户、知识和观测路由时，同一会话、卡片和运行中SSE保持；
+- 后端可用Adapter与前端资产不一致、未知cardType或错误payload均产生可见、脱敏、可诊断的稳定结果，不静默忽略，也不影响非AI人工页面；
 - 知识降级只使用既有降级卡片与唯一Run终态，不保留未生产、未消费的`knowledge.degraded`事件。
 
 ## 11. 非目标与止损线
@@ -484,3 +528,7 @@ SLICE-07 属于 L2：它改变公共模块边界、Tool组合方式、业务资�
 13. 07A、07B主体不回滚；其跨Adapter校验、错误/卡片所有权、提示总预算与同批授权死分支作为07C提交前公共契约校正，不另立分片。
 14. Knowledge内容包只拥有内容、版本、顺序和哈希；查询检索指令由Knowledge核心统一拥有，当前不新增Retriever路由、`knowledgeSpace`或第二权限模型。
 15. 前端业务卡片按全局唯一`cardType`静态分派；07D采用应用级唯一助手壳，业务页面入口只是快捷入口；不新增没有真实生产者和消费者的`knowledge.degraded`事件。
+16. `knowledge-answer`和`clarification-choice`归通用前端Core；业务Adapter只提供候选事实与服务端Task语义，不在通用澄清UI中增加业务分支。
+17. 无业务Adapter时不提供助手入口，不在07D建设“纯知识助手”。
+18. 07D临时裁剪只移除仓储Adapter装配、仓储AI前端资产和注册项；仓储普通人工页面不属于本次删除范围。
+19. 前端业务资产由应用组合根静态装配，通用Agent前端模块不得反向导入业务模块；当前用户全部可用Adapter均须有对应生产前端资产，否则禁止新Run并明确显示版本不一致。
