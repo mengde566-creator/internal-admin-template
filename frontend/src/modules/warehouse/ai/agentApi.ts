@@ -69,8 +69,8 @@ export type ClarificationTask = {
   candidateIntent: 'CURRENT_STOCK' | 'ITEM_LOCATIONS' | 'LOCATION_CONTENTS' | 'KNOWLEDGE_DOCUMENT_READ' | ''
   selectedCode: string
   selectedName: string
-  selectedWarehouseCode: string
-  selectedWarehouseName: string
+  selectedScopeCode: string
+  selectedScopeName: string
   options: KnowledgeClarificationOption[]
 }
 export type MessagePage = Required<Omit<MessagePageSchema, 'records' | 'activeClarification'>> & {
@@ -195,15 +195,15 @@ export async function fetchConversationMessages(conversationId: string, page = 1
             : '',
           selectedCode: raw.activeClarification.selectedCode ?? '',
           selectedName: raw.activeClarification.selectedName ?? '',
-          selectedWarehouseCode: raw.activeClarification.selectedWarehouseCode ?? '',
-          selectedWarehouseName: raw.activeClarification.selectedWarehouseName ?? '',
+          selectedScopeCode: raw.activeClarification.selectedScopeCode ?? '',
+          selectedScopeName: raw.activeClarification.selectedScopeName ?? '',
           options: (raw.activeClarification.options ?? []).map((option) => ({
             code: option?.code ?? '',
             name: option?.name ?? '',
             baseUnit: option?.baseUnit ?? '',
             optionToken: option?.optionToken ?? '',
-            warehouseCode: option?.warehouseCode ?? '',
-            warehouseName: option?.warehouseName ?? '',
+            scopeCode: option?.scopeCode ?? '',
+            scopeName: option?.scopeName ?? '',
             versionCode: (option as typeof option & { versionCode?: string })?.versionCode,
             versionUpdatedAt: (option as typeof option & { versionUpdatedAt?: string })?.versionUpdatedAt,
             indexedAt: (option as typeof option & { indexedAt?: string })?.indexedAt

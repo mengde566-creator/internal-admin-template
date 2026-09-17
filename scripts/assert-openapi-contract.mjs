@@ -372,7 +372,7 @@ if (clarificationSchema) {
   const deref = dereference(clarificationSchema)
   for (const field of [
     'clarificationId', 'revision', 'status', 'candidateKind', 'candidateIntent',
-    'selectedCode', 'selectedName', 'selectedWarehouseCode', 'selectedWarehouseName', 'options'
+    'selectedCode', 'selectedName', 'selectedScopeCode', 'selectedScopeName', 'options'
   ]) {
     assert(deref?.properties?.[field], `ClarificationTaskDTO 缺少 ${field} 属性`)
   }

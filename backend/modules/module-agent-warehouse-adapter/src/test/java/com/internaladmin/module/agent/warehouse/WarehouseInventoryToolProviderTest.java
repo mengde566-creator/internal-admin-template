@@ -73,7 +73,7 @@ import static org.mockito.Mockito.*;
 
 class WarehouseInventoryToolProviderTest {
     private final IamActorDTO actor = new IamActorDTO(7L, 3L, ScopeMode.CURRENT_DEPARTMENT,
-            List.of(PermissionCodes.WAREHOUSE_READ));
+            List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ));
 
     @TempDir
     Path tempDir;
@@ -91,7 +91,8 @@ class WarehouseInventoryToolProviderTest {
 
         List<String> cards = new ArrayList<>();
         AgentExecutionContext execution = new AgentExecutionContext(
-                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ)),
                 "run-knowledge-lock", "仓储制度", cards::add);
         ToolContext toolContext = new ToolContext(Map.of("agent.execution", execution));
         String knowledgeOutput = new KnowledgeToolProvider(knowledge, mock(AiObservationRecorder.class))
@@ -125,7 +126,8 @@ class WarehouseInventoryToolProviderTest {
         });
 
         AgentExecutionContext execution = new AgentExecutionContext(
-                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ)),
                 "run-knowledge-in-flight", "仓储制度", ignored -> { });
         ToolContext toolContext = new ToolContext(Map.of("agent.execution", execution));
         ToolCallback knowledgeCallback = new KnowledgeToolProvider(knowledge).getToolCallbacks()[0];
@@ -152,25 +154,40 @@ class WarehouseInventoryToolProviderTest {
     }
 
     @Test
-    void mixedInitialToolBatchMustKeepWarehouseAllowedAfterKnowledgeBegins() {
+    void mixedInitialToolBatchCannotAuthorizeWarehouseAfterKnowledgeBegins() {
         WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
         IamActorApi iam = mock(IamActorApi.class);
         when(iam.resolve(7L)).thenReturn(actor);
         when(warehouse.queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any()))
                 .thenReturn(new WarehouseStockTaskResult("NO_DATA", List.of(), List.of(), Instant.now()));
         AgentExecutionContext execution = new AgentExecutionContext(
-                new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ)),
+                new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ)),
                 "run-mixed-red", "仓储制度和测试物品库存", ignored -> { });
-        assertTrue(execution.openMixedToolAuthorization(List.of(WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL)));
         execution.beginKnowledgeCall();
 
         ToolCallback stock = provider(warehouse, iam).getToolCallbacks()[0];
-        String output = stock.call(itemInput("测试物品"),
-                new ToolContext(Map.of("agent.execution", execution)));
+        AgentToolException rejected = assertThrows(AgentToolException.class,
+                () -> stock.call(itemInput("测试物品"), new ToolContext(Map.of("agent.execution", execution))));
+        assertEquals(AgentErrorCode.BUSINESS_REJECTED, rejected.getErrorCode());
+        verifyNoInteractions(iam, warehouse);
+    }
 
-        assertTrue(output.contains("\"outcome\":\"NO_DATA\""),
-                "同一初始Tool批次的仓储调用不应因知识查询先开始而被闭锁");
-        verify(warehouse).queryCurrentStock(eq("测试物品"), isNull(), isNull(), eq(20), any());
+    @Test
+    void selectedWarehouseToolRejectsWriteIntentBeforeBusinessApi() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        AgentExecutionContext execution = new AgentExecutionContext(
+                new AgentRunContext(7L, 3L, false,
+                        List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ)),
+                "run-policy-selected", "写入库存100件", ignored -> { });
+
+        ToolCallback stock = provider(warehouse, iam).getToolCallbacks()[0];
+        AgentToolException rejected = assertThrows(AgentToolException.class,
+                () -> stock.call(itemInput("测试物品"), new ToolContext(Map.of("agent.execution", execution))));
+
+        assertEquals(AgentErrorCode.BUSINESS_REJECTED, rejected.getErrorCode());
+        verifyNoInteractions(iam, warehouse);
     }
 
     @Test
@@ -1453,8 +1470,8 @@ class WarehouseInventoryToolProviderTest {
 
     private AgentExecutionContext context(AtomicReference<String> card) {
         return new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
-                List.of(PermissionCodes.WAREHOUSE_READ)), "run-1",
-                "查询测试物品没有库存数据库故障越权对象轴承深沟球轴承 E2E-WH-0816-2226", card::set);
+                List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ)), "run-1",
+                "查询测试物品没有库存数据库故障越权对象轴承深沟球轴承 A密封圈 B密封圈 E2E-WH-0816-2226", card::set);
     }
 
     private WarehouseAccessScopeDTO capturedScope(WarehouseQueryApi warehouse) {

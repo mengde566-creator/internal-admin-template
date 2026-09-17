@@ -23,8 +23,6 @@ public final class DashScopeKnowledgeEmbeddingClient implements KnowledgeRetriev
 
     public static final String MODEL = "qwen3.7-text-embedding";
     public static final int DIMENSIONS = 1024;
-    public static final String QUERY_INSTRUCT =
-            "Given a warehouse operations question, retrieve relevant warehouse policy, item coding, warehouse and location coding, and low-stock handling passages.";
     private static final String ENDPOINT_PATH = "/api/v1/services/embeddings/text-embedding/text-embedding";
     private static final int MAX_BATCH = 20;
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
@@ -64,19 +62,36 @@ public final class DashScopeKnowledgeEmbeddingClient implements KnowledgeRetriev
 
     @Override
     public RetrievalEmbedding embedQuery(String text) {
+        return embedQuery(text, "");
+    }
+
+    @Override
+    public RetrievalEmbedding embedQuery(String text, String retrievalInstruction) {
         if (text == null || text.isBlank()) {
             throw unavailable("查询文本为空");
         }
-        List<RetrievalEmbedding> vectors = embed(List.of(text), true);
+        if (retrievalInstruction == null || retrievalInstruction.length() > 512
+                || retrievalInstruction.codePoints().anyMatch(Character::isISOControl)) {
+            throw unavailable("检索指令无效");
+        }
+        List<RetrievalEmbedding> vectors = embed(List.of(text), true, retrievalInstruction);
         return vectors.getFirst();
     }
 
     /** Package-private bounded batch hook used by the explicit evaluation gate. */
     List<RetrievalEmbedding> embedQueries(List<String> texts) {
-        return embed(texts, true);
+        return embedQueries(texts, "");
+    }
+
+    List<RetrievalEmbedding> embedQueries(List<String> texts, String retrievalInstruction) {
+        return embed(texts, true, retrievalInstruction);
     }
 
     private List<RetrievalEmbedding> embed(List<String> texts, boolean query) {
+        return embed(texts, query, "");
+    }
+
+    private List<RetrievalEmbedding> embed(List<String> texts, boolean query, String retrievalInstruction) {
         if (texts == null || texts.isEmpty() || texts.size() > MAX_BATCH
                 || texts.stream().anyMatch(value -> value == null || value.isBlank())) {
             throw unavailable("Embedding批次无效");
@@ -87,8 +102,8 @@ public final class DashScopeKnowledgeEmbeddingClient implements KnowledgeRetriev
             parameters.put("dimension", dimensions);
             parameters.put("output_type", "dense&sparse");
             parameters.put("text_type", query ? "query" : "document");
-            if (query) {
-                parameters.put("instruct", QUERY_INSTRUCT);
+            if (query && retrievalInstruction != null && !retrievalInstruction.isBlank()) {
+                parameters.put("instruct", retrievalInstruction);
             }
             requestBody = JSON.writeValueAsString(java.util.Map.of(
                     "model", model,

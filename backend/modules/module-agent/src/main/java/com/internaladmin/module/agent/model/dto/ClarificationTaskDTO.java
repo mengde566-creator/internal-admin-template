@@ -6,7 +6,7 @@ import java.util.List;
 public record ClarificationTaskDTO(String clarificationId, long revision, String status,
                                    String candidateKind, String candidateIntent,
                                    String selectedCode, String selectedName,
-                                   String selectedWarehouseCode, String selectedWarehouseName,
+                                   String selectedScopeCode, String selectedScopeName,
                                    List<ClarificationOptionDTO> options) {
     public ClarificationTaskDTO {
         options = options == null ? List.of() : List.copyOf(options);

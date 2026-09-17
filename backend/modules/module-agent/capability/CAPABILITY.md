@@ -4,14 +4,14 @@
 
 SLICE-00 已通过 Gate A、Gate B，提供 Agent 默认关闭、DeepSeek 纵向链、Session+CSRF SSE、History、运行终态/有界重试和最小观测技术基线。
 
-SLICE-01～03 已完成 Conversation/History、scope隔离短期Memory和四类仓储只读任务，使用持久化Task、受控澄清、部分成功和失败重试。SLICE-04B 已完成纯知识问答：制度与编码问题经 `KnowledgeQueryApi` 检索当前生效资料，引用由服务端生成并通过 `citation.added`、`knowledge-answer` 卡片和 History 恢复；零证据与知识不可用使用不同结果，知识查询被受理后同一 Run 的 Warehouse 事实回调默认闭锁，仅允许由原始用户意图预先匹配出的精确后续 Tool 一次性继续。SLICE-07A 已建立编译期 `AgentAdapterRegistry`：Core 只负责注册、冲突失败、按可信 Actor 过滤能力和通用运行编排，业务 Task、候选、卡片、恢复与提示语义由具体 Adapter 提供。SLICE-07B 已补齐 Run 内 `AgentArtifactRegistry`：具体 Tool 声明版本化生产/消费契约，Core 校验 Run、类型、TTL、当前 scope 与消费者并在终态清理；测试源码中的两个最小 Adapter 已证明受信 A→Artifact→B 链。
+SLICE-01～03 已完成 Conversation/History、scope隔离短期Memory和四类仓储只读任务，使用持久化Task、受控澄清、部分成功和失败重试。SLICE-04B 已完成纯知识问答：制度与编码问题经 Adapter 登记的 `KnowledgeContentPack` 和 `KnowledgeQueryApi` 检索当前生效资料，引用由服务端生成并通过 `citation.added`、`knowledge-answer` 卡片和 History 恢复；知识 HTTP/Tool 访问统一要求 `ai:knowledge:read`，零证据与知识不可用使用不同结果，知识查询被受理后同一 Run 的 Warehouse 事实回调默认闭锁，仅允许由原始用户意图预先匹配出的精确后续 Tool 一次性继续。SLICE-07A 已建立编译期 `AgentAdapterRegistry`：Core 只负责注册、冲突失败、按可信 Actor 过滤能力和通用运行编排，业务 Task、候选、卡片、恢复与提示语义由具体 Adapter 提供。SLICE-07B 已补齐 Run 内 `AgentArtifactRegistry`：具体 Tool 声明版本化生产/消费契约，Core 校验 Run、类型、TTL、当前 scope 与消费者并在终态清理；测试源码中的两个最小 Adapter 已证明受信 A→Artifact→B 链。
 
 ## 2. 特有约束
 
 - Agent 默认关闭；关闭时不创建 ChatModel、EmbeddingModel、知识数据源或对话入口。
 - 开启时模型固定 `deepseek-v4-flash`，Spring AI 内建 RetryTemplate 最大尝试为 1，请求温度固定为 `0.0`；普通流式探针不把隐藏推理写入任何项目数据。
 - `app.ai.*` 由唯一强类型 `AiProperties` 绑定并由启动校验器一次性校验。
-- `knowledge_search` 只接受规范化后的当前用户原问题，服务端固定检索数量；模型不能提交阈值、版本、内部编号或自行生成引用。
+- `knowledge_search` 只接受规范化后的当前用户原问题，服务端固定检索数量并要求 `ai:knowledge:read`；短查询检索指令由 Knowledge Core 统一附加，模型不能提交阈值、版本、内部编号或自行生成引用。
 
 ## 3. 公开与跨模块契约
 

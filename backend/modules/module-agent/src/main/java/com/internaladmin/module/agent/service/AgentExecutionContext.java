@@ -181,6 +181,12 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         return outcomes.selectedFailureCode();
     }
 
+    /** Returns the Tool that owns the selected failure code. */
+    public String toolErrorToolName() {
+        ToolOutcome selected = outcomes.selectedFailure();
+        return selected == null ? null : selected.toolName();
+    }
+
     public boolean hasToolFailure() {
         return outcomes.hasFailure();
     }
@@ -314,25 +320,6 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         return knowledgeCallAttempted();
     }
 
-    /**
-     * Opens a bounded authorization window for the non-knowledge callbacks that
-     * belong to the same initial model tool-call batch.  The window is only
-     * created by the server-side ToolCallingManager before delegation; model
-     * arguments and knowledge content cannot create it.
-     */
-    public boolean openMixedToolAuthorization(List<String> toolNames) {
-        return knowledgeState.openMixedAuthorization(toolNames);
-    }
-
-    /** Consume one pre-registered callback invocation in the current batch. */
-    public boolean consumeMixedToolAuthorization(String toolName) {
-        boolean consumed = knowledgeState.consumeMixedAuthorization(toolName);
-        LOG.debug("event=agent_mixed_authorization stage=consume result={} runId={} tool={} reason={}",
-                consumed ? "granted" : "denied", runId, logToken(toolName),
-                consumed ? "registered" : "not_registered");
-        return consumed;
-    }
-
     /** Opens a one-shot, server-preflighted follow-up window for a later model round. */
     public boolean openMixedFollowupAuthorization(List<String> toolNames) {
         return knowledgeState.openMixedFollowupAuthorization(toolNames);
@@ -345,12 +332,6 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                 consumed ? "granted" : "denied", runId, logToken(toolName),
                 consumed ? "registered" : "not_registered");
         return consumed;
-    }
-
-    /** Always clear a batch authorization, including delegate failures. */
-    public void closeMixedToolAuthorization() {
-        knowledgeState.closeMixedAuthorization();
-        LOG.debug("event=agent_mixed_authorization stage=close result=closed runId={} toolCount=0", runId);
     }
 
     private void logToolOutcome(String toolName, boolean success, String code) {
@@ -411,7 +392,6 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         private boolean attempted;
         private KnowledgeQueryApi.Result result;
         private String cardJson;
-        private final List<String> mixedAuthorizedTools = new ArrayList<>();
         private final List<String> mixedFollowupAuthorizedTools = new ArrayList<>();
         private String retryQuery;
         private String retryOperation;
@@ -435,24 +415,6 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
 
         public synchronized String cardJson() { return cardJson; }
 
-        private synchronized boolean openMixedAuthorization(List<String> toolNames) {
-            if (attempted || !mixedAuthorizedTools.isEmpty() || toolNames == null
-                    || toolNames.isEmpty() || toolNames.size() > ToolOutcomeLedger.MAX_OUTCOMES) {
-                return false;
-            }
-            mixedAuthorizedTools.clear();
-            mixedAuthorizedTools.addAll(toolNames);
-            return true;
-        }
-
-        private synchronized boolean consumeMixedAuthorization(String toolName) {
-            if (toolName == null || mixedAuthorizedTools.isEmpty()) return false;
-            int index = mixedAuthorizedTools.indexOf(toolName);
-            if (index < 0) return false;
-            mixedAuthorizedTools.remove(index);
-            return true;
-        }
-
         private synchronized boolean openMixedFollowupAuthorization(List<String> toolNames) {
             if (attempted || !mixedFollowupAuthorizedTools.isEmpty() || toolNames == null
                     || toolNames.isEmpty() || toolNames.size() > ToolOutcomeLedger.MAX_OUTCOMES) {
@@ -469,10 +431,6 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
             if (index < 0) return false;
             mixedFollowupAuthorizedTools.remove(index);
             return true;
-        }
-
-        private synchronized void closeMixedAuthorization() {
-            mixedAuthorizedTools.clear();
         }
 
         private synchronized void authorizeRetryQuery(String operation, String normalizedQuery) {
@@ -621,11 +579,16 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         }
 
         public synchronized String selectedFailureCode() {
+            ToolOutcome selected = selectedFailure();
+            return selected == null ? null : selected.errorCode();
+        }
+
+        public synchronized ToolOutcome selectedFailure() {
             return outcomes.stream().filter(outcome -> !outcome.success()
                             && "AI_TOOL_FORBIDDEN".equals(outcome.errorCode()))
-                    .map(ToolOutcome::errorCode).findFirst()
+                    .findFirst()
                     .orElseGet(() -> outcomes.stream().filter(outcome -> !outcome.success())
-                            .map(ToolOutcome::errorCode).filter(code -> code != null && !code.isBlank())
+                            .filter(outcome -> outcome.errorCode() != null && !outcome.errorCode().isBlank())
                             .findFirst().orElse(null));
         }
     }

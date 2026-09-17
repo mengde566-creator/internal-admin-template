@@ -3,6 +3,8 @@ package com.internaladmin.module.knowledge.config;
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.knowledge.api.AiSearchInfrastructure;
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient;
+import com.internaladmin.module.knowledge.api.KnowledgeContentPack;
+import com.internaladmin.module.knowledge.service.KnowledgeContentPackRegistry;
 import com.internaladmin.module.knowledge.service.DashScopeKnowledgeEmbeddingClient;
 import com.internaladmin.module.knowledge.service.DimensionCheckingEmbeddingModel;
 import liquibase.integration.spring.SpringLiquibase;
@@ -16,6 +18,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -114,5 +117,11 @@ public class KnowledgeConfiguration {
     @DependsOn("knowledgeLiquibase")
     public KnowledgeRetrievalEmbeddingClient knowledgeRetrievalEmbeddingClient(AiProperties properties) {
         return new DashScopeKnowledgeEmbeddingClient(properties.getEmbedding().getQwen());
+    }
+
+    /** Compile-time adapter content packs; no repository or filesystem fallback is permitted. */
+    @Bean
+    public KnowledgeContentPackRegistry knowledgeContentPackRegistry(ObjectProvider<KnowledgeContentPack> packs) {
+        return new KnowledgeContentPackRegistry(packs.orderedStream().toList());
     }
 }

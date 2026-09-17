@@ -1,9 +1,10 @@
 # SLICE-07 通用 AI 边界、受信工具组合与学习路径设计
 
-> 状态：已确认；07A、07B 已完成并通过验收，07C 方案已细化、研发未开始
-> 版本：0.5
+> 状态：已确认；07A、07B 已提交；07C 实现、公共契约校正、差异复核与当前源码运行冒烟已完成
+> 版本：0.6
 > 确认日期：2026-09-10
 > 07C细化日期：2026-09-14
+> 全计划复核日期：2026-09-15
 > 适用范围：`module-agent`、`module-knowledge`、`module-ai-observability`、业务 Agent Adapter、前端 AI 助手及 `docs/learning/`
 > 需求依据：`REQ-V02-AI-009`、`FUN-10`、`SCN-RU-01`
 > 方向输入：`requirements/CUSTOMER_ORDER_SYSTEM.md` 为草稿，只用于检验扩展方向，不授权实现客户或订单功能
@@ -26,10 +27,10 @@ SLICE-07 的目标不是建设独立 AI 平台、插件市场或通用工作流�
 
 ## 2. 当前事实与根因
 
-07A 已在提交 `97e8326` 建立编译期 Adapter 注册并完成第一阶段边界收敛：能力发现与运行链使用同一可信 Actor，仓储 Task、候选、卡片、恢复和提示语义由仓储 Adapter 的 Policy/Provider 拥有，通用 Core 不再选择默认仓储 Adapter。当前剩余事实是：
+07A 已在提交 `97e8326` 建立编译期 Adapter 注册并完成第一阶段边界收敛；07B 已建立 Run 内 ToolArtifact 与依赖链。2026-09-15 全计划复核确认两段主体方向保留，但实现仍有必须在07C提交前校正的公共契约偏差：业务输入校验和错误表达被跨 Adapter 聚合、卡片 payload 仍由 Core 按仓储形状解析、受信提示缺少总预算且含仓储人格化表述，以及同批多 Tool 授权分支与“每次迭代最多一个 ToolCall”互相矛盾。当前剩余事实是：
 
-- `module-agent` 已拥有通用 Adapter、Tool、Task Policy 注册与冲突失败入口，但 Artifact 的生产/消费声明仍停留在 Adapter 级，尚不能作为具体 Tool 的消费授权；
-- `AgentExecutionContext` 已是同一 Run 的服务端可信状态载体，现有 `DeepSeekToolCallingAdvisor` 与 `MixedToolCallingManager` 已使用 Spring AI 扩展点，但尚无 Run 内 Artifact 注册表；
+- `module-agent` 已拥有通用 Adapter、Tool、Task Policy、Tool级Artifact注册和冲突失败入口，但业务校验、失败文案和卡片payload验证的所有权仍未完全落到实际Tool/Card所有者；
+- `AgentExecutionContext` 已是同一 Run 的服务端可信状态载体，现有 `DeepSeekToolCallingAdvisor` 与 `MixedToolCallingManager` 已使用 Spring AI 扩展点并承载Run内Artifact；后续只校正所有权与不可达分支，不重写模型循环；
 - `module-knowledge` 仍拥有仓储合成资料、目录排序、检索指令和仓储权限语义；
 - `module-ai-observability` 仍内置仓储评测资源；
 - `WarehouseAgentPanel.vue` 同时承担通用会话壳和仓储卡片、路由等业务资产；
@@ -85,14 +86,15 @@ SLICE-07 的目标不是建设独立 AI 平台、插件市场或通用工作流�
 ### 4.2 业务 Adapter 拥有
 
 - 稳定且全局唯一的 `adapterId`；
-- 当前 Actor 下的可用性判断和面向模型的受信业务说明；
+- 当前 Actor 下的可用性判断和面向模型的受信能力说明；说明不得把整个通用助手定义成单一业务人格；
 - Tool 名称、描述、严格参数 Schema、`produces/consumes` 类型声明和执行回调；
+- 只在本 Adapter 所有的 Tool 被选中执行时，对原始用户请求及Tool参数做业务语义校验；一个Adapter不得否决其他Adapter的请求；
 - 调用业务模块公开 API，并由业务 Service 在每次调用时完成最终权限与范围校验；
 - Artifact 私有载荷的创建、类型解释和消费；
 - 业务 Task、候选、修订和安全恢复描述；
-- 业务卡片、强类型 payload、copy 格式和 routeKey 白名单；
-- 业务知识内容包、业务检索策略及业务离线评测数据集；
-- 业务错误的用户表达和敏感字段过滤。
+- 业务卡片、强类型 payload、payload校验/规范化、copy 格式和 routeKey 白名单；`cardType`全局唯一，Core只校验通用卡片包络并按所有者委托业务payload；
+- 业务知识内容包及业务离线评测数据集；内容包只拥有内容、版本、确定顺序和哈希，不携带或竞争Knowledge核心的查询检索指令；
+- 本Adapter所拥有Tool的业务错误用户表达和敏感字段过滤；错误必须按实际失败Tool定位所有者，不得从全部Adapter中取第一个文案。
 
 Adapter 只能依赖对应业务模块公开 `api/`，不得访问业务 Mapper、DO 或表。
 
@@ -101,7 +103,8 @@ Adapter 只能依赖对应业务模块公开 `api/`，不得访问业务 Mapper�
 - 文档、版本、草稿、解析、发布和 ACTIVE 切换；
 - Dense/Sparse 向量、通用检索、目录、全文读取和引用契约；
 - Provider 配置与失败语义；
-- 内容包登记、文档编码和版本冲突检查。
+- 面向短问题检索长文档的全局通用查询指令；
+- 内容包登记、文档编码、顺序、哈希和版本冲突检查。
 
 仓储资料、仓储排序、仓储提示、仓储权限和仓储评测语料不属于 Knowledge 核心。
 
@@ -117,8 +120,10 @@ Adapter 只能依赖对应业务模块公开 `api/`，不得访问业务 Mapper�
 
 - 对话容器、SSE、History、取消、重试、加载和通用错误状态；
 - `DOCKED`、`COMPACT`、`DRAWER` 三种现有呈现；
-- 按 `adapterId + cardType` 分派业务卡片；
+- 按全局唯一的 `cardType` 分派业务卡片；当前SSE卡片契约不新增`adapterId`；
 - 未注册卡片或 routeKey 的稳定版本不匹配错误。
+
+07D将通用助手入口提升到应用级外壳；仓储页面保留快捷入口，但不再成为通用助手唯一宿主。业务前端资产仍随对应Adapter编译期装配，不建立运行时插件加载器。
 
 业务前端资产拥有卡片解析与展示、字段复制和受控路由。07不建立第二个前端应用、Node Agent Runtime或运行时前端插件加载器。
 
@@ -130,13 +135,13 @@ Adapter 只能依赖对应业务模块公开 `api/`，不得访问业务 Mapper�
 
 - `adapterId`；
 - `isAvailable(actor)`；
-- 有长度上限且顺序确定的 `trustedInstructions`；
+- 单项及聚合后均有长度上限、顺序确定的 `trustedInstructions`；聚合超限必须装配或Run建立失败，不允许截断；
 - Tool 列表及其所有权；每个 Tool 分别声明自己的 `produces/consumes` 版本化 Artifact 类型；
 - Task Policy；
 - cardType 与 routeKey；
 - 可选的知识内容包和评测数据集。
 
-Adapter ID、Tool 名、Artifact 生产者、cardType、routeKey、知识文档编码或评测数据集发生冲突时必须装配失败，不静默覆盖。一个 `artifactType@version` 只允许一个明确的生产 Tool，但可以被多个明确登记的消费 Tool 使用；重复的同一 Tool 声明仍是冲突。Adapter 级 `produces/consumes` 只能作为汇总展示，不能代替具体 Tool 的授权。首版只使用编译期静态注册，不接受脚本、远程地址、类名字符串、任意 Map 执行协议或运行时上传。
+Adapter ID、Tool 名、Artifact 生产者、cardType、routeKey、知识文档编码或评测数据集发生冲突时必须装配失败，不静默覆盖。一个 `artifactType@version` 只允许一个明确的生产 Tool，但可以被多个明确登记的消费 Tool 使用；重复的同一 Tool 声明仍是冲突。Adapter 级 `produces/consumes` 只能作为汇总展示，不能代替具体 Tool 的授权。Core只执行全局安全、只读、身份和预算规则；业务输入校验、Tool失败文案与卡片payload合同均按已选中的所有者委托，禁止遍历全部Adapter得出业务结论。首版只使用编译期静态注册，不接受脚本、远程地址、类名字符串、任意 Map 执行协议或运行时上传。
 
 ### 5.2 Tool 结果顶层契约
 
@@ -237,8 +242,8 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 
 07 只完成：
 
-- 将仓储合成资料、仓储检索提示、排序和评测资产归还仓储 Adapter；
-- Knowledge 核心通过服务端静态注册白名单接受内容包和检索策略；
+- 将仓储合成资料、业务排序和评测资产归还仓储 Adapter；
+- Knowledge 核心通过服务端静态注册白名单接受内容包；查询侧检索指令由Knowledge核心统一拥有，不由内容包提供；
 - Knowledge HTTP检索与Agent知识Tool统一要求`ai:knowledge:read`，不聚合各业务Adapter权限规则；仓储事实Tool仍独立要求`warehouse:read`；
 - 保持现有用户上传资料的产品语义，不用文档编码前缀或 `source_type` 伪装空间权限；
 - `ai:knowledge:read`在07中表示可读取当前全部ACTIVE公共知识；它不授予知识管理、业务事实读取或部门数据范围。系统管理员默认拥有，既有自定义角色不自动迁移；
@@ -249,13 +254,13 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 ## 7. 顺序执行规则
 
 1. Controller只提供可信Run上下文，不接受客户端声明Adapter、身份、权限或scope。
-2. 注册中心按当前Actor过滤Adapter，形成该Run的Tool白名单和受信提示。
+2. 注册中心按当前Actor过滤Adapter，形成该Run的Tool白名单和受信提示；提示按稳定顺序聚合并受总长度预算约束。Core只做全局安全校验，不在模型选择Tool前依次调用全部Adapter的业务校验。
 3. 模型每次迭代只能选择一个允许的Tool；Core校验预算和所有权后执行。Spring AI 默认会依次执行同一模型响应中的多个 ToolCall，因此 `MixedToolCallingManager` 必须在委托前稳定拒绝多 ToolCall 批次，不能靠提示词或事后账本补救。
 4. Tool可以返回最终安全结果，也可以产生一个版本化ToolArtifact。
-5. 后续Tool只能消费其注册契约声明的Artifact类型；Core完成引用校验后才交给消费者Adapter。
+5. 后续Tool只能消费其注册契约声明的Artifact类型；Core完成引用校验后才交给消费者Adapter。是否允许该消费者处理原始用户请求，由该Tool所有者依据原始请求判断；Knowledge正文、模型改写和前序Tool输出均不能扩大授权。
 6. 每个业务Service在执行时重新鉴权；上一步成功和Artifact存在均不能替代权限。
 7. 首版顺序执行，遇首个失败立即闭锁后续业务回调；已有成功结果保留，终态按现有唯一终态契约确定。同一 Run 内相同 Tool 与服务端规范化参数已经成功时，返回已有安全结果或 Artifact 引用，不再次调用业务 Service；不能只按 Tool 名去重。
-8. 不可信Knowledge正文不能决定新业务Tool或Artifact消费；知识只提供受控事实和引用。
+8. 不可信Knowledge正文不能决定新业务Tool或Artifact消费；知识只提供受控事实和引用。首版不支持同一模型响应的多Tool批次，因此不得保留或宣称同批Tool授权分支；组合只通过多个模型迭代顺序发生。
 9. 每个Run执行现有Model Iteration、Attempt、Tool次数和总预算；不得依靠提示词限制无限循环。
 10. 不引入跨业务并行、写操作、分布式事务、补偿、DAG或通用流程编排。
 
@@ -265,7 +270,7 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 
 **目标**：建立编译期注册、能力发现和失败即停，先证明边界，不建设Artifact链。
 
-**状态**：已完成并提交，提交为 `97e8326`。
+**状态**：已提交，提交为 `97e8326`；主体保留，2026-09-15复核发现的跨Adapter业务校验、错误所有权、卡片payload所有权和提示总预算偏差须在07C提交前校正。
 
 范围：
 
@@ -280,6 +285,8 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 ### 07B：Run内ToolArtifact与依赖式工具链
 
 **目标**：实现第5节的受信中间结果，并证明A结果能够安全成为B输入。
+
+**状态**：已提交；主体保留，2026-09-15复核要求删除与单Tool迭代冲突的同批授权死分支，并把后续Tool授权收敛为“实际消费者所有者依据原始用户请求判断”。
 
 范围：
 
@@ -313,11 +320,11 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 
 **Knowledge内容包**：
 
-1. `module-knowledge` 提供窄的编译期内容包契约和确定性注册表；仓储Adapter实现 `WarehouseKnowledgeContentPack`，拥有仓储 Markdown、索引、固定文档顺序、兼容版本标识和检索指令。
-2. 所有仓储资源迁入 Adapter 唯一资源命名空间。内容导入、目录顺序、检索指令、后端测试和运行时读取必须消费同一内容包对象，不保留第二份测试拷贝或核心内置回退。
+1. `module-knowledge` 提供窄的编译期内容包契约和确定性注册表；仓储Adapter实现 `WarehouseKnowledgeContentPack`，拥有仓储 Markdown、索引、固定文档顺序、兼容版本标识和哈希。内容包不声明检索指令。
+2. 所有仓储资源迁入 Adapter 唯一资源命名空间。内容导入、目录顺序、后端测试和运行时读取必须消费同一内容包对象，不保留第二份测试拷贝或核心内置回退。Knowledge核心为所有内容包使用一条通用、与业务无关的查询检索指令；未来出现真实分域检索需求时另行设计Retriever/knowledgeSpace，不把策略塞回内容包。
 3. 注册时校验内容包ID、文档/版本唯一性、ACTIVE版本、资源可读性、哈希及顺序；冲突、缺失或哈希不符时启动失败并给出稳定错误码，不静默跳过。
 4. `KnowledgeService` 保留文档生命周期、解析、发布、搜索和引用；Mapper移除仓储编码排序，固定资料顺序由注册表提供，用户上传资料保持稳定通用排序。
-5. `knowledge_search` 的通用执行桥、描述和安全结果合同由Agent/Knowledge公共能力拥有，统一要求`ai:knowledge:read`；业务Adapter只登记自己的内容包、检索指令和业务事实Tool，不提供或聚合Knowledge访问规则。知识管理接口继续要求`ai:knowledge:manage`，两个权限互不隐含。
+5. `knowledge_search` 的通用执行桥、描述、安全结果合同和查询检索指令由Agent/Knowledge公共能力拥有，统一要求`ai:knowledge:read`；业务Adapter只登记自己的内容包和业务事实Tool，不提供检索指令或聚合Knowledge访问规则。知识管理接口继续要求`ai:knowledge:manage`，两个权限互不隐含。
 6. IAM注册`ai:knowledge:read`并加入系统管理员默认权限；既有自定义角色不按仓储权限自动补授。直接HTTP搜索与Agent知识Tool使用同一权限语义，避免两条访问链不一致。
 
 **评测数据集**：
@@ -328,7 +335,7 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 4. `RunConfiguration`以加法字段明确所属`datasetVersion`，前端按同一登记组合启动，不能分别取两个列表的第一项拼接；07C不顺手建设数据集选择页面。
 5. 未安装任何评测Provider时，数据集和配置列表为空，应用仍可启动；发起未知评测必须明确拒绝。
 
-**可诊断性门槛**：日志不是故障后的补丁，必须随主链首轮实现进入测试。至少覆盖：内容包/数据集注册结果、固定资料导入阶段、资源校验阶段、评测运行开始与聚合终态。只记录 `runId/evaluationRunId`、Provider或内容包ID、版本、阶段、数量、状态、耗时和稳定错误码；禁止记录查询正文、知识正文、case步骤、预期/实际正文、向量、Provider响应、权限集合或资源内容。静态日志契约必须覆盖新增类。
+**可诊断性门槛**：日志不是故障后的补丁，必须随主链首轮实现进入测试。至少覆盖：内容包/数据集注册结果、固定资料导入`started/completed/failed`三类真实阶段、资源校验阶段、评测运行开始与聚合终态。只记录 `runId/evaluationRunId`、Provider或内容包ID、版本、阶段、数量、状态、耗时和稳定错误码；禁止记录查询正文、知识正文、case步骤、预期/实际正文、向量、Provider响应、权限集合或资源内容。测试必须实际触发导入成功与失败并断言日志事件；只扫描源码中是否出现日志字符串不能证明该链可诊断。
 
 **执行顺序（同一研发主责，不拆成多人流水线）**：
 
@@ -350,7 +357,9 @@ Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部�
 
 - 从 `WarehouseAgentPanel.vue` 提取通用对话、SSE、History、取消、重试和状态壳；
 - 仓储卡片、copy和routeKey保留在仓储前端资产；
-- 建立编译期前端资产注册和未知资产失败语义；
+- 建立以全局唯一`cardType`为键的编译期前端资产注册和未知资产失败语义；
+- 将助手容器装配到应用级外壳，仓储按钮仅作为打开同一助手的快捷入口；页面切换不创建第二会话壳；
+- 不新增`knowledge.degraded` SSE事件；知识降级使用既有降级卡片和唯一Run终态表达，避免同一状态双轨维护；
 - 研发提供已实现代码入口与验证事实，由总设计师据此建立 `docs/learning/`，只记录已经实现并验证的架构、场景和代码入口；
 - 在临时派生副本中完成仓储Adapter裁剪和构建证明。
 
@@ -386,10 +395,14 @@ docs/learning/
 ### 10.2 测试双Adapter
 
 - Adapter并存、权限过滤和冲突失败；
+- 一个Adapter的业务输入校验不得拒绝另一个Adapter的合法请求；实际失败Tool只使用其所有者的错误表达；
+- Core能够接受由测试Adapter注册的非仓储卡片payload形状，并由对应cardType所有者完成强类型验证；未知或错误payload稳定失败；
+- 所有Adapter受信说明聚合后受总预算约束，且任何业务说明不得把通用助手定义为单一业务人格；
 - A产生Artifact，B按声明消费；
 - Artifact声明落在具体Tool；同一类型只允许一个生产Tool并允许多个显式消费Tool；
 - Artifact伪造、跨Run、错类型、错版本、过期、消费时scope变化和未声明消费Tool全部失败；
 - 同一模型迭代返回多个ToolCall时在任何业务回调执行前稳定拒绝；相同Tool与规范化参数的成功调用不重复访问业务Service；
+- 依赖链只通过连续模型迭代发生；后续消费Tool只由其所有者依据原始用户请求授权，Knowledge内容不能开放新Tool；不存在不可达的同批Tool授权分支；
 - A成功、B技术失败形成PARTIAL；安全恢复只执行失败消费者；
 - RetryPlan/ResumeRef、SSE、History、Memory、日志和Observability均不含`artifactId`或私有载荷；成功、失败、取消和超时终态后注册表为空且拒绝继续消费；
 - 测试Adapter仅存在于测试源码，不作为真实业务复用证据。
@@ -408,6 +421,13 @@ docs/learning/
 - `privatePayload`、完整Tool参数/结果和Artifact值不进入SSE、长期History、Memory、日志或Observability；
 - 每次Tool和Resume重新解析当前Actor并调用业务Service鉴权；
 - 无权、无数据、业务拒绝、技术失败和安全拒绝保持不同稳定语义。
+
+### 10.5 Knowledge内容包与前端壳
+
+- 两个测试内容包可以同时登记不同内容、顺序和哈希，并共享Knowledge核心的同一条通用查询检索指令；内容包不能覆盖查询策略；
+- 固定资料导入成功和失败均产生可关联、脱敏的结构化阶段日志，行为测试实际断言事件而非扫描源码字符串；
+- 前端按全局唯一`cardType`注册渲染器，SSE不虚构`adapterId`；应用级唯一助手壳可由仓储快捷入口打开；
+- 知识降级只使用既有降级卡片与唯一Run终态，不保留未生产、未消费的`knowledge.degraded`事件。
 
 ## 11. 非目标与止损线
 
@@ -447,7 +467,7 @@ SLICE-07 属于 L2：它改变公共模块边界、Tool组合方式、业务资�
 
 ## 13. 已确认决定
 
-截至2026-09-14，项目负责人已确认：
+截至2026-09-15，项目负责人已确认：
 
 1. 采用本设计的通用AI模板方向，不建设生成器或独立万能AI平台；
 2. `knowledgeSpace`及相关数据库、权限和页面改造推迟到第二个真实知识消费者；
@@ -461,3 +481,6 @@ SLICE-07 属于 L2：它改变公共模块边界、Tool组合方式、业务资�
 10. 依赖链每个模型迭代最多一个ToolCall，首个失败闭锁后续回调，相同成功调用不得重放业务Service。
 11. 新增独立全局权限`ai:knowledge:read`；Knowledge读取不复用或聚合仓储及其他业务权限，系统管理员默认拥有，既有自定义角色由管理员明确补选。
 12. 07C直接完成通用澄清DTO的`scopeCode/scopeName`改名及必要前后端合同传播，不留到07D，也不建立旧字段兼容层。
+13. 07A、07B主体不回滚；其跨Adapter校验、错误/卡片所有权、提示总预算与同批授权死分支作为07C提交前公共契约校正，不另立分片。
+14. Knowledge内容包只拥有内容、版本、顺序和哈希；查询检索指令由Knowledge核心统一拥有，当前不新增Retriever路由、`knowledgeSpace`或第二权限模型。
+15. 前端业务卡片按全局唯一`cardType`静态分派；07D采用应用级唯一助手壳，业务页面入口只是快捷入口；不新增没有真实生产者和消费者的`knowledge.degraded`事件。

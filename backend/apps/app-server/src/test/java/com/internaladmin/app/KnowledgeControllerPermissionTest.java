@@ -49,7 +49,7 @@ class KnowledgeControllerPermissionTest {
     private KnowledgeService knowledgeService;
 
     @Test
-    void authenticatedUserWithoutWarehouseReadGetsForbidden() throws Exception {
+    void authenticatedUserWithoutKnowledgeReadGetsForbidden() throws Exception {
         mockMvc.perform(get("/api/ai/knowledge/search")
                         .param("query", "仓储")
                         .with(user("no-warehouse-read")))
@@ -57,14 +57,14 @@ class KnowledgeControllerPermissionTest {
     }
 
     @Test
-    void warehouseReadUserCanQueryKnowledge() throws Exception {
+    void knowledgeReadUserCanQueryKnowledge() throws Exception {
         when(knowledgeService.query("仓储", 5)).thenReturn(KnowledgeQueryApi.Result.noEvidence(Instant.now()));
 
         mockMvc.perform(get("/api/ai/knowledge/search")
                         .param("query", "仓储")
-                        .with(user("warehouse-reader").authorities(
+                        .with(user("knowledge-reader").authorities(
                                 new org.springframework.security.core.authority.SimpleGrantedAuthority(
-                                        PermissionCodes.WAREHOUSE_READ))))
+                                        PermissionCodes.AI_KNOWLEDGE_READ))))
                 .andExpect(status().isOk());
     }
 

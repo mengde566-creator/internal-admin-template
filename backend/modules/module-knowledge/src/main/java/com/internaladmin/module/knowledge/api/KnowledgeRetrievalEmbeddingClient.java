@@ -9,9 +9,24 @@ import java.util.HashSet;
  */
 public interface KnowledgeRetrievalEmbeddingClient {
 
+    /** One business-neutral instruction owned by Knowledge Core for short queries. */
+    String DEFAULT_QUERY_INSTRUCTION = "Retrieve relevant active document passages for this short user query.";
+
     List<RetrievalEmbedding> embedDocuments(List<String> texts);
 
     RetrievalEmbedding embedQuery(String text);
+
+    /**
+     * Embed a user query with the business-neutral instruction owned by Knowledge Core.
+     * Implementations that support query instructions must override this method; the default
+     * remains available for instruction-free unit-test clients.
+     */
+    default RetrievalEmbedding embedQuery(String text, String retrievalInstruction) {
+        if (retrievalInstruction == null || retrievalInstruction.isBlank()) {
+            return embedQuery(text);
+        }
+        throw new IllegalStateException("AI_EMBEDDING_INSTRUCTION_UNSUPPORTED");
+    }
 
     /** Provider output used by the knowledge-only asymmetric retrieval path. */
     record RetrievalEmbedding(float[] denseVector, List<SparseEntry> sparseEntries) {

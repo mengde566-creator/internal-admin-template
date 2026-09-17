@@ -105,7 +105,7 @@ public interface AiEvaluationApi {
         }
     }
 
-    record RunConfiguration(String configVersion, String configSha256, String executionMode,
+    record RunConfiguration(String datasetVersion, String configVersion, String configSha256, String executionMode,
                             String ruleVersion, String knowledgeVersion, String modelVersion,
                             String indexVersion) {
     }

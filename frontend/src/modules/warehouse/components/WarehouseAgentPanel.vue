@@ -659,8 +659,8 @@ function restoreClarificationCard(task: ClarificationTask | null | undefined) {
       candidateIntent,
       selectedCandidateCode: task.selectedCode,
       selectedCandidateName: task.selectedName,
-      selectedWarehouseCode: task.selectedWarehouseCode,
-      selectedWarehouseName: task.selectedWarehouseName,
+      selectedWarehouseCode: task.selectedScopeCode,
+      selectedWarehouseName: task.selectedScopeName,
       candidates: [],
       stocks: []
     }
@@ -680,8 +680,8 @@ function restoreClarificationCard(task: ClarificationTask | null | undefined) {
       name: option.name ?? '',
       baseUnit: option.baseUnit ?? '',
       optionToken: option.optionToken ?? '',
-      warehouseCode: option.warehouseCode ?? '',
-      warehouseName: option.warehouseName ?? '',
+      warehouseCode: option.scopeCode ?? '',
+      warehouseName: option.scopeName ?? '',
       versionCode: option.versionCode,
       versionUpdatedAt: option.versionUpdatedAt,
       indexedAt: option.indexedAt

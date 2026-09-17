@@ -78,7 +78,6 @@ class MixedToolCallingManagerTest {
         ToolExecutionResult result = mock(ToolExecutionResult.class);
         AgentExecutionContext execution = execution();
         when(delegate.executeToolCalls(any(Prompt.class), any(ChatResponse.class))).thenAnswer(invocation -> {
-            assertFalse(execution.consumeMixedToolAuthorization("warehouse_current_stock"));
             return result;
         });
         MixedToolCallingManager manager = new MixedToolCallingManager(delegate, followupRegistry(),
@@ -105,7 +104,6 @@ class MixedToolCallingManagerTest {
         manager.executeToolCalls(prompt(execution), response(MixedToolCallingManager.KNOWLEDGE_TOOL));
         manager.executeToolCalls(prompt(execution), response("warehouse_current_stock"));
 
-        assertFalse(execution.consumeMixedToolAuthorization("warehouse_current_stock"));
         assertFalse(execution.consumeMixedFollowupAuthorization("warehouse_current_stock"),
                 "授权应已由真实第二轮回调消费");
         assertFalse(execution.consumeMixedFollowupAuthorization("unrelated_tool"),

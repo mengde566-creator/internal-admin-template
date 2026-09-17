@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Read-only knowledge endpoints plus the repository-owned synthetic import; no arbitrary content input is accepted. */
+/** Read-only knowledge endpoints plus the registered content-pack import; no arbitrary content input is accepted. */
 @RestController
 @RequestMapping("/api/ai/knowledge")
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
@@ -25,7 +25,7 @@ public class KnowledgeController {
     }
 
     /**
-     * Import the repository-owned synthetic sample only.
+     * Import the registered content-pack sample only.
      *
      * @return import counts
      */
@@ -43,7 +43,7 @@ public class KnowledgeController {
      * @return active-version search results
      */
     @GetMapping("/search")
-    @PreAuthorize("hasAuthority('" + PermissionCodes.WAREHOUSE_READ + "')")
+    @PreAuthorize("hasAuthority('" + PermissionCodes.AI_KNOWLEDGE_READ + "')")
     public ApiResponse<KnowledgeQueryApi.Result> search(
             @RequestParam String query,
             @RequestParam(defaultValue = "5") int topK) {

@@ -123,6 +123,7 @@ class AgentEvaluationProviderGateIT {
         assertThat(warehouseInventoryToolProvider).isNotNull();
 
         prepareA100Fixture();
+        assertKnowledgeReadRequired();
         List<ProviderCase> cases = providerCases();
         assertThat(cases).hasSize(10);
         List<ObservedCase> observed = new ArrayList<>();
@@ -132,6 +133,19 @@ class AgentEvaluationProviderGateIT {
         assertThat(observed).allMatch(ObservedCase::safe);
         List<ObservedCase> failed = observed.stream().filter(row -> !row.matchesExpected()).toList();
         assertThat(failed).as("正式Provider Gate实际结果（仅脱敏caseId/稳定字段）").isEmpty();
+    }
+
+    private void assertKnowledgeReadRequired() {
+        AgentRunContext deniedActor = new AgentRunContext(actor.userId(), actor.departmentId(), actor.allDepartments(),
+                List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext deniedExecution = new AgentExecutionContext(deniedActor,
+                "evaluation-knowledge-permission-boundary", "查询当前知识", ignored -> { });
+        ToolCallback callback = Arrays.stream(knowledgeToolProvider.getToolCallbacks())
+                .filter(value -> KnowledgeToolProvider.TOOL_NAME.equals(value.getToolDefinition().name()))
+                .findFirst().orElseThrow();
+        String output = callback.call("{\"queryText\":\"查询当前知识\",\"operation\":\"SEARCH\"}",
+                new ToolContext(Map.of("agent.execution", deniedExecution)));
+        assertThat(JSON.readTree(output).path("code").asText()).isEqualTo("AI_TOOL_FORBIDDEN");
     }
 
     private ObservedCase executeCase(ProviderCase testCase) {
@@ -313,7 +327,7 @@ class AgentEvaluationProviderGateIT {
                 .eq(UserDO::getUsername, "admin"));
         assertThat(admin).as("测试自有业务SQLite必须由正常入口创建管理员").isNotNull();
         actor = new AgentRunContext(admin.getId(), admin.getDepartmentId(), true,
-                List.of(PermissionCodes.WAREHOUSE_READ));
+                List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ));
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(admin.getId(), "05c-gate"));
         try {

@@ -15,6 +15,8 @@ import com.internaladmin.module.ai.observability.api.AiEvaluationApi;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.ai.observability.service.JdbcAiObservationRecorder;
 import com.internaladmin.module.ai.observability.service.AiEvaluationService;
+import com.internaladmin.module.ai.observability.service.AiEvaluationDatasetRegistry;
+import com.internaladmin.module.agent.warehouse.evaluation.WarehouseEvaluationDatasetProvider;
 import com.internaladmin.module.iam.api.IamActorApi;
 import com.internaladmin.module.iam.api.IamActorDTO;
 import com.internaladmin.module.iam.api.PermissionCodes;
@@ -81,10 +83,16 @@ import static org.mockito.Mockito.when;
  * SSE envelope and observation recorder produce the actual values scored below.
  */
 class AgentEvaluationProductionChainTest {
+    private static final String DATASET_VERSION = "warehouse-agent-evaluation-v1";
+    private static final String CONFIG_VERSION = "agent-evaluation-config-v1";
+    private static AiEvaluationDatasetRegistry evaluationRegistry() {
+        return new AiEvaluationDatasetRegistry(List.of(new WarehouseEvaluationDatasetProvider()));
+    }
     private static final long USER_ID = 7L;
     private static final long DEPARTMENT_ID = 3L;
     private static final AgentRunContext FIXTURE_ACTOR = new AgentRunContext(
-            USER_ID, DEPARTMENT_ID, false, List.of(PermissionCodes.WAREHOUSE_READ));
+            USER_ID, DEPARTMENT_ID, false,
+            List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ));
     private static final String SCOPE = FIXTURE_ACTOR.scopeFingerprint();
     @TempDir
     Path tempDir;
@@ -94,8 +102,8 @@ class AgentEvaluationProductionChainTest {
         JdbcTemplate evaluationJdbc = database("evaluation");
         ProductionChainExecutor executor = new ProductionChainExecutor(database("agent-chain"));
 
-        AiEvaluationApi.EvaluationRun run = new AiEvaluationService(evaluationJdbc, executor).start(
-                AiEvaluationService.DATASET_VERSION, AiEvaluationService.CONFIG_VERSION,
+        AiEvaluationApi.EvaluationRun run = new AiEvaluationService(evaluationJdbc, executor, evaluationRegistry()).start(
+                DATASET_VERSION, CONFIG_VERSION,
                 "production-chain-" + UUID.randomUUID());
 
         assertEquals("COMPLETED", run.status());
@@ -108,7 +116,7 @@ class AgentEvaluationProductionChainTest {
         assertEquals(0, run.hardAssertionFailures());
         assertEquals(0, run.failedCases());
 
-        AiEvaluationApi.EvaluationDetail detail = new AiEvaluationService(evaluationJdbc, executor)
+        AiEvaluationApi.EvaluationDetail detail = new AiEvaluationService(evaluationJdbc, executor, evaluationRegistry())
                 .getRun(run.evaluationRunId());
         for (String category : List.of("OUTER_LANGUAGE", "MULTI_TURN_REPAIR", "BUSINESS_KNOWLEDGE",
                 "USER_ANOMALY", "AUTH_ATTACK", "INFRA_MODEL")) {
@@ -163,7 +171,7 @@ class AgentEvaluationProductionChainTest {
         ProductionChainExecutor executor = new ProductionChainExecutor(database("altered-text"));
         AiEvaluationApi.EvaluationObservation observed = executor.execute(
                 new AiEvaluationApi.EvaluationCaseDescription("outer-03", "OUTER_LANGUAGE", "holdout",
-                        "PUBLIC_SERVICE_DETERMINISTIC", "warehouse-fixture", List.of("这是一句完全不同的输入"),
+                        "PUBLIC_SERVICE_DETERMINISTIC", "warehouse-fixture", List.of("这是改写过的 A100 输入"),
                         false, List.of("WAREHOUSE_STOCK|A100", "WAREHOUSE_MOVEMENTS|A100")));
 
         assertEquals(AiEvaluationApi.EvidenceLevel.PUBLIC_SERVICE_DETERMINISTIC, observed.evidenceLevel());
@@ -377,11 +385,16 @@ class AgentEvaluationProductionChainTest {
             assertEquals(2, sourceExecution.toolOutcomes().size(), "源Run必须记录两个Tool子任务");
             assertTrue(sourceExecution.toolOutcomes().getFirst().success(), "源Run第一个Tool应成功");
             assertFalse(sourceExecution.toolOutcomes().getLast().success(), "源Run第二个Tool应稳定失败");
+            String retryArguments = warehouseProvider.validateRetryResumeRef(
+                    WarehouseInventoryToolProvider.CURRENT_STOCK_TOOL,
+                    sourceExecution.toolOutcomes().getLast().arguments(), FIXTURE_ACTOR)
+                    .orElseThrow(() -> new AssertionError("失败仓储Tool必须生成受控ResumeRef"))
+                    .arguments();
             AgentStore.RetryPlan plan = new AgentStore.RetryPlan(source.runId(), "MULTI_TOOL", 1,
                     List.of(new AgentStore.RetrySubtask(
                             sourceExecution.toolOutcomes().getLast().sequence(),
                             sourceExecution.toolOutcomes().getLast().toolName(),
-                            sourceExecution.toolOutcomes().getLast().arguments(),
+                            retryArguments,
                             sourceExecution.toolOutcomes().getLast().errorCode())));
             assertTrue(store.completePartial(conversationId, source.runId(), source.assistantMessageId(),
                     "一个查询已完成，另一个暂不可用", SCOPE, 1L,

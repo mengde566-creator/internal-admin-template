@@ -5,6 +5,7 @@ import com.internaladmin.module.agent.api.AgentToolProvider;
 import com.internaladmin.module.agent.service.AgentExecutionContext;
 import com.internaladmin.module.ai.observability.api.AiObservationRecorder;
 import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
+import com.internaladmin.module.iam.api.PermissionCodes;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
@@ -29,7 +30,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
     public static final String TOOL_NAME = "knowledge_search";
     private static final String CONTEXT_KEY = "agent.execution";
     private static final ObjectMapper JSON = JsonMapper.builder().build();
-    private static final String DESCRIPTION = "查询当前生效的合成仓储制度资料。queryText只提交用户原问题的完整自然表达，不缩短、不改写；operation必填且仅可为SEARCH、LIST_ACTIVE或READ_ACTIVE。询问当前收录资料目录时用LIST_ACTIVE，要求完整资料时用READ_ACTIVE（服务端优先使用受信引用，否则用当前问题定位唯一资料），其他具体问题用SEARCH。目录读取不做向量检索，全文目标由服务端受信引用或当前问题确定，不得提交文档、版本、片段、检索参数或内部编号。";
+    private static final String DESCRIPTION = "查询当前生效的知识资料。queryText只提交用户原问题的完整自然表达，不缩短、不改写；operation必填且仅可为SEARCH、LIST_ACTIVE或READ_ACTIVE。询问当前收录资料目录时用LIST_ACTIVE，要求完整资料时用READ_ACTIVE（服务端优先使用受信引用，否则用当前问题定位唯一资料），其他具体问题用SEARCH。目录读取不做向量检索，全文目标由服务端受信引用或当前问题确定，不得提交文档、版本、片段、检索参数或内部编号。";
     private static final String SCHEMA = "{\"type\":\"object\",\"properties\":{\"queryText\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000},\"operation\":{\"type\":\"string\",\"enum\":[\"SEARCH\",\"LIST_ACTIVE\",\"READ_ACTIVE\"]}},\"required\":[\"queryText\",\"operation\"],\"additionalProperties\":false}";
 
     private final KnowledgeQueryApi knowledge;
@@ -89,7 +90,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
                 AgentExecutionContext.InvocationDecision invocation = execution.beginToolInvocation(
                         TOOL_NAME, normalizedArguments);
                 if (invocation.duplicate()) return invocation.safeResult();
-                if (!execution.actor().hasAuthority("warehouse:read")) {
+                if (!execution.actor().hasAuthority(PermissionCodes.AI_KNOWLEDGE_READ)) {
                     return failure(execution, AgentErrorCode.TOOL_FORBIDDEN);
                 }
                 if (!execution.beginKnowledgeCall()) {
@@ -332,7 +333,7 @@ public final class KnowledgeToolProvider implements AgentToolProvider {
             response.put("success", true);
             response.put("code", "SUCCESS");
             response.put("message", result.status() == KnowledgeQueryApi.Status.NO_EVIDENCE
-                    ? "没有找到当前收录的仓储资料" : "已找到当前收录的仓储资料");
+                    ? "没有找到当前收录的知识资料" : "已找到当前收录的知识资料");
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("outcome", result.status() == KnowledgeQueryApi.Status.NO_EVIDENCE ? "NO_EVIDENCE" : "ANSWERED");
             data.put("mode", "ACTIVE_CATALOG");

@@ -40,6 +40,11 @@ public interface AgentAdapter extends AgentToolProvider {
         return Optional.empty();
     }
 
+    /** Validates and canonicalizes one adapter-owned result-card payload. */
+    default Optional<String> validateAndNormalizeCard(String cardType, String cardJson) {
+        return Optional.empty();
+    }
+
     /**
      * Resolves the precise Tool names this adapter may authorize for a later
      * model round after one accepted knowledge lookup.  Implementations must

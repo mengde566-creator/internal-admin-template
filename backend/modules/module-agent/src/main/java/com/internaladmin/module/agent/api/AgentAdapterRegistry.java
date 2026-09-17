@@ -28,6 +28,7 @@ public final class AgentAdapterRegistry {
     private static final Logger LOG = LoggerFactory.getLogger(AgentAdapterRegistry.class);
     private static final int MAX_INSTRUCTIONS = 16;
     private static final int MAX_INSTRUCTION_CHARS = 4_000;
+    private static final int MAX_TRUSTED_INSTRUCTION_CHARS = 12_000;
     private static final int MAX_IDENTIFIER_CHARS = 128;
     private static final int MAX_FOLLOWUP_TOOLS = 20;
     private final List<AgentAdapter> adapters;
@@ -107,6 +108,12 @@ public final class AgentAdapterRegistry {
         return java.util.Optional.ofNullable(toolOwners.get(toolName));
     }
 
+    /** Returns the unique adapter that owns a result-card type. */
+    public Optional<AgentAdapter> ownerOfCardType(String cardType) {
+        if (cardType == null || cardType.isBlank()) return Optional.empty();
+        return adapters.stream().filter(adapter -> adapter.descriptor().cardTypes().contains(cardType)).findFirst();
+    }
+
     /** Returns the concrete Tool-level Artifact contract, if registered. */
     public Optional<ToolContract> toolContract(String toolName) {
         return Optional.ofNullable(toolContracts.get(toolName));
@@ -126,19 +133,23 @@ public final class AgentAdapterRegistry {
     /** Returns trusted, bounded instructions from available adapters. */
     public List<String> trustedInstructions(AgentRunContext actor) {
         List<String> instructions = new ArrayList<>();
+        int totalChars = 0;
         for (AgentAdapter adapter : available(actor)) {
-            instructions.addAll(adapter.trustedInstructions(actor));
+            List<String> values = adapter.trustedInstructions(actor);
+            if (values == null) continue;
+            for (String value : values) {
+                if (value == null || value.isBlank() || value.length() > MAX_INSTRUCTION_CHARS) {
+                    throw conflict("trustedInstructions 无效: " + adapter.descriptor().adapterId());
+                }
+                int next = totalChars + (instructions.isEmpty() ? 0 : 1) + value.length();
+                if (next > MAX_TRUSTED_INSTRUCTION_CHARS) {
+                    throw conflict("trustedInstructions 总长度超限");
+                }
+                instructions.add(value);
+                totalChars = next;
+            }
         }
         return List.copyOf(instructions);
-    }
-
-    /** Returns the first adapter-owned input rejection for this actor, if any. */
-    public Optional<AgentAdapter.ValidationFailure> validateUserMessage(AgentRunContext actor,
-                                                                         String userMessage) {
-        return available(actor).stream()
-                .map(adapter -> adapter.validateUserMessage(userMessage))
-                .flatMap(Optional::stream)
-                .findFirst();
     }
 
     /** Returns retryable tools declared by the adapters available to this actor. */
@@ -250,12 +261,12 @@ public final class AgentAdapterRegistry {
                 .findFirst();
     }
 
-    /** Returns a business error message declared by an available adapter. */
-    public Optional<String> failureMessage(AgentRunContext actor, String errorCode) {
-        return available(actor).stream()
-                .map(adapter -> adapter.failureMessage(errorCode))
-                .filter(message -> message != null && !message.isBlank())
-                .findFirst();
+    /** Returns the business error message from the actual failed Tool owner. */
+    public Optional<String> failureMessage(String toolName, String errorCode) {
+        AgentAdapter owner = toolOwners.get(toolName);
+        if (owner == null) return Optional.empty();
+        String message = owner.failureMessage(errorCode);
+        return message == null || message.isBlank() ? Optional.empty() : Optional.of(message);
     }
 
     /** Returns task policies attached to the statically registered adapters. */

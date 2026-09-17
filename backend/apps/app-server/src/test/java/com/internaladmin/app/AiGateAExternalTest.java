@@ -2,7 +2,7 @@ package com.internaladmin.app;
 
 import com.internaladmin.module.agent.config.AiConfigurationValidator;
 import com.internaladmin.module.knowledge.service.KnowledgeService;
-import com.internaladmin.module.knowledge.service.SyntheticKnowledgeCatalog;
+import com.internaladmin.module.knowledge.service.KnowledgeContentPackRegistry;
 import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -34,6 +34,9 @@ class AiGateAExternalTest {
     @Autowired
     private KnowledgeService knowledgeService;
 
+    @Autowired
+    private KnowledgeContentPackRegistry knowledgeContentPackRegistry;
+
     @Test
     void deepSeekOrdinaryStream() {
         Assumptions.assumeTrue(deepSeekChatModel != null,
@@ -53,9 +56,13 @@ class AiGateAExternalTest {
     void qwenKnowledgeLifecycle() {
         KnowledgeService.ImportSummary first = knowledgeService.importSyntheticSamples();
         KnowledgeService.ImportSummary repeat = knowledgeService.importSyntheticSamples();
-        assertThat(first.chunksCreated() + first.chunksSkipped()).isEqualTo(SyntheticKnowledgeCatalog.load().size());
+        long expectedChunks = knowledgeContentPackRegistry.chunks().size();
+        long expectedVersions = knowledgeContentPackRegistry.chunks().stream()
+                .map(chunk -> chunk.documentCode() + "\u0000" + chunk.versionCode())
+                .distinct().count();
+        assertThat(first.chunksCreated() + first.chunksSkipped()).isEqualTo(expectedChunks);
         assertThat(repeat.chunksCreated()).isZero();
-        assertThat(repeat.skippedVersions()).isEqualTo(8);
+        assertThat(repeat.skippedVersions()).isEqualTo(expectedVersions);
 
         assertCitation("错误的库存流水可以直接改掉吗", "warehouse-rules", "v2");
         assertCitation("业务编码是不是数据库内部编号", "item-codes", "v2");

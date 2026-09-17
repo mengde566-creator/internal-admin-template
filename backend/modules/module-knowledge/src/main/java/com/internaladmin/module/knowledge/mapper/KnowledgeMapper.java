@@ -139,7 +139,7 @@ public class KnowledgeMapper {
                 resultSet.getString("source_type")));
     }
 
-    /** Current trusted documents, ordered by stable business code/version. */
+    /** Current trusted documents, ordered by stable document code/version. */
     public List<ActiveDocumentRow> findActiveDocuments(int limit, String embeddingProfile, int dimensions) {
         if (limit < 1 || limit > 20) throw new IllegalArgumentException("知识目录参数无效");
         return jdbcTemplate.query("SELECT d.document_code, d.title, v.version_code, d.updated_at, v.indexed_at, v.source_type "
@@ -147,10 +147,7 @@ public class KnowledgeMapper {
                         + "JOIN ai_knowledge.ai_knowledge_version v ON v.document_id = d.id "
                         + "WHERE v.status = 'ACTIVE' AND v.source_type IN ('SYNTHETIC','USER_UPLOAD') "
                         + "AND v.embedding_model = ? AND v.embedding_dimensions = ? "
-                        + "ORDER BY CASE d.document_code "
-                        + "WHEN 'warehouse-rules' THEN 1 WHEN 'item-codes' THEN 2 "
-                        + "WHEN 'warehouse-codes' THEN 3 WHEN 'low-stock-policy' THEN 4 ELSE 5 END, "
-                        + "d.document_code, v.version_code LIMIT ?",
+                        + "ORDER BY d.document_code, v.version_code LIMIT ?",
                 (rs, rowNum) -> new ActiveDocumentRow(rs.getString("document_code"), rs.getString("title"),
                         rs.getString("version_code"), toInstant(rs.getTimestamp("updated_at")),
                         toInstant(rs.getTimestamp("indexed_at")), "SYNTHETIC".equals(rs.getString("source_type")),

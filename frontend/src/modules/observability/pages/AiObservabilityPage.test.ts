@@ -37,7 +37,7 @@ describe('AI观测页面', () => {
     api.runs.mockReset().mockResolvedValue({ records: [{ runId: 'run-1', status: 'SUCCESS', businessOutcome: 'ANSWERED', startedAt: '2026-08-31T00:00:00Z', provider: 'deepseek' }], total: 1, page: 1, size: 20 })
     api.run.mockReset().mockResolvedValue({ runId: 'run-1', status: 'SUCCESS', businessOutcome: 'ANSWERED', steps: [] })
     api.evaluationDatasets.mockReset().mockResolvedValue([{ datasetVersion: 'warehouse-agent-evaluation-v1' }])
-    api.evaluationConfigs.mockReset().mockResolvedValue([{ configVersion: 'agent-evaluation-config-v1' }])
+    api.evaluationConfigs.mockReset().mockResolvedValue([{ datasetVersion: 'warehouse-agent-evaluation-v1', configVersion: 'agent-evaluation-config-v1' }])
     api.evaluationRuns.mockReset().mockResolvedValue({ records: [{ evaluationRunId: 'eval-1', datasetVersion: 'warehouse-agent-evaluation-v1', status: 'COMPLETED', gateOutcome: 'PASSED', passedCases: 24, totalCases: 24 }], total: 1, page: 1, size: 20 })
     api.evaluationRun.mockReset().mockResolvedValue({ run: { evaluationRunId: 'eval-1', status: 'COMPLETED', gateOutcome: 'PASSED', passedCases: 24, totalCases: 24 }, categories: {}, failures: [], metrics: {} })
     api.startEvaluation.mockReset()

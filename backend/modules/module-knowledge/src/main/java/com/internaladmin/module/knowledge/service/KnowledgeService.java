@@ -29,7 +29,7 @@ import java.util.UUID;
 import java.util.LinkedHashMap;
 import java.util.Objects;
 
-/** Fixed synthetic import and trusted active-version filtered vector search. */
+/** Registered content-pack import and trusted active-version filtered vector search. */
 @Service
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
 public class KnowledgeService implements KnowledgeQueryApi {
@@ -38,13 +38,6 @@ public class KnowledgeService implements KnowledgeQueryApi {
 
     /** Versioned storage profile for asymmetric document embeddings. */
     public static final String EMBEDDING_PROFILE = "dashscope-dense-sparse-document-v1";
-    private static final String LEGACY_EMBEDDING_MODEL = "qwen3.7-text-embedding";
-    /** Only versions published before the asymmetric retrieval profile may use the legacy vector contract. */
-    private static final Set<String> LEGACY_PUBLISHED_VERSION_KEYS = Set.of(
-            "warehouse-rules\u0000v0",
-            "warehouse-rules\u0000v1",
-            "item-codes\u0000v1",
-            "warehouse-codes\u0000v1");
     private static final String CHUNKER_VERSION = "markdown-section-v1";
     private static final int MAX_BATCH = 20;
     private static final int MAX_QUERY_LIMIT = 5;
@@ -61,51 +54,87 @@ public class KnowledgeService implements KnowledgeQueryApi {
     private final KnowledgeRetrievalEmbeddingClient embeddingClient;
     private final KnowledgeMapper mapper;
     private final TransactionTemplate transactionTemplate;
+    private final KnowledgeContentPackRegistry contentPacks;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public KnowledgeService(AiProperties properties,
+                            KnowledgeRetrievalEmbeddingClient embeddingClient,
+                            KnowledgeMapper mapper,
+                            @org.springframework.beans.factory.annotation.Qualifier("knowledgeTransactionManager")
+                            PlatformTransactionManager transactionManager,
+                            KnowledgeContentPackRegistry contentPacks) {
+        this.properties = properties;
+        this.embeddingClient = embeddingClient;
+        this.mapper = mapper;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.contentPacks = Objects.requireNonNull(contentPacks, "contentPacks");
+    }
+
+    /** Unit-test constructor with no adapter content. */
     public KnowledgeService(AiProperties properties,
                             KnowledgeRetrievalEmbeddingClient embeddingClient,
                             KnowledgeMapper mapper,
                             @org.springframework.beans.factory.annotation.Qualifier("knowledgeTransactionManager")
                             PlatformTransactionManager transactionManager) {
-        this.properties = properties;
-        this.embeddingClient = embeddingClient;
-        this.mapper = mapper;
-        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this(properties, embeddingClient, mapper, transactionManager, new KnowledgeContentPackRegistry(List.of()));
     }
 
     /**
-     * Import the repository-owned synthetic samples. Provider calls happen before the write transaction.
+     * Import the registered content-pack samples. Provider calls happen before the write transaction.
      *
      * @return counts of documents, versions, chunks and skipped idempotent records
      */
     public ImportSummary importSyntheticSamples() {
-        List<Chunk> chunks = syntheticChunks();
-        Map<String, ExistingVersion> existing;
+        long startedAt = System.nanoTime();
+        LOGGER.info("knowledge_import stage=started documentCount={} chunkCount=unknown", contentPacks.documentCount());
         try {
-            existing = preflight(chunks);
-        } catch (RuntimeException exception) {
-            if (exception.getMessage() != null && exception.getMessage().startsWith("AI_KNOWLEDGE_IMPORT_CONFLICT")) {
-                throw exception;
+            List<Chunk> chunks = contentPackChunks();
+            LOGGER.debug("knowledge_import stage=prepared documentCount={} chunkCount={}",
+                    chunks.stream().map(Chunk::documentCode).distinct().count(), chunks.size());
+            Map<String, ExistingVersion> existing;
+            try {
+                existing = preflight(chunks);
+            } catch (RuntimeException exception) {
+                if (exception.getMessage() != null && exception.getMessage().startsWith("AI_KNOWLEDGE_IMPORT_CONFLICT")) {
+                    throw exception;
+                }
+                throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 无法读取现有知识版本", exception);
             }
-            throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 无法读取现有知识版本", exception);
-        }
-        List<Chunk> pending = chunks.stream()
-                .filter(chunk -> !existing.getOrDefault(versionKey(chunk), ExistingVersion.MISSING)
-                        .chunkNumbers().contains(chunk.chunkNo()))
-                .toList();
-        Map<String, RetrievalEmbedding> vectors = embedInBatches(pending);
-        try {
-            ImportSummary summary = transactionTemplate.execute(status -> persist(chunks, existing, vectors));
-            if (summary == null) {
-                throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 知识事务未提交");
+            List<Chunk> pending = chunks.stream()
+                    .filter(chunk -> !existing.getOrDefault(versionKey(chunk), ExistingVersion.MISSING)
+                            .chunkNumbers().contains(chunk.chunkNo()))
+                    .toList();
+            Map<String, RetrievalEmbedding> vectors = embedInBatches(pending);
+            ImportSummary summary;
+            try {
+                summary = transactionTemplate.execute(status -> persist(chunks, existing, vectors));
+                if (summary == null) {
+                    throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 知识事务未提交");
+                }
+            } catch (RuntimeException exception) {
+                if (exception.getMessage() != null && exception.getMessage().startsWith("AI_KNOWLEDGE_")) {
+                    throw exception;
+                }
+                throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 知识版本未能完整提交", exception);
             }
+            LOGGER.info("knowledge_import stage=completed documentCount={} chunkCount={} createdChunks={} skippedVersions={} elapsedMs={}",
+                    chunks.stream().map(Chunk::documentCode).distinct().count(), chunks.size(), summary.chunksCreated(),
+                    summary.versionsSkipped(), elapsedMs(startedAt));
             return summary;
         } catch (RuntimeException exception) {
-            if (exception.getMessage() != null && exception.getMessage().startsWith("AI_KNOWLEDGE_")) {
-                throw exception;
-            }
-            throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_FAILED: 知识版本未能完整提交", exception);
+            LOGGER.warn("knowledge_import stage=failed documentCount={} chunkCount={} errorCode={} elapsedMs={}",
+                    contentPacks.documentCount(), "unknown",
+                    importErrorCode(exception), elapsedMs(startedAt));
+            throw exception;
         }
+    }
+
+    private static String importErrorCode(Throwable exception) {
+        String message = exception == null ? "" : exception.getMessage();
+        if (message == null || message.isBlank()) return "AI_KNOWLEDGE_IMPORT_FAILED";
+        int separator = message.indexOf(':');
+        String code = separator > 0 ? message.substring(0, separator) : message;
+        return code.matches("[A-Z0-9_]{3,64}") ? code : "AI_KNOWLEDGE_IMPORT_FAILED";
     }
 
     private Map<String, ExistingVersion> preflight(List<Chunk> chunks) {
@@ -125,14 +154,10 @@ public class KnowledgeService implements KnowledgeQueryApi {
                 continue;
             }
             String expectedHash = contentHash(entry.getValue());
-            boolean hashMatches = expectedHash.equals(version.contentHash())
-                    || legacyContentHash(entry.getValue()).equals(version.contentHash());
-            boolean legacyPublishedVersion = LEGACY_PUBLISHED_VERSION_KEYS.contains(entry.getKey())
-                    && legacyContentHash(entry.getValue()).equals(version.contentHash())
-                    && LEGACY_EMBEDDING_MODEL.equals(version.embeddingModel());
+            boolean hashMatches = expectedHash.equals(version.contentHash());
             boolean currentDocumentVersion = expectedHash.equals(version.contentHash())
                     && EMBEDDING_PROFILE.equals(version.embeddingModel());
-            if ((!legacyPublishedVersion && !currentDocumentVersion) || !hashMatches
+            if (!currentDocumentVersion || !hashMatches
                     || properties.getEmbedding().getQwen().getDimensions() == null
                     || properties.getEmbedding().getQwen().getDimensions() != version.embeddingDimensions()) {
                 throw new IllegalStateException("AI_KNOWLEDGE_IMPORT_CONFLICT: 文档版本内容或向量契约不一致");
@@ -217,7 +242,8 @@ public class KnowledgeService implements KnowledgeQueryApi {
         try {
             int boundedLimit = Math.min(limit, MAX_QUERY_LIMIT);
             stageTopK = Math.min(stageTopK, boundedLimit);
-            RetrievalEmbedding queryEmbedding = embeddingClient.embedQuery(query);
+            RetrievalEmbedding queryEmbedding = embeddingClient.embedQuery(query,
+                    KnowledgeRetrievalEmbeddingClient.DEFAULT_QUERY_INSTRUCTION);
             if (queryEmbedding == null || queryEmbedding.denseVector().length != 1024
                     || queryEmbedding.sparseEntries().isEmpty()) {
                 throw new IllegalStateException("Embedding查询向量维度无效");
@@ -373,14 +399,9 @@ public class KnowledgeService implements KnowledgeQueryApi {
         }
     }
 
-    private static int catalogOrder(String documentCode) {
-        return switch (documentCode) {
-            case "warehouse-rules" -> 1;
-            case "item-codes" -> 2;
-            case "warehouse-codes" -> 3;
-            case "low-stock-policy" -> 4;
-            default -> 5;
-        };
+    private int catalogOrder(String documentCode) {
+        int order = contentPacks.orderOf(documentCode);
+        return order == Integer.MAX_VALUE ? Integer.MAX_VALUE : order;
     }
 
     private ImportSummary persist(List<Chunk> chunks, Map<String, ExistingVersion> existing,
@@ -473,8 +494,8 @@ public class KnowledgeService implements KnowledgeQueryApi {
         return metadata;
     }
 
-    private List<Chunk> syntheticChunks() {
-        return SyntheticKnowledgeCatalog.load().stream()
+    private List<Chunk> contentPackChunks() {
+        return contentPacks.chunks().stream()
                 .map(chunk -> new Chunk(chunk.documentCode(), chunk.versionCode(), chunk.title(),
                         chunk.desiredStatus(), chunk.chunkNo(), chunk.content()))
                 .toList();
@@ -492,11 +513,6 @@ public class KnowledgeService implements KnowledgeQueryApi {
 
     private String indexedContentHash(List<IndexedChunk> chunks) {
         return contentHash(chunks.stream().map(IndexedChunk::chunk).toList());
-    }
-
-    /** Hash used by the already published v1 sample before canonical section framing was added. */
-    private String legacyContentHash(List<Chunk> chunks) {
-        return sha256(chunks.stream().map(Chunk::content).reduce("", String::concat));
     }
 
     private String versionKey(Chunk chunk) {

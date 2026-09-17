@@ -36,15 +36,19 @@ const evaluationConfigsQuery = useQuery({ queryKey: ['ai-observability', 'evalua
 const evaluationRunsQuery = useQuery({ queryKey: ['ai-observability', 'evaluation-runs'], queryFn: () => fetchEvaluationRuns(), retry: false })
 const selectedEvaluationRunId = ref('')
 const evaluationDetailQuery = useQuery({ queryKey: computed(() => ['ai-observability', 'evaluation-run', selectedEvaluationRunId.value]), queryFn: () => fetchEvaluationRun(selectedEvaluationRunId.value), enabled: computed(() => Boolean(selectedEvaluationRunId.value)), retry: false })
-const selectedDatasetVersion = computed(() => evaluationDatasetsQuery.data.value?.[0]?.datasetVersion ?? '')
-const selectedConfigVersion = computed(() => evaluationConfigsQuery.data.value?.[0]?.configVersion ?? '')
+const selectedEvaluationPair = computed(() => {
+  const datasets = evaluationDatasetsQuery.data.value ?? []
+  const config = (evaluationConfigsQuery.data.value ?? []).find((candidate) =>
+    Boolean(candidate.datasetVersion) && datasets.some((dataset) => dataset.datasetVersion === candidate.datasetVersion))
+  return config && config.datasetVersion ? { datasetVersion: config.datasetVersion, configVersion: config.configVersion ?? '' } : null
+})
 const evaluationStarting = ref(false)
 
 async function startOfflineEvaluation() {
-  if (!selectedDatasetVersion.value || !selectedConfigVersion.value || evaluationStarting.value) return
+  if (!selectedEvaluationPair.value || !selectedEvaluationPair.value.configVersion || evaluationStarting.value) return
   evaluationStarting.value = true
   try {
-    await startEvaluation({ datasetVersion: selectedDatasetVersion.value, configVersion: selectedConfigVersion.value, clientRequestId: `ui-${Date.now()}` })
+    await startEvaluation({ ...selectedEvaluationPair.value, clientRequestId: `ui-${Date.now()}` })
     await evaluationRunsQuery.refetch()
   } finally {
     evaluationStarting.value = false
@@ -271,7 +275,7 @@ function openEvaluationRun(evaluationRunId: string) {
       <section class="panel-section evaluation-section" aria-label="离线评测" data-testid="offline-evaluation">
         <div class="evaluation-header">
           <div><h2>离线评测</h2><p class="muted">仅运行服务器登记的固定数据集与配置，不展示输入或回答正文。</p></div>
-          <el-button type="primary" :loading="evaluationStarting" :disabled="!selectedDatasetVersion || !selectedConfigVersion" @click="startOfflineEvaluation">发起评测</el-button>
+          <el-button type="primary" :loading="evaluationStarting" :disabled="!selectedEvaluationPair" @click="startOfflineEvaluation">发起评测</el-button>
         </div>
         <p v-if="evaluationDatasetsQuery.isError.value || evaluationConfigsQuery.isError.value || evaluationRunsQuery.isError.value" class="page-error">离线评测暂时无法加载，请稍后重试。</p>
         <p v-else-if="!evaluationRunsQuery.data.value?.records?.length" class="muted">暂无历史评测结果。</p>

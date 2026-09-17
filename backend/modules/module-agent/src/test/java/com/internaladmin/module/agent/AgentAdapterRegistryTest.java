@@ -36,6 +36,24 @@ class AgentAdapterRegistryTest {
     }
 
     @Test
+    void trustedInstructionsUseAggregateBudgetAndActualToolOwnerForFailures() {
+        AgentAdapterRegistry registry = new AgentAdapterRegistry(List.of(
+                messageAdapter("a", "a-tool", "first"), messageAdapter("b", "b-tool", "second"),
+                messageAdapter("c", "c-tool", "third"), messageAdapter("d", "d-tool", "fourth")));
+        assertThat(registry.failureMessage("b-tool", "E_TEST")).contains("second:E_TEST");
+        assertThat(registry.failureMessage("missing-tool", "E_TEST")).isEmpty();
+
+        AgentAdapterRegistry overBudget = new AgentAdapterRegistry(List.of(
+                instructionAdapter("a", "a-tool", "x".repeat(4_000)),
+                instructionAdapter("b", "b-tool", "y".repeat(4_000)),
+                instructionAdapter("c", "c-tool", "z".repeat(4_000)),
+                instructionAdapter("d", "d-tool", "w".repeat(4_000))));
+        assertThatThrownBy(() -> overBudget.trustedInstructions(READER))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("trustedInstructions 总长度超限");
+    }
+
+    @Test
     void emptyRegistryIsAValidNoBusinessCapabilityState() {
         AgentAdapterRegistry registry = AgentAdapterRegistry.empty();
 
@@ -160,6 +178,23 @@ class AgentAdapterRegistryTest {
         return adapter(new AgentAdapterDescriptor(id, List.of(id + " instruction"),
                 List.of(new AgentAdapterDescriptor.Tool(tool, "description", "{}")),
                 "READ_ONLY", List.of(), List.of(), authorities, true));
+    }
+
+    private static AgentAdapter instructionAdapter(String id, String tool, String instruction) {
+        return adapter(new AgentAdapterDescriptor(id, List.of(instruction),
+                List.of(new AgentAdapterDescriptor.Tool(tool, "description", "{}")),
+                "READ_ONLY", List.of(), List.of(), Set.of("warehouse:read"), true));
+    }
+
+    private static AgentAdapter messageAdapter(String id, String tool, String messagePrefix) {
+        AgentAdapter base = adapter(new AgentAdapterDescriptor(id, List.of(),
+                List.of(new AgentAdapterDescriptor.Tool(tool, "description", "{}")),
+                "READ_ONLY", List.of(), List.of(), Set.of("warehouse:read"), true));
+        return new AgentAdapter() {
+            @Override public AgentAdapterDescriptor descriptor() { return base.descriptor(); }
+            @Override public ToolCallback[] getToolCallbacks() { return base.getToolCallbacks(); }
+            @Override public String failureMessage(String errorCode) { return messagePrefix + ":" + errorCode; }
+        };
     }
 
     private static AgentAdapter adapterWithArtifact(String id, String type, String version) {

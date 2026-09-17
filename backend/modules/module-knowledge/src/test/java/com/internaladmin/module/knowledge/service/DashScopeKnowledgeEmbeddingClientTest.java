@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class DashScopeKnowledgeEmbeddingClientTest {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
+    private static final String RETRIEVAL_INSTRUCTION = "Use active document references.";
 
     @Test
     void documentsAndQueriesUseDistinctDashScopeShapesAndReorderIndexes() throws Exception {
@@ -31,7 +32,8 @@ class DashScopeKnowledgeEmbeddingClientTest {
         try (FakeServer server = new FakeServer(requests, paths, auth, 200, null)) {
             DashScopeKnowledgeEmbeddingClient client = client(server.uri());
             List<KnowledgeRetrievalEmbeddingClient.RetrievalEmbedding> documents = client.embedDocuments(List.of("第一段", "第二段"));
-            KnowledgeRetrievalEmbeddingClient.RetrievalEmbedding query = client.embedQuery("如何出库");
+            KnowledgeRetrievalEmbeddingClient.RetrievalEmbedding query = client.embedQuery("如何出库",
+                    RETRIEVAL_INSTRUCTION);
 
             assertThat(documents).hasSize(2);
             assertThat(documents.get(0).denseVector()[0]).isEqualTo(1F);
@@ -51,7 +53,7 @@ class DashScopeKnowledgeEmbeddingClientTest {
             assertThat(queryRequest.path("parameters").path("output_type").asText()).isEqualTo("dense&sparse");
             assertThat(queryRequest.path("parameters").path("text_type").asText()).isEqualTo("query");
             assertThat(queryRequest.path("parameters").path("instruct").asText())
-                    .isEqualTo(DashScopeKnowledgeEmbeddingClient.QUERY_INSTRUCT);
+                    .isEqualTo(RETRIEVAL_INSTRUCTION);
             assertThat(documentRequest.path("parameters").path("output_type").asText()).isEqualTo("dense&sparse");
         }
     }

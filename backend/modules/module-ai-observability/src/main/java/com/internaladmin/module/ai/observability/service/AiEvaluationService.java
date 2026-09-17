@@ -1,6 +1,7 @@
 package com.internaladmin.module.ai.observability.service;
 
 import com.internaladmin.module.ai.observability.api.AiEvaluationApi;
+import com.internaladmin.module.ai.observability.api.AiEvaluationDatasetProvider;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -9,19 +10,21 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.core.io.Resource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -40,16 +43,10 @@ import java.util.UUID;
 @Service
 @ConditionalOnProperty(prefix = "app.ai", name = "enabled", havingValue = "true")
 public class AiEvaluationService implements AiEvaluationApi {
-    public static final String DATASET_VERSION = "warehouse-agent-evaluation-v1";
-    public static final String CONFIG_VERSION = "agent-evaluation-config-v1";
-    public static final String CONFIG_SHA256 = "dfb06e09b42e785dc9011969474b5cfb711c59f651f5361c65aeddbba7848569";
     public static final int DEFAULT_PAGE_SIZE = 20;
     public static final int MAX_PAGE_SIZE = 100;
     public static final int RETENTION_DAYS = 180;
-    private static final String MANIFEST = "/evaluation/ai/warehouse-agent-evaluation-manifest-v1.json";
-    private static final String CASES = "/evaluation/ai/agent-behavior-exception-evaluation-v1.json";
-    private static final List<String> CATEGORIES = List.of("OUTER_LANGUAGE", "MULTI_TURN_REPAIR",
-            "BUSINESS_KNOWLEDGE", "USER_ANOMALY", "AUTH_ATTACK", "INFRA_MODEL");
+    private static final Logger LOGGER = LoggerFactory.getLogger(AiEvaluationService.class);
     private static final Set<String> EXECUTION_MODES = Set.of("PRODUCTION_SHAPE", "DETERMINISTIC_FIXTURE",
             "PUBLIC_SERVICE_CHAIN", "PUBLIC_SERVICE_DETERMINISTIC", "CALLBACK_ORCHESTRATION",
             "FAILURE_INJECTION", "STATIC_SECURITY_CONTRACT", "END_TO_END_PROVIDER");
@@ -62,47 +59,59 @@ public class AiEvaluationService implements AiEvaluationApi {
 
     private final JdbcTemplate jdbc;
     private final AiEvaluationApi.EvaluationExecutor executor;
+    private final AiEvaluationDatasetRegistry datasetRegistry;
 
     /** Spring's optional executor keeps ordinary applications safe until a real runner is wired. */
     @Autowired
     public AiEvaluationService(@Qualifier("jdbcTemplate") JdbcTemplate jdbc,
-                               ObjectProvider<AiEvaluationApi.EvaluationExecutor> executors) {
-        this(jdbc, executors.getIfAvailable(() -> description -> AiEvaluationApi.EvaluationObservation.notEvaluated()));
+                               ObjectProvider<AiEvaluationApi.EvaluationExecutor> executors,
+                               AiEvaluationDatasetRegistry datasetRegistry) {
+        this(jdbc, executors.getIfAvailable(() -> description -> AiEvaluationApi.EvaluationObservation.notEvaluated()), datasetRegistry);
     }
 
     /** Unit-test/default constructor: no production behavior is claimed. */
     public AiEvaluationService(JdbcTemplate jdbc) {
-        this(jdbc, description -> AiEvaluationApi.EvaluationObservation.notEvaluated());
+        this(jdbc, description -> AiEvaluationApi.EvaluationObservation.notEvaluated(),
+                new AiEvaluationDatasetRegistry(List.of()));
     }
 
     /** Test and future production-shape wiring point; executor receives no expected values. */
     public AiEvaluationService(JdbcTemplate jdbc, AiEvaluationApi.EvaluationExecutor executor) {
+        this(jdbc, executor, new AiEvaluationDatasetRegistry(List.of()));
+    }
+
+    public AiEvaluationService(JdbcTemplate jdbc, AiEvaluationDatasetRegistry datasetRegistry) {
+        this(jdbc, description -> AiEvaluationApi.EvaluationObservation.notEvaluated(), datasetRegistry);
+    }
+
+    public AiEvaluationService(JdbcTemplate jdbc, AiEvaluationApi.EvaluationExecutor executor,
+                               AiEvaluationDatasetRegistry datasetRegistry) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.executor = Objects.requireNonNull(executor, "executor");
+        this.datasetRegistry = Objects.requireNonNull(datasetRegistry, "datasetRegistry");
     }
 
     @Override
     public List<DatasetRegistration> datasets() {
-        Manifest manifest = manifest(false);
-        return List.of(new DatasetRegistration(manifest.datasetVersion(), manifest.datasetSha256(), manifest.caseCount(),
-                CATEGORIES, manifest.resourcePaths()));
+        return datasetRegistry.datasets().stream().map(dataset -> new DatasetRegistration(dataset.datasetVersion(),
+                dataset.manifestSha256(), dataset.caseCount(), dataset.categories(), dataset.referencedResources())).toList();
     }
 
     @Override
     public List<RunConfiguration> configurations() {
-        return List.of(new RunConfiguration(CONFIG_VERSION, CONFIG_SHA256,
-                "DETERMINISTIC_FIXTURE", "03A-04D", "04A", "NOT_RUN", "current-active"));
+        return datasetRegistry.datasets().stream().map(dataset -> new RunConfiguration(dataset.datasetVersion(),
+                dataset.configVersion(), dataset.configSha256(), dataset.executionMode(), dataset.ruleVersion(),
+                dataset.knowledgeVersion(), dataset.modelVersion(), dataset.indexVersion())).toList();
     }
 
     @Override
     @Transactional
     public EvaluationRun start(String datasetVersion, String configVersion, String clientRequestId) {
-        validateVersion(datasetVersion, DATASET_VERSION, "数据集版本");
-        validateVersion(configVersion, CONFIG_VERSION, "运行配置版本");
+        AiEvaluationDatasetRegistry.RegisteredDataset registered = datasetRegistry.find(datasetVersion, configVersion);
         validateClientRequestId(clientRequestId);
         // Freeze and validate every referenced resource before idempotency can return a row.
-        Manifest manifest = manifest(true);
-        List<EvaluationCase> cases = cases();
+        Manifest manifest = manifest(true, registered.provider());
+        List<EvaluationCase> cases = cases(registered.provider(), manifest);
         EvaluationRun existing = findByRequest(datasetVersion, configVersion, clientRequestId);
         if (existing != null) return existing;
 
@@ -112,10 +121,12 @@ public class AiEvaluationService implements AiEvaluationApi {
             jdbc.update("INSERT INTO ai_evaluation_run(evaluation_run_id,dataset_version,dataset_sha256,config_version,"
                             + "config_sha256,client_request_id,status,gate_outcome,rule_version,knowledge_version,index_version,"
                             + "model_version,execution_mode,evidence_level,not_evaluated_cases,started_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    runId, DATASET_VERSION, manifest.datasetSha256(), CONFIG_VERSION, CONFIG_SHA256, clientRequestId,
-                    "RUNNING", "NOT_EVALUATED", "03A-04D", "04A", "current-active", "NOT_RUN",
-                    "DETERMINISTIC_FIXTURE", AiEvaluationApi.EvidenceLevel.STATIC_VALIDATION.name(), 0,
+                    runId, registered.datasetVersion(), manifest.datasetSha256(), registered.configVersion(), registered.configSha256(), clientRequestId,
+                    "RUNNING", "NOT_EVALUATED", registered.ruleVersion(), registered.knowledgeVersion(), registered.indexVersion(), registered.modelVersion(),
+                    registered.executionMode(), AiEvaluationApi.EvidenceLevel.STATIC_VALIDATION.name(), 0,
                     Timestamp.from(now), Timestamp.from(now));
+            LOGGER.info("ai_evaluation stage=run_started datasetVersion={} configVersion={} status=RUNNING",
+                    registered.datasetVersion(), registered.configVersion());
         } catch (DataAccessException race) {
             EvaluationRun winner = findByRequest(datasetVersion, configVersion, clientRequestId);
             if (winner != null) return winner;
@@ -151,11 +162,15 @@ public class AiEvaluationService implements AiEvaluationApi {
                             + "failed_cases=?,not_evaluated_cases=?,hard_assertion_failures=?,error_code=?,evidence_level=? WHERE evaluation_run_id=?",
                     "COMPLETED", gate, Timestamp.from(completed), cases.size(), passed, failed, notEvaluated, hardFailures,
                     null, aggregateEvidence(evidenceLevels), runId);
+            LOGGER.info("ai_evaluation stage=run_terminal datasetVersion={} configVersion={} status=COMPLETED gateOutcome={}",
+                    registered.datasetVersion(), registered.configVersion(), gate);
         } catch (RuntimeException failure) {
             // A production-chain/fixture failure must not leave an eternal RUNNING row.
             jdbc.update("UPDATE ai_evaluation_run SET status='FAILED',gate_outcome='NOT_PASSED',completed_at=?,error_code=?,"
                             + "evidence_level=? WHERE evaluation_run_id=?", Timestamp.from(Instant.now()),
                     "AI_EVALUATION_EXECUTION_FAILED", AiEvaluationApi.EvidenceLevel.STATIC_VALIDATION.name(), runId);
+            LOGGER.info("ai_evaluation stage=run_terminal datasetVersion={} configVersion={} status=FAILED errorCode=AI_EVALUATION_EXECUTION_FAILED",
+                    registered.datasetVersion(), registered.configVersion());
         }
         return getRun(runId).run();
     }
@@ -195,8 +210,12 @@ public class AiEvaluationService implements AiEvaluationApi {
                         rs.getInt("model_attempts"), rs.getInt("tool_calls"), rs.getInt("embedding_calls"),
                         rs.getString("document_code"), rs.getString("version_code"), rs.getString("evidence_level")), evaluationRunId);
         Map<String, CategorySummary> categories = new LinkedHashMap<>();
-        for (String category : CATEGORIES) {
-            for (String split : List.of("calibration", "holdout")) {
+        List<String> categoryNames = rows.stream().map(EvaluationCaseRow::category).filter(Objects::nonNull)
+                .distinct().sorted().toList();
+        List<String> splitNames = rows.stream().map(EvaluationCaseRow::split).filter(Objects::nonNull)
+                .distinct().sorted().toList();
+        for (String category : categoryNames) {
+            for (String split : splitNames) {
                 List<EvaluationCaseRow> subset = rows.stream().filter(row -> category.equals(row.category()) && split.equals(row.split())).toList();
                 if (subset.isEmpty()) continue;
                 Map<String, List<EvaluationCaseRow>> byEvidence = new LinkedHashMap<>();
@@ -266,7 +285,9 @@ public class AiEvaluationService implements AiEvaluationApi {
     public static String chooseGateOutcome(List<CaseAssessment> assessments) {
         if (assessments.stream().anyMatch(a -> a.evaluated() && !a.hardPass())) return "NOT_PASSED";
         if (assessments.stream().anyMatch(a -> !a.evaluated())) return "NOT_EVALUATED";
-        for (String category : CATEGORIES) {
+        List<String> categories = assessments.stream().map(CaseAssessment::category).filter(Objects::nonNull)
+                .distinct().sorted().toList();
+        for (String category : categories) {
             List<CaseAssessment> holdout = assessments.stream().filter(a -> category.equals(a.category()) && "holdout".equals(a.split())).toList();
             if (holdout.isEmpty() || holdout.stream().filter(CaseAssessment::passed).count() * 100 < holdout.size() * 85) return "NOT_PASSED";
         }
@@ -396,40 +417,40 @@ public class AiEvaluationService implements AiEvaluationApi {
                 row.modelAttempts(), row.toolCalls(), row.embeddingCalls(), row.documentCode(), row.versionCode(), row.status(), row.evidenceLevel());
     }
 
-    private Manifest manifest(boolean verifyReferencedResources) {
-        JsonNode root = parse(resource(MANIFEST), "AI_EVALUATION_MANIFEST_INVALID");
+    private Manifest manifest(boolean verifyReferencedResources, AiEvaluationDatasetProvider provider) {
+        JsonNode root = parse(resource(provider.manifest()), "AI_EVALUATION_MANIFEST_INVALID");
         only(root, Set.of("datasetVersion", "datasetSha256", "manifestVersion", "resources", "categories", "caseCount", "splits"));
         String datasetVersion = requiredText(root, "datasetVersion");
         String datasetSha = requiredText(root, "datasetSha256");
-        if (!DATASET_VERSION.equals(datasetVersion) || !"1".equals(requiredText(root, "manifestVersion"))) invalid();
-        JsonNode categoryNode = required(root, "categories");
-        if (!categoryNode.isArray() || !new LinkedHashSet<>(texts(categoryNode)).equals(new LinkedHashSet<>(CATEGORIES))) invalid();
-        if (requiredInt(root, "caseCount") != 24) invalid();
-        JsonNode splits = required(root, "splits"); only(splits, Set.of("calibration", "holdout"));
-        if (requiredInt(splits, "calibration") != 12 || requiredInt(splits, "holdout") != 12) invalid();
+        if (!provider.datasetVersion().equals(datasetVersion) || !"1".equals(requiredText(root, "manifestVersion"))) invalid();
+        List<String> categories = texts(required(root, "categories"));
+        if (categories.isEmpty() || categories.stream().anyMatch(String::isBlank)
+                || categories.size() != new LinkedHashSet<>(categories).size()) invalid();
+        int caseCount = requiredInt(root, "caseCount");
+        if (caseCount < 1) invalid();
+        Map<String, Integer> splitCounts = splitCounts(required(root, "splits"), caseCount);
         JsonNode resources = required(root, "resources");
-        if (!resources.isArray() || resources.size() != 5) invalid();
+        if (!resources.isArray() || resources.isEmpty()) invalid();
         List<String> paths = new ArrayList<>();
         for (JsonNode item : resources) {
             only(item, RESOURCE_FIELDS);
             String path = requiredText(item, "path");
             String expectedHash = requiredText(item, "sha256");
-            if (verifyReferencedResources && !expectedHash.equals(sha256(resource(path)))) invalid();
+            if (verifyReferencedResources && !expectedHash.equals(sha256(resource(provider.resource(path))))) invalid();
             if (requiredText(item, "responsibility").isBlank()) invalid();
             paths.add(path);
         }
-        if (!datasetSha.equals(sha256(resource(CASES)))) invalid();
-        return new Manifest(datasetVersion, datasetSha, requiredInt(root, "caseCount"), paths);
+        if (!datasetSha.equals(sha256(resource(provider.cases())))) invalid();
+        return new Manifest(datasetVersion, datasetSha, caseCount, paths, categories, splitCounts);
     }
 
-    private List<EvaluationCase> cases() {
-        JsonNode root = parse(resource(CASES), "AI_EVALUATION_CASES_INVALID");
+    private List<EvaluationCase> cases(AiEvaluationDatasetProvider provider, Manifest manifest) {
+        JsonNode root = parse(resource(provider.cases()), "AI_EVALUATION_CASES_INVALID");
         only(root, Set.of("datasetVersion", "cases"));
-        if (!DATASET_VERSION.equals(requiredText(root, "datasetVersion"))) invalid();
+        if (!provider.datasetVersion().equals(requiredText(root, "datasetVersion"))) invalid();
         JsonNode array = required(root, "cases");
-        if (!array.isArray() || array.size() != 24) invalid();
+        if (!array.isArray() || array.size() != manifest.caseCount()) invalid();
         Set<String> ids = new HashSet<>();
-        Map<String, Integer> categoryCounts = new LinkedHashMap<>();
         Map<String, Integer> splitCounts = new LinkedHashMap<>();
         List<EvaluationCase> result = new ArrayList<>();
         for (JsonNode node : array) {
@@ -437,7 +458,7 @@ public class AiEvaluationService implements AiEvaluationApi {
             String id = requiredText(node, "caseId");
             String category = requiredText(node, "category");
             String split = requiredText(node, "split");
-            if (!ids.add(id) || !CATEGORIES.contains(category) || !("calibration".equals(split) || "holdout".equals(split))) invalid();
+            if (!ids.add(id) || !manifest.categories().contains(category) || !manifest.splitCounts().containsKey(split)) invalid();
             JsonNode steps = required(node, "steps");
             if (!steps.isArray() || steps.isEmpty()) invalid();
             List<String> stepTexts = new ArrayList<>();
@@ -470,35 +491,16 @@ public class AiEvaluationService implements AiEvaluationApi {
                     requiredText(node, "expectedRunStatus"), requiredString(node, "expectedStableCode"), tools, forbidden,
                     privacy, document, version, requiredInt(node, "maxProviderCalls"));
             result.add(item);
-            categoryCounts.merge(category, 1, Integer::sum); splitCounts.merge(split, 1, Integer::sum);
+            splitCounts.merge(split, 1, Integer::sum);
         }
-        if (!categoryCounts.values().stream().allMatch(count -> count == 4) || splitCounts.getOrDefault("calibration", 0) != 12
-                || splitCounts.getOrDefault("holdout", 0) != 12) invalid();
+        if (!manifest.splitCounts().equals(splitCounts)) invalid();
         return List.copyOf(result);
     }
 
-    private String resource(String path) {
-        String normalized = path.startsWith("/") ? path.substring(1) : path;
-        try (InputStream input = AiEvaluationService.class.getClassLoader().getResourceAsStream(normalized)) {
-            if (input != null) return new String(input.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (IOException exception) { throw new IllegalStateException("AI_EVALUATION_RESOURCE_UNREADABLE", exception); }
-        Path file = repositoryResource(normalized);
-        try { return Files.readString(file, StandardCharsets.UTF_8); }
+    private static String resource(Resource resource) {
+        if (resource == null || !resource.isReadable()) throw new IllegalStateException("AI_EVALUATION_RESOURCE_MISSING");
+        try (InputStream input = resource.getInputStream()) { return new String(input.readAllBytes(), StandardCharsets.UTF_8); }
         catch (IOException exception) { throw new IllegalStateException("AI_EVALUATION_RESOURCE_UNREADABLE", exception); }
-    }
-
-    private static Path repositoryResource(String path) {
-        Path current = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-        Path backend = current;
-        while (backend != null && !"backend".equals(String.valueOf(backend.getFileName()))) backend = backend.getParent();
-        if (backend == null || path.contains("..") || path.startsWith("/") || !path.startsWith("module-")) {
-            throw new IllegalStateException("AI_EVALUATION_RESOURCE_MISSING: " + path);
-        }
-        Path result = backend.resolve("modules").resolve(path).normalize();
-        if (!result.startsWith(backend.resolve("modules")) || !Files.isRegularFile(result)) {
-            throw new IllegalStateException("AI_EVALUATION_RESOURCE_MISSING: " + path);
-        }
-        return result;
     }
 
     private static JsonNode parse(String text, String code) {
@@ -514,16 +516,30 @@ public class AiEvaluationService implements AiEvaluationApi {
     private static String optionalText(JsonNode parent, String name) { JsonNode value = parent.get(name); if (value == null || value.isNull()) return ""; if (!value.isTextual()) invalid(); return value.asText(); }
     private static int requiredInt(JsonNode parent, String name) { JsonNode value = required(parent, name); if (!value.isInt()) invalid(); return value.intValue(); }
     private static List<String> texts(JsonNode array) { if (!array.isArray()) invalid(); List<String> values = new ArrayList<>(); for (JsonNode value : array) { if (!value.isTextual()) invalid(); values.add(value.asText()); } return List.copyOf(values); }
+    private static Map<String, Integer> splitCounts(JsonNode node, int caseCount) {
+        if (node == null || !node.isObject() || node.size() == 0) invalid();
+        Map<String, Integer> result = new LinkedHashMap<>();
+        int total = 0;
+        for (String name : node.propertyNames()) {
+            if (name == null || name.isBlank()) invalid();
+            int count = requiredInt(node, name);
+            if (count < 1) invalid();
+            result.put(name, count);
+            total += count;
+        }
+        if (total != caseCount) invalid();
+        return Collections.unmodifiableMap(new LinkedHashMap<>(result));
+    }
     private static void invalid() { throw new IllegalStateException("AI_EVALUATION_RESOURCE_INVALID"); }
 
     private static String sha256(String value) {
         try { byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)); StringBuilder hex = new StringBuilder(); for (byte b : digest) hex.append(String.format("%02x", b)); return hex.toString(); }
         catch (Exception exception) { throw new IllegalStateException("AI_EVALUATION_HASH_FAILED", exception); }
     }
-    private static void validateVersion(String actual, String expected, String field) { if (!expected.equals(actual)) throw new IllegalArgumentException(field + "不受支持"); }
     private static void validateClientRequestId(String id) { if (id == null || id.isBlank() || id.length() > 128 || id.chars().anyMatch(Character::isISOControl)) throw new IllegalArgumentException("clientRequestId无效"); }
 
-    private record Manifest(String datasetVersion, String datasetSha256, int caseCount, List<String> resourcePaths) {}
+    private record Manifest(String datasetVersion, String datasetSha256, int caseCount, List<String> resourcePaths,
+                            List<String> categories, Map<String, Integer> splitCounts) {}
     private record EvaluationCase(String caseId, String category, String split, String executionMode, String preconditionsRef,
                                   List<String> steps, boolean requiresProviderRouting, List<String> postRoutingSteps,
                                   String expectedOutcome, String expectedRunStatus, String expectedStableCode,

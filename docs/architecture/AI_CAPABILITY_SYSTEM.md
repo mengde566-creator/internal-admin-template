@@ -1,13 +1,13 @@
 # 0.2 通用 AI 能力体系架构
 
 > 状态：已确认
-> 版本：0.3
-> 更新日期：2026-09-14
+> 版本：0.4
+> 更新日期：2026-09-15
 > 关联需求：[`requirements/V0_2_AI_WAREHOUSE.md`](../../requirements/V0_2_AI_WAREHOUSE.md)
 > 仓储基础设计：[`DEPARTMENT_WAREHOUSE_DESIGN.md`](DEPARTMENT_WAREHOUSE_DESIGN.md)
 > Agent设计入口：[`V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md`](../planning/V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md)（第一版场景、功能与模块分片已确认）
 > 当前阶段：架构已确认；IAM与仓储人工业务基础已实现，AI生产实现须先完成剩余PoC Gate并按角色路由
-> 本次变更：研发前收敛Provider重试、DeepSeek思考续轮、Tool循环、知识事务与故障边界；不代表生产可行性Gate已通过
+> 本次变更：同步SLICE-07全计划复核，收敛多Adapter校验与错误所有权、卡片分派、Knowledge内容包策略和降级表达；不代表第二真实业务复用已经完成工程证明
 
 ## 1. 架构结论
 
@@ -78,6 +78,8 @@ module-warehouse
 
 这些契约只暴露DTO，禁止暴露DO、Mapper、MyBatis分页对象和内部Service。
 
+多Adapter装配时，Core只拥有全局身份、安全、只读和预算规则。业务输入校验、业务失败文案以及业务卡片payload校验必须按实际被选择的Tool或全局唯一`cardType`定位所有者后委托；禁止遍历全部Adapter并以任一业务拒绝代替路由，也禁止Core按仓储字段形状解释所有业务卡片。Adapter受信说明按稳定顺序聚合并受总长度预算约束，业务说明只能描述能力，不能把通用助手定义为单一业务人格。
+
 应用保留一个不触发模型、知识连接或AI数据写入的受保护能力发现接口，只返回`enabled`和已登记交互能力，供前端决定是否展示Agent入口；Agent关闭时不注册对话与SSE入口。0.2的AI权限为`ai:knowledge:read`、`ai:knowledge:manage`、`ai:observability:view`和`ai:evaluation:run`并默认授予SYSTEM_ADMIN；知识读取不再由任何业务权限隐含授予，既有自定义角色由管理员明确补选。仓储事实工具仍由登录态和`warehouse:read`决定，不额外引入`ai:agent:use`。
 
 ## 4. 后端技术组合
@@ -106,7 +108,7 @@ app.ai.embedding.qwen.model = qwen3.7-text-embedding
 app.ai.embedding.qwen.dimensions = 1024
 ```
 
-物品派生索引继续使用`APP_AI_EMBEDDING_QWEN_BASE_URL`的OpenAI兼容 HTTPS 接口；知识库短问题→长文档检索则使用同一 workspace 的官方 DashScope HTTPS 同步接口，固定区分 document/query 文本类型并请求 dense&sparse，不新增 workspaceId 或第二套密钥。启动日志只允许记录 provider、model、dimensions 和脱敏后的 host，不记录完整 API Key。
+物品派生索引继续使用`APP_AI_EMBEDDING_QWEN_BASE_URL`的OpenAI兼容 HTTPS 接口；知识库短问题→长文档检索则使用同一 workspace 的官方 DashScope HTTPS 同步接口，固定区分 document/query 文本类型并请求 dense&sparse，不新增 workspaceId 或第二套密钥。查询侧使用Knowledge核心拥有的一条全局通用检索指令；业务内容包只登记内容、版本、确定顺序和哈希，不携带各自检索指令。只有出现真实分域检索需求后才另行设计Retriever路由或knowledgeSpace。启动日志只允许记录 provider、model、dimensions 和脱敏后的 host，不记录完整 API Key。
 
 ### 4.2 MVC与流式响应
 
@@ -212,7 +214,7 @@ History按消息创建时间保留180天且只对会话所有者可见。用户�
 
 ### 7.1 契约状态与技术边界
 
-A+B已经确认为同一条产品交互主路径：常驻业务侧栏可以收为轻量对话框，用户能够一边查看主页面，一边查询、复制并打开人工页面。该确认同时固定本节的项目事件语义，但**不代表确认AG-UI、CopilotKit、MCP Apps或其运行时**。
+A+B已经确认为同一条产品交互主路径：应用级唯一助手壳可以在业务页面旁停靠或收为轻量入口，用户能够一边查看主页面，一边查询、复制并打开人工页面。仓储按钮只是打开同一助手的快捷入口，不能让通用助手的生命周期依附于仓储页面。该确认同时固定本节的项目事件语义，但**不代表确认AG-UI、CopilotKit、MCP Apps或其运行时**。
 
 首版继续采用现有Vue 3、TypeScript、Element Plus、Pinia、Vue Router和语义令牌，以受保护的POST `fetch`和标准SSE表达事件，不引入第二前端应用或Node Agent Runtime。SLICE-01采用项目内最小SSE解析器，不新增前端AI运行时；解析器必须用确定性测试覆盖UTF-8跨chunk、SSE跨chunk、CRLF、多行`data`、Abort、顺序去重和唯一终态，正式验收仍通过真实Provider与真实页面入口完成。
 
@@ -224,7 +226,7 @@ A+B已经确认为同一条产品交互主路径：常驻业务侧栏可以收�
 | `COMPACT` | 宽屏折叠 | 侧栏收为轻量对话框或紧凑入口，保留当前Conversation、消息、卡片、引用和运行状态；折叠本身不得取消正在执行的run。 |
 | `DRAWER` | 窄屏 | 使用覆盖式抽屉承载同一Conversation；打开、关闭或切换窄屏不得改变后端事件、权限和History语义。 |
 
-三种状态只是同一交互的前端呈现，不产生三套会话或接口。展开、折叠、抽屉开关和普通页面导航不得销毁当前Conversation，也不得重置主页面已加载状态；浏览器刷新后的恢复范围以已持久化History为准，不承诺恢复未完成的前端临时状态。
+三种状态只是应用级同一助手壳的前端呈现，不产生三套会话或接口。业务页面只能登记卡片、copy、routeKey和快捷入口等静态资产，不能各自创建会话壳。展开、折叠、抽屉开关和普通页面导航不得销毁当前Conversation，也不得重置主页面已加载状态；浏览器刷新后的恢复范围以已持久化History为准，不承诺恢复未完成的前端临时状态。
 
 ### 7.3 Conversation与Memory Segment
 
@@ -285,7 +287,6 @@ payload
 | `message.delta` | 追加当前助手消息文本；只承载新增片段，不重复发送已完成全文。 | 否 |
 | `citation.added` | 增加带文档、版本和片段标识的受信引用；相同`citationId`不得重复追加。 | 否 |
 | `card.replace` | 以`cardId + revision`新增或原位替换一张固定卡片；不得把重复工具结果渲染成重复卡片。 | 否 |
-| `knowledge.degraded` | 知识运行期不可用或当前知识路径降级；必须给稳定错误码，禁止继续生成无引用知识答案。仓储实时只读工具仍可继续。 | 否 |
 | `message.completed` | 当前助手消息已形成完整内容并成功进入History；它不是run终态。 | 否 |
 | `run.failed` | run以`FAILED`结束，携带稳定`source + category + code`；不得再发送任何事件。 | 是 |
 | `run.completed` | run以`SUCCESS`、`CANCELLED`或`PARTIAL`之一结束；不得再发送任何事件。 | 是 |
@@ -297,11 +298,11 @@ payload
 - `message.completed`只表示完整助手消息已经持久化，不替代run终态；`FAILED`、`CANCELLED`和`PARTIAL`路径不得补发`message.completed`伪装完整回答。
 - 客户端在未产生可见内容前取消，终态为`CANCELLED`；已经发送文本、引用或卡片但无法完整结束时，终态为`PARTIAL`；未形成可接受结果且不是用户取消时，终态为`FAILED`。
 - SSE连接已经断开时，终态事件可能无法送达浏览器，但服务端History与Observability仍必须幂等形成同一个唯一终态；禁止因客户端重连重复执行工具或写入History。
-- `knowledge.degraded`不是终态。若知识降级使本轮只能完成部分请求，最终使用`PARTIAL`；实时仓储路径能够完整满足请求时可以继续形成`SUCCESS`。
+- 知识运行期不可用时不得继续生成无引用知识答案；用户可见降级通过既有`card.replace`降级卡片表达，并由唯一run终态收口。若本轮只能完成部分请求，最终使用`PARTIAL`；其他受信业务路径能够完整满足请求时可以继续形成`SUCCESS`。不再维护独立`knowledge.degraded`事件，避免同一状态存在两条协议来源。
 
 ### 7.7 五类固定卡片
 
-首版只允许以下五类卡片：
+当前仓储Adapter只注册以下五类卡片；`cardType`在所有Adapter间全局唯一，Core只校验通用卡片包络并把payload交给注册所有者做强类型校验和规范化。前端同样只以`cardType`分派静态业务渲染器，不要求SSE携带当前不存在的`adapterId`：
 
 | `cardType` | 用途 | 主要事实来源 |
 | --- | --- | --- |

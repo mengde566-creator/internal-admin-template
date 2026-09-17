@@ -1,0 +1,10 @@
+[
+  {"documentCode":"warehouse-rules","versionCode":"v0","title":"仓储操作规则（旧版）","status":"INACTIVE","order":1,"resource":"knowledge/warehouse/synthetic/warehouse-rules-v0.md","sha256":"9977a6cb895273e1196e1b792fb457df61007fa4ecd46ce0b590eb68956ee0a7"},
+  {"documentCode":"warehouse-rules","versionCode":"v1","title":"仓储操作规则","status":"INACTIVE","order":1,"resource":"knowledge/warehouse/synthetic/warehouse-rules-v1.md","sha256":"462428dff0131241c95f266851cd2f267c12102129dca632390b9bcc224898b8"},
+  {"documentCode":"warehouse-rules","versionCode":"v2","title":"仓储操作规则（合成测试资料，当前版）","status":"ACTIVE","order":1,"resource":"knowledge/warehouse/synthetic/warehouse-rules-v2.md","sha256":"43911a51cdefdc2002adfab0187abed97b49649065fc5767e302c6f21dbda87b"},
+  {"documentCode":"item-codes","versionCode":"v1","title":"物品编码规则","status":"INACTIVE","order":2,"resource":"knowledge/warehouse/synthetic/item-codes-v1.md","sha256":"232d619e4c973936b8dc228b08a045ca50abe1d49b705c181fb0bd75e92ba4f4"},
+  {"documentCode":"item-codes","versionCode":"v2","title":"物品编码规则（合成测试资料，当前版）","status":"ACTIVE","order":2,"resource":"knowledge/warehouse/synthetic/item-codes-v2.md","sha256":"d149968c4e16e40338f0fc78a510d53806fe54b08f656e5d4028f8934eeb5868"},
+  {"documentCode":"warehouse-codes","versionCode":"v1","title":"仓库与库位编码规则","status":"INACTIVE","order":3,"resource":"knowledge/warehouse/synthetic/warehouse-codes-v1.md","sha256":"f07da36e59ec1fe2fd0be63435b19ada9022daaf7f90be64df6419a24049cf73"},
+  {"documentCode":"warehouse-codes","versionCode":"v2","title":"仓库与库位编码规则（合成测试资料，当前版）","status":"ACTIVE","order":3,"resource":"knowledge/warehouse/synthetic/warehouse-codes-v2.md","sha256":"bfff923023105a2c86fe289c8b13dba3cc43914c6eb21a9311208bbba0958627"},
+  {"documentCode":"low-stock-policy","versionCode":"v1","title":"低库存处置制度（合成测试资料）","status":"ACTIVE","order":4,"resource":"knowledge/warehouse/synthetic/low-stock-policy-v1.md","sha256":"663deac3f0f28aa41741f072ce909ae2472914b85f58adef17af803e3031a927"}
+]

@@ -8,6 +8,8 @@ SLICE-07A 后，本模块通过编译期 `AgentAdapter` 契约向 Core 注册仓
 
 03F 派生检索索引仅在 Agent 开启时装配，归本适配器的 `ai_warehouse_search` PostgreSQL schema 所有。索引只保存物品编码/名称的当前投影与 1024 维向量，由提交后事件和有界对账维护；相似命中始终回 Warehouse 复核并只生成候选，不自动查询事实。Agent 关闭时不装配该索引、迁移、调度器或 Embedding 依赖。
 
+SLICE-07C 后，本适配器同时登记 `WarehouseKnowledgeContentPack` 与 `WarehouseEvaluationDatasetProvider`：仓储 Markdown/索引及评测 manifest、cases、config、召回/Embedding 基线全部位于本适配器的 classpath 资源族；短查询指令由 Knowledge Core 统一持有。`module-knowledge` 与 `module-ai-observability` 只消费公开契约和 Provider 流，不拥有仓储资源；注册时按版本、顺序、资源可读性和 SHA-256 失败即停。
+
 ## 诊断信号及禁止字段
 
 仓储 Tool 调用、失败闭锁、重复命中和重试恢复沿用 module-agent 的 `agent_tool_call`、`agent_retry_plan`、`agent_retry_resume` 事件；仓储适配器只提供稳定 Tool 名、阶段、结果/错误码和耗时所需的安全标识，不重复建设日志框架。后续 Tool 授权使用 `agent_followup_authorization`，结果只记录数量、Tool 安全标识和原因码。

@@ -64,13 +64,6 @@ public final class MixedToolCallingManager implements ToolCallingManager {
             throw new AgentToolException(AgentErrorCode.TOOL_CALL_BATCH_INVALID,
                     "本轮只允许一个工具调用");
         }
-        List<String> authorized = mixedBatchTools(response);
-        boolean opened = execution != null && !execution.knowledgeCallAttempted()
-                && !authorized.isEmpty() && execution.openMixedToolAuthorization(authorized);
-        if (execution != null && !authorized.isEmpty()) {
-            LOG.debug("event=agent_mixed_authorization stage=open result={} runId={} toolCount={}",
-                    opened ? "granted" : "denied", execution.runId(), authorized.size());
-        }
         if (execution != null && singleKnowledgeCall(response)) {
             List<String> followupTools = adapterRegistry.followupToolNames(execution.actor(), execution.message())
                     .stream().filter(registeredTools::contains).toList();
@@ -79,11 +72,7 @@ public final class MixedToolCallingManager implements ToolCallingManager {
                     followupOpened ? "granted" : "denied", execution.runId(), followupTools.size(),
                     String.join(",", followupTools), followupOpened ? "owner_filtered" : "no_match_or_closed");
         }
-        try {
-            return delegate.executeToolCalls(prompt, response);
-        } finally {
-            if (opened) execution.closeMixedToolAuthorization();
-        }
+        return delegate.executeToolCalls(prompt, response);
     }
 
     private static String runId(AgentExecutionContext execution) {
@@ -107,24 +96,6 @@ public final class MixedToolCallingManager implements ToolCallingManager {
         Map<String, Object> context = options.getToolContext();
         Object value = context == null ? null : context.get(EXECUTION_CONTEXT_KEY);
         return value instanceof AgentExecutionContext execution ? execution : null;
-    }
-
-    private List<String> mixedBatchTools(ChatResponse response) {
-        if (response == null || response.getResults() == null) return List.of();
-        boolean hasKnowledge = false;
-        List<String> others = new java.util.ArrayList<>();
-        for (Generation generation : response.getResults()) {
-            if (generation == null || !(generation.getOutput() instanceof AssistantMessage assistant)) continue;
-            for (AssistantMessage.ToolCall call : assistant.getToolCalls()) {
-                if (KNOWLEDGE_TOOL.equals(call.name())) {
-                    hasKnowledge = true;
-                } else if (call.name() != null && registeredTools.contains(call.name())) {
-                    others.add(call.name());
-                }
-            }
-        }
-        return hasKnowledge && registeredTools.contains(KNOWLEDGE_TOOL) && !others.isEmpty()
-                ? List.copyOf(others) : List.of();
     }
 
     private boolean singleKnowledgeCall(ChatResponse response) {

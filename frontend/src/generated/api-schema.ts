@@ -1390,10 +1390,10 @@ export interface components {
             indexedAt?: string;
             name?: string;
             optionToken?: string;
+            scopeCode?: string;
+            scopeName?: string;
             versionCode?: string;
             versionUpdatedAt?: string;
-            warehouseCode?: string;
-            warehouseName?: string;
         };
         ClarificationSelection: {
             clarificationId: string;
@@ -1408,8 +1408,8 @@ export interface components {
             revision?: number;
             selectedCode?: string;
             selectedName?: string;
-            selectedWarehouseCode?: string;
-            selectedWarehouseName?: string;
+            selectedScopeCode?: string;
+            selectedScopeName?: string;
             status?: string;
         };
         ConversationDTO: {
@@ -1851,6 +1851,7 @@ export interface components {
         RunConfiguration: {
             configSha256?: string;
             configVersion?: string;
+            datasetVersion?: string;
             executionMode?: string;
             indexVersion?: string;
             knowledgeVersion?: string;

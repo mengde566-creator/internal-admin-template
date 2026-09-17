@@ -7,6 +7,7 @@ import com.internaladmin.app.controller.AiEvaluationController;
 import com.internaladmin.module.agent.controller.AiCapabilitiesController;
 import com.internaladmin.module.agent.controller.AgentConversationController;
 import com.internaladmin.module.agent.service.AgentActorResolver;
+import com.internaladmin.module.agent.api.AgentAdapterRegistry;
 import com.internaladmin.module.agent.service.AgentConversationService;
 import com.internaladmin.module.file.api.FileQueryApi;
 import com.internaladmin.module.file.controller.FileController;
@@ -450,6 +451,11 @@ class NoDatabaseOpenApiContractTest {
         @Bean
         AgentActorResolver agentActorResolver(IamActorApi iamActorApi) {
             return new AgentActorResolver(iamActorApi);
+        }
+
+        @Bean
+        AgentAdapterRegistry agentAdapterRegistry() {
+            return AgentAdapterRegistry.empty();
         }
 
         @Bean

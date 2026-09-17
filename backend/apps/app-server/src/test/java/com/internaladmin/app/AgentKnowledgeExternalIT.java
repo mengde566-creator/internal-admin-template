@@ -13,6 +13,7 @@ import com.internaladmin.module.agent.model.dto.MessageDTO;
 import com.internaladmin.module.agent.model.dto.MessagePageDTO;
 import com.internaladmin.module.iam.mapper.UserMapper;
 import com.internaladmin.module.iam.model.entity.UserDO;
+import com.internaladmin.module.iam.api.PermissionCodes;
 import com.internaladmin.module.warehouse.model.dto.InventoryLineDTO;
 import com.internaladmin.module.warehouse.model.dto.InventoryRequestDTO;
 import com.internaladmin.module.warehouse.model.dto.ItemCreateDTO;
@@ -125,10 +126,26 @@ class AgentKnowledgeExternalIT {
         assertThat(chatClient).isNotNull();
 
         prepareA100Fixture();
+        assertKnowledgeReadRequired();
         RunEvidence warehouseFirst = execute("查一下A100现在还有多少，低于制度阈值后应该怎么处理？");
         assertMixedRun(warehouseFirst, List.of("warehouse_current_stock", "knowledge_search"));
         RunEvidence knowledgeFirst = execute("按制度A100低库存该怎么办，再看看现在还有多少？");
         assertMixedRun(knowledgeFirst, List.of("knowledge_search", "warehouse_current_stock"));
+    }
+
+    private void assertKnowledgeReadRequired() {
+        AgentRunContext deniedActor = new AgentRunContext(actor.userId(), actor.departmentId(), actor.allDepartments(),
+                List.of(PermissionCodes.WAREHOUSE_READ));
+        AgentExecutionContext deniedExecution = new AgentExecutionContext(deniedActor,
+                "knowledge-permission-boundary", "查询当前知识", ignored -> { });
+        org.springframework.ai.tool.ToolCallback callback = java.util.Arrays.stream(
+                        knowledgeToolProvider.getToolCallbacks())
+                .filter(value -> KnowledgeToolProvider.TOOL_NAME.equals(value.getToolDefinition().name()))
+                .findFirst().orElseThrow();
+        String output = callback.call("{\"queryText\":\"查询当前知识\",\"operation\":\"SEARCH\"}",
+                new org.springframework.ai.chat.model.ToolContext(java.util.Map.of("agent.execution", deniedExecution)));
+        assertThat(tools.jackson.databind.json.JsonMapper.builder().build().readTree(output).path("code").asText())
+                .isEqualTo("AI_TOOL_FORBIDDEN");
     }
 
     private void assertMixedRun(RunEvidence evidence, List<String> expectedToolOrder) {
@@ -181,7 +198,8 @@ class AgentKnowledgeExternalIT {
         }
         UserDO admin = userMapper.selectOne(new LambdaQueryWrapper<UserDO>().eq(UserDO::getUsername, "admin"));
         assertThat(admin).as("临时业务SQLite应由正常入口初始化管理员").isNotNull();
-        actor = new AgentRunContext(admin.getId(), admin.getDepartmentId(), true, List.of("warehouse:read"));
+        actor = new AgentRunContext(admin.getId(), admin.getDepartmentId(), true,
+                List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ));
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(admin.getId(), "04c-gate"));
         try {

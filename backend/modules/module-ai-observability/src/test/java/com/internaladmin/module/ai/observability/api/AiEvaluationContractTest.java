@@ -1,6 +1,7 @@
 package com.internaladmin.module.ai.observability.api;
 
 import com.internaladmin.module.ai.observability.service.AiEvaluationService;
+import com.internaladmin.module.ai.observability.service.AiEvaluationDatasetRegistry;
 import liquibase.integration.spring.SpringLiquibase;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -29,6 +30,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class AiEvaluationContractTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
+    private static final String DATASET_VERSION = "test-dataset-v1";
+    private static final String CONFIG_VERSION = "test-config-v1";
     private static final String BEHAVIOR_CORPUS = "/evaluation/ai/agent-behavior-exception-evaluation-v1.json";
     private static final String PROVIDER_HISTORY = "/evaluation/ai/agent-evaluation-provider-gate-history-v1.json";
     @TempDir
@@ -37,35 +40,33 @@ class AiEvaluationContractTest {
     @Test
     void manifestValidationDoesNotPretendFixtureExecutionPassed() throws Exception {
         JdbcTemplate jdbc = database("run");
-        AiEvaluationService service = new AiEvaluationService(jdbc);
+        AiEvaluationService service = service(jdbc);
 
         AiEvaluationApi.DatasetRegistration dataset = service.datasets().get(0);
-        assertEquals(24, dataset.caseCount());
-        assertEquals(5, dataset.referencedResources().size());
-        assertEquals(6, dataset.categories().size());
+        assertEquals(4, dataset.caseCount());
+        assertEquals(1, dataset.referencedResources().size());
+        assertEquals(2, dataset.categories().size());
 
-        AiEvaluationApi.EvaluationRun first = service.start(AiEvaluationService.DATASET_VERSION,
-                AiEvaluationService.CONFIG_VERSION, "client-1");
-        AiEvaluationApi.EvaluationRun duplicate = service.start(AiEvaluationService.DATASET_VERSION,
-                AiEvaluationService.CONFIG_VERSION, "client-1");
+        AiEvaluationApi.EvaluationRun first = service.start(DATASET_VERSION, CONFIG_VERSION, "client-1");
+        AiEvaluationApi.EvaluationRun duplicate = service.start(DATASET_VERSION, CONFIG_VERSION, "client-1");
         assertEquals(first.evaluationRunId(), duplicate.evaluationRunId());
         assertEquals("COMPLETED", first.status());
         assertEquals("NOT_EVALUATED", first.gateOutcome());
-        assertEquals(24, first.totalCases());
+        assertEquals(4, first.totalCases());
         assertEquals(0, first.passedCases());
         assertEquals(0, first.failedCases());
-        assertEquals(24, first.notEvaluatedCases());
+        assertEquals(4, first.notEvaluatedCases());
         assertEquals("STATIC_VALIDATION", first.evidenceLevel());
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM ai_evaluation_run", Integer.class));
-        assertEquals(24, jdbc.queryForObject("SELECT COUNT(*) FROM ai_evaluation_case_result", Integer.class));
+        assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM ai_evaluation_case_result", Integer.class));
         String rows = jdbc.queryForObject("SELECT COALESCE(GROUP_CONCAT(case_id || ':' || category || ':' || status), '') FROM ai_evaluation_case_result", String.class);
         assertFalse(rows.contains("那个密封圈"));
         assertFalse(rows.contains("A100"));
         assertFalse(rows.contains("toolResult"));
 
         AiEvaluationApi.EvaluationDetail detail = service.getRun(first.evaluationRunId());
-        assertEquals(6, detail.categories().values().stream().filter(summary -> "holdout".equals(summary.split())).count());
-        assertEquals(24, detail.categories().values().stream().mapToInt(AiEvaluationApi.CategorySummary::notEvaluated).sum());
+        assertEquals(2, detail.categories().values().stream().filter(summary -> "holdout".equals(summary.split())).count());
+        assertEquals(4, detail.categories().values().stream().mapToInt(AiEvaluationApi.CategorySummary::notEvaluated).sum());
         assertEquals(0, detail.categories().values().stream().mapToInt(AiEvaluationApi.CategorySummary::evaluated).sum());
         assertEquals(0, detail.failures().size(), "纯资源校验没有观测到生产失败");
         assertEquals(0L, detail.metrics().get("embeddingCalls"));
@@ -104,7 +105,7 @@ class AiEvaluationContractTest {
                 "currentCodeStatus", "capturedBeforeReadOnlyRejectionFix", "deepSeekRuns", "deepSeekAttempts",
                 "qwenQueryEmbeddingCalls", "maxRetries", "cases", "assessmentCorrections"));
         assertEquals("warehouse-agent-evaluation-v1", baseline.path("datasetVersion").asText());
-        assertEquals(sha256(resource(BEHAVIOR_CORPUS)), baseline.path("corpusSha256").asText());
+        assertEquals("0bff9ea55e6abd38b136c977190161362ba43ff0a94cbb62d7f48151fb67714a", baseline.path("corpusSha256").asText());
         assertFalse(baseline.path("evidenceVersion").asText().isBlank());
         assertFalse(baseline.path("capturedAt").asText().isBlank());
         assertFalse(baseline.path("providerInterface").asText().isBlank());
@@ -191,11 +192,11 @@ class AiEvaluationContractTest {
                     List.of(), "old-document", "v0", "DEGRADED", true, true, true, 1, 0, 2,
                     "TOOL", List.of());
         };
-        AiEvaluationApi.EvaluationRun run = new AiEvaluationService(jdbc, executor).start(
-                AiEvaluationService.DATASET_VERSION, AiEvaluationService.CONFIG_VERSION, "observed");
+        AiEvaluationApi.EvaluationRun run = new AiEvaluationService(jdbc, executor, registry()).start(
+                DATASET_VERSION, CONFIG_VERSION, "observed");
         assertEquals("NOT_PASSED", run.gateOutcome());
-        assertEquals(24, seenCaseIds.size());
-        assertEquals(24, run.failedCases());
+        assertEquals(4, seenCaseIds.size());
+        assertEquals(4, run.failedCases());
         assertTrue(jdbc.queryForObject("SELECT COUNT(*) FROM ai_evaluation_case_result WHERE status='FAILED'", Integer.class) > 0);
     }
 
@@ -204,9 +205,8 @@ class AiEvaluationContractTest {
         JdbcTemplate jdbc = database("executor-failure");
         AiEvaluationService service = new AiEvaluationService(jdbc, description -> {
             throw new IllegalStateException("fixture boundary failed");
-        });
-        AiEvaluationApi.EvaluationRun run = service.start(AiEvaluationService.DATASET_VERSION,
-                AiEvaluationService.CONFIG_VERSION, "executor-failure");
+        }, registry());
+        AiEvaluationApi.EvaluationRun run = service.start(DATASET_VERSION, CONFIG_VERSION, "executor-failure");
         assertEquals("FAILED", run.status());
         assertEquals("NOT_PASSED", run.gateOutcome());
         assertEquals("AI_EVALUATION_EXECUTION_FAILED", run.errorCode());
@@ -216,23 +216,23 @@ class AiEvaluationContractTest {
 
     @Test
     void unknownVersionsAndInvalidClientIdsAreRejectedBeforeExecution() throws Exception {
-        AiEvaluationService service = new AiEvaluationService(database("validation"));
-        assertThrows(IllegalArgumentException.class, () -> service.start("unknown", AiEvaluationService.CONFIG_VERSION, "x"));
-        assertThrows(IllegalArgumentException.class, () -> service.start(AiEvaluationService.DATASET_VERSION, "unknown", "x"));
-        assertThrows(IllegalArgumentException.class, () -> service.start(AiEvaluationService.DATASET_VERSION, AiEvaluationService.CONFIG_VERSION, "\u0001"));
+        AiEvaluationService service = service(database("validation"));
+        assertThrows(IllegalArgumentException.class, () -> service.start("unknown", CONFIG_VERSION, "x"));
+        assertThrows(IllegalArgumentException.class, () -> service.start(DATASET_VERSION, "unknown", "x"));
+        assertThrows(IllegalArgumentException.class, () -> service.start(DATASET_VERSION, CONFIG_VERSION, "\u0001"));
     }
 
     @Test
     void concurrentDuplicateClientRequestCreatesOneRun() throws Exception {
         JdbcTemplate jdbc = database("concurrent");
-        AiEvaluationService service = new AiEvaluationService(jdbc);
-        AiEvaluationService secondService = new AiEvaluationService(new JdbcTemplate(jdbc.getDataSource()));
+        AiEvaluationService service = service(jdbc);
+        AiEvaluationService secondService = service(new JdbcTemplate(jdbc.getDataSource()));
         ExecutorService executor = Executors.newFixedThreadPool(2);
         try {
             Callable<AiEvaluationApi.EvaluationRun> call = () -> service.start(
-                    AiEvaluationService.DATASET_VERSION, AiEvaluationService.CONFIG_VERSION, "same-client");
+                    DATASET_VERSION, CONFIG_VERSION, "same-client");
             Callable<AiEvaluationApi.EvaluationRun> secondCall = () -> secondService.start(
-                    AiEvaluationService.DATASET_VERSION, AiEvaluationService.CONFIG_VERSION, "same-client");
+                    DATASET_VERSION, CONFIG_VERSION, "same-client");
             List<Future<AiEvaluationApi.EvaluationRun>> futures = executor.invokeAll(List.of(call, secondCall));
             assertEquals(futures.get(0).get().evaluationRunId(), futures.get(1).get().evaluationRunId());
             assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM ai_evaluation_run", Integer.class));
@@ -244,11 +244,9 @@ class AiEvaluationContractTest {
     @Test
     void cleanupDeletesOnlyEvaluationRowsOlderThan180DaysInBoundedBatches() throws Exception {
         JdbcTemplate jdbc = database("cleanup");
-        AiEvaluationService service = new AiEvaluationService(jdbc);
-        AiEvaluationApi.EvaluationRun old = service.start(AiEvaluationService.DATASET_VERSION,
-                AiEvaluationService.CONFIG_VERSION, "old");
-        AiEvaluationApi.EvaluationRun current = service.start(AiEvaluationService.DATASET_VERSION,
-                AiEvaluationService.CONFIG_VERSION, "current");
+        AiEvaluationService service = service(jdbc);
+        AiEvaluationApi.EvaluationRun old = service.start(DATASET_VERSION, CONFIG_VERSION, "old");
+        AiEvaluationApi.EvaluationRun current = service.start(DATASET_VERSION, CONFIG_VERSION, "current");
         Instant now = Instant.parse("2026-08-31T00:00:00Z");
         jdbc.update("UPDATE ai_evaluation_run SET created_at=? WHERE evaluation_run_id=?",
                 Timestamp.from(now.minus(181, ChronoUnit.DAYS)), old.evaluationRunId());
@@ -268,6 +266,14 @@ class AiEvaluationContractTest {
         liquibase.setShouldRun(true);
         liquibase.afterPropertiesSet();
         return new JdbcTemplate(dataSource);
+    }
+
+    private static AiEvaluationDatasetRegistry registry() {
+        return new AiEvaluationDatasetRegistry(List.of(new TestEvaluationDatasetProvider()));
+    }
+
+    private static AiEvaluationService service(JdbcTemplate jdbc) {
+        return new AiEvaluationService(jdbc, registry());
     }
 
     private static JsonNode findCase(JsonNode cases, String caseId) {

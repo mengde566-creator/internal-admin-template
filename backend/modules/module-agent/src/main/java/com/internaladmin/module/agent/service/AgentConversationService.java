@@ -206,10 +206,6 @@ public class AgentConversationService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "消息包含敏感信息或不可接受字符，请删除后重试");
         }
         requireAvailableAdapter(actor);
-        if (userMessage != null) {
-            adapterRegistry.validateUserMessage(actor, userMessage).ifPresent(failure ->
-                    { throw new BusinessException(AgentErrorCode.BUSINESS_REJECTED, failure.message()); });
-        }
         if (clarificationId == null && optionToken == null) {
             return store.startRun(conversationId, clientRequestId, userMessage, actor.userId(),
                     actor.scopeFingerprint(), properties.getMemory().getIdleTtl());
@@ -389,76 +385,98 @@ public class AgentConversationService {
             if ("knowledge-answer".equals(cardType)) {
                 return parseKnowledgeCard(root);
             }
-            java.util.Set<String> common = new java.util.HashSet<>(java.util.Set.of(
-                    "cardId", "revision", "cardType", "resultCount", "truncated",
-                    "outcome", "queriedAt", "rows", "status"));
-            java.util.Set<String> allowed = new java.util.HashSet<>(common);
             if ("clarification-choice".equals(cardType)) {
-                allowed.addAll(java.util.Set.of("clarificationId", "question", "selectionMode", "options", "allowFreeText", "candidateKind", "candidateIntent", "pendingMentions"));
-            } else if (!adapterRegistry.ownsCardType(cardType)) {
-                throw new BusinessException(ErrorCode.CONFLICT, "卡片类型不受支持，请重新查询");
+                return parseClarificationCard(root);
             }
-            java.util.Set<String> actual = new java.util.HashSet<>();
-            actual.addAll(root.propertyNames());
-            boolean hasStatus = actual.remove("status");
-            allowed.remove("status");
-            if (!actual.contains("pendingMentions")) {
-                allowed.remove("pendingMentions");
+            AgentAdapter owner = adapterRegistry.ownerOfCardType(cardType)
+                    .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "卡片类型不受支持，请重新查询"));
+            String normalizedJson;
+            try {
+                normalizedJson = owner.validateAndNormalizeCard(cardType, root.toString()).orElse(null);
+            } catch (RuntimeException invalid) {
+                normalizedJson = null;
             }
-            if (!allowed.equals(actual)) {
-                throw new BusinessException(ErrorCode.CONFLICT, "卡片字段不受支持，请重新查询");
-            }
-            if (hasStatus && (root.get("status") == null || !root.get("status").isTextual()
-                    || root.get("status").asText().length() > 32)) {
-                throw new BusinessException(ErrorCode.CONFLICT, "卡片状态无效，请重新查询");
-            }
-            String cardId = requiredText(root, "cardId", 128);
-            JsonNode revision = root.get("revision");
-            if (revision == null || !revision.isIntegralNumber() || revision.asLong() < 0) {
-                throw new BusinessException(ErrorCode.CONFLICT, "卡片修订号无效，请重新查询");
-            }
-            requireNumber(root, "resultCount", 20);
-            if (root.get("truncated") == null || !root.get("truncated").isBoolean()) {
+            if (normalizedJson == null || normalizedJson.isBlank()) {
                 throw new BusinessException(ErrorCode.CONFLICT, "卡片结果无效，请重新查询");
             }
-            String outcome = requiredText(root, "outcome", 32);
-            if (!java.util.Set.of("ANSWERED", "CLARIFICATION", "NO_DATA")
-                    .contains(outcome)) {
-                throw new BusinessException(ErrorCode.CONFLICT, "卡片结果无效，请重新查询");
-            }
-            if (root.get("rows") == null || !root.get("rows").isArray()) {
-                throw new BusinessException(ErrorCode.CONFLICT, "卡片结果无效，请重新查询");
-            }
-            String optionsJson = null;
-            String candidateIntent = null;
-            String pendingMentionsJson = null;
-            if ("clarification-choice".equals(cardType)) {
-                if (!"CLARIFICATION".equals(outcome) || root.get("options") == null || !root.get("options").isArray()
-                        || root.get("options").size() < 1 || root.get("options").size() > 20) {
-                    throw new BusinessException(ErrorCode.CONFLICT, "候选卡片无效，请重新查询");
-                }
-                requiredText(root, "clarificationId", 128);
-                requiredText(root, "question", 256);
-                requiredText(root, "selectionMode", 32);
-                AgentTaskPolicy policy = adapterRegistry.taskPolicyFor(requiredText(root, "candidateIntent", 32)).orElse(null);
-                if (policy == null) throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
-                AgentTaskPolicy.CandidateCard candidate = policy.validateCandidateCard(root.toString())
-                        .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "候选卡片无效，请重新查询"));
-                candidateIntent = candidate.candidateIntent();
-                optionsJson = candidate.optionsJson();
-                pendingMentionsJson = candidate.pendingMentionsJson();
-            } else if (root.get("clarificationId") != null || root.get("question") != null
-                    || root.get("selectionMode") != null || root.get("options") != null
-                    || root.get("allowFreeText") != null || root.get("candidateKind") != null || root.get("candidateIntent") != null
-                    || root.get("pendingMentions") != null) {
-                throw new BusinessException(ErrorCode.CONFLICT, "事实卡片不能携带候选字段");
-            }
-            return new ParsedCard(root.toString(), cardId, revision.asLong(), cardType, optionsJson, candidateIntent, pendingMentionsJson);
+            JsonNode normalized = JSON.readTree(normalizedJson);
+            validateGenericCardEnvelope(normalized, cardType);
+            String cardId = requiredText(normalized, "cardId", 128);
+            long revision = normalized.path("revision").asLong();
+            return new ParsedCard(normalized.toString(), cardId, revision, cardType, null, null, null);
         } catch (BusinessException exception) {
             throw exception;
         } catch (Exception exception) {
             throw new BusinessException(ErrorCode.CONFLICT, "卡片内容无效，请重新查询");
         }
+    }
+
+    private ParsedCard parseClarificationCard(JsonNode root) {
+        java.util.Set<String> allowed = new java.util.HashSet<>(java.util.Set.of(
+                "cardId", "revision", "cardType", "resultCount", "truncated",
+                "outcome", "queriedAt", "rows", "status", "clarificationId", "question",
+                "selectionMode", "options", "allowFreeText", "candidateKind", "candidateIntent", "pendingMentions"));
+        java.util.Set<String> actual = new java.util.HashSet<>();
+        root.propertyNames().forEach(actual::add);
+        boolean hasStatus = actual.remove("status");
+        allowed.remove("status");
+        if (!actual.contains("pendingMentions")) allowed.remove("pendingMentions");
+        if (!allowed.equals(actual)) throw new BusinessException(ErrorCode.CONFLICT, "卡片字段不受支持，请重新查询");
+        if (hasStatus && (root.get("status") == null || !root.get("status").isTextual()
+                || root.get("status").asText().length() > 32)) {
+            throw new BusinessException(ErrorCode.CONFLICT, "卡片状态无效，请重新查询");
+        }
+        String cardId = requiredText(root, "cardId", 128);
+        JsonNode revisionNode = root.get("revision");
+        if (revisionNode == null || !revisionNode.isIntegralNumber() || revisionNode.asLong() < 0) {
+            throw new BusinessException(ErrorCode.CONFLICT, "卡片修订号无效，请重新查询");
+        }
+        requireNumber(root, "resultCount", 20);
+        if (root.get("truncated") == null || !root.get("truncated").isBoolean()) {
+            throw new BusinessException(ErrorCode.CONFLICT, "卡片结果无效，请重新查询");
+        }
+        String outcome = requiredText(root, "outcome", 32);
+        if (!"CLARIFICATION".equals(outcome) || root.get("rows") == null || !root.get("rows").isArray()
+                || root.get("options") == null || !root.get("options").isArray()
+                || root.get("options").size() < 1 || root.get("options").size() > 20) {
+            throw new BusinessException(ErrorCode.CONFLICT, "候选卡片无效，请重新查询");
+        }
+        requiredText(root, "clarificationId", 128);
+        requiredText(root, "question", 256);
+        requiredText(root, "selectionMode", 32);
+        AgentTaskPolicy policy = adapterRegistry.taskPolicyFor(requiredText(root, "candidateIntent", 32)).orElse(null);
+        if (policy == null) throw new BusinessException(ErrorCode.CONFLICT, "候选任务类型无效，请重新查询");
+        AgentTaskPolicy.CandidateCard candidate = policy.validateCandidateCard(root.toString())
+                .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "候选卡片无效，请重新查询"));
+        return new ParsedCard(root.toString(), cardId, revisionNode.asLong(), "clarification-choice",
+                candidate.optionsJson(), candidate.candidateIntent(), candidate.pendingMentionsJson());
+    }
+
+    private void validateGenericCardEnvelope(JsonNode root, String expectedCardType) {
+        if (root == null || !root.isObject() || containsForbiddenCardField(root)
+                || !expectedCardType.equals(requiredText(root, "cardType", 40))) {
+            throw new BusinessException(ErrorCode.CONFLICT, "卡片结果无效，请重新查询");
+        }
+        requiredText(root, "cardId", 128);
+        JsonNode revision = root.get("revision");
+        if (revision == null || !revision.isIntegralNumber() || revision.asLong() < 0) {
+            throw new BusinessException(ErrorCode.CONFLICT, "卡片修订号无效，请重新查询");
+        }
+        JsonNode status = root.get("status");
+        if (status != null && (!status.isTextual() || status.asText().length() > 32)) {
+            throw new BusinessException(ErrorCode.CONFLICT, "卡片状态无效，请重新查询");
+        }
+    }
+
+    private boolean containsForbiddenCardField(JsonNode node) {
+        if (node == null) return false;
+        if (node.isObject()) {
+            if (node.has("artifactId") || node.has("privatePayload")) return true;
+            for (String field : node.propertyNames()) if (containsForbiddenCardField(node.get(field))) return true;
+        } else if (node.isArray()) {
+            for (JsonNode child : node) if (containsForbiddenCardField(child)) return true;
+        }
+        return false;
     }
 
     private ParsedCard parseKnowledgeCard(JsonNode root) {
@@ -957,7 +975,7 @@ public class AgentConversationService {
                 }
                 if (execution.hasToolFailure()) {
                     String toolCode = execution.toolErrorCode();
-                    String toolMessage = toolFailureMessage(toolCode, execution.actor());
+                    String toolMessage = toolFailureMessage(execution.toolErrorToolName(), toolCode, execution.actor());
                     AgentStore.RetryPlan retryPlan = buildRetryPlan(run, execution,
                             execution.successfulToolCount(), taskIntent(execution));
                     closeModelObservation(modelObservation, new AiObservationRecorder.Terminal(
@@ -1179,7 +1197,7 @@ public class AgentConversationService {
             int totalSuccess = plan.successfulCount() + execution.successfulToolCount();
             AgentStore.RetryPlan nextPlan = buildRetryPlan(run, execution, totalSuccess, plan.taskIntent());
             String code = execution.toolErrorCode();
-            String message = totalSuccess > 0 ? "部分查询仍未完成，请稍后重试" : toolFailureMessage(code, execution.actor());
+            String message = totalSuccess > 0 ? "部分查询仍未完成，请稍后重试" : toolFailureMessage(execution.toolErrorToolName(), code, execution.actor());
             boolean partial = totalSuccess > 0;
             try {
                 boolean closed = partial
@@ -1436,7 +1454,7 @@ public class AgentConversationService {
             if (root == null || !"ACTIVE_CATALOG".equals(root.path("mode").asText())) return null;
             JsonNode documents = root.get("documents");
             int count = documents != null && documents.isArray() ? documents.size() : 0;
-            return count == 0 ? "当前系统没有可查看的仓储资料" : "当前系统收录" + count + "份可查看的仓储资料";
+            return count == 0 ? "当前系统没有可查看的知识资料" : "当前系统收录" + count + "份可查看的知识资料";
         } catch (RuntimeException ignored) {
             return null;
         }
@@ -1999,8 +2017,8 @@ public class AgentConversationService {
         return AgentErrorCode.MODEL_UNAVAILABLE.getCode();
     }
 
-    private String toolFailureMessage(String code, AgentRunContext actor) {
-        String adapterMessage = adapterRegistry.failureMessage(actor, code).orElse(null);
+    private String toolFailureMessage(String toolName, String code, AgentRunContext actor) {
+        String adapterMessage = adapterRegistry.failureMessage(toolName, code).orElse(null);
         if (adapterMessage != null) return adapterMessage;
         if (code != null) {
             for (AgentErrorCode candidate : AgentErrorCode.values()) {

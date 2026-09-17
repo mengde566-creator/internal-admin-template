@@ -4,6 +4,7 @@ import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient;
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.RetrievalEmbedding;
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.SparseEntry;
+import com.internaladmin.module.knowledge.api.KnowledgeContentPack;
 import com.internaladmin.module.knowledge.mapper.KnowledgeMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -11,6 +12,7 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionException;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionStatus;
+import org.springframework.core.io.ByteArrayResource;
 
 import java.util.List;
 import java.util.HashMap;
@@ -29,8 +31,104 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import org.mockito.ArgumentCaptor;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 
 class KnowledgeServiceImportTest {
+
+    @Test
+    void importSuccessEmitsStartedAndCompletedLifecycleEvents() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        when(embedding.embedDocuments(anyList())).thenAnswer(invocation -> {
+            List<String> batch = invocation.getArgument(0);
+            return batch.stream().map(ignored -> embedding()).toList();
+        });
+        KnowledgeService service = service(mapper, embedding);
+        ListAppender<ILoggingEvent> appender = attachImportAppender();
+        try {
+            service.importSyntheticSamples();
+            List<String> messages = appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+            assertThat(messages.stream().filter(value -> value.contains("knowledge_import stage=started")).count())
+                    .isEqualTo(1);
+            assertThat(messages.stream().filter(value -> value.contains("knowledge_import stage=completed")).count())
+                    .isEqualTo(1);
+            assertThat(messages.stream().filter(value -> value.contains("knowledge_import stage=failed")).count())
+                    .isZero();
+            assertThat(messages).noneMatch(value -> value.contains("warehouse-rules-v1") || value.contains("pack.md"));
+        } finally {
+            detachImportAppender(appender);
+        }
+    }
+
+    @Test
+    void importFailureEmitsSanitizedFailedLifecycleEvent() {
+        KnowledgeMapper mapper = mock(KnowledgeMapper.class);
+        KnowledgeRetrievalEmbeddingClient embedding = mock(KnowledgeRetrievalEmbeddingClient.class);
+        when(embedding.embedDocuments(anyList())).thenThrow(new IllegalStateException("AI_EMBEDDING_UNAVAILABLE: provider body"));
+        KnowledgeService service = service(mapper, embedding);
+        ListAppender<ILoggingEvent> appender = attachImportAppender();
+        try {
+            assertThatThrownBy(service::importSyntheticSamples).hasMessageContaining("AI_EMBEDDING_UNAVAILABLE");
+            List<String> messages = appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+            assertThat(messages.stream().filter(value -> value.contains("knowledge_import stage=started")).count())
+                    .isEqualTo(1);
+            assertThat(messages.stream().filter(value -> value.contains("knowledge_import stage=completed")).count())
+                    .isZero();
+            assertThat(messages.stream().filter(value -> value.contains("knowledge_import stage=failed")).count())
+                    .isEqualTo(1);
+            assertThat(messages).anyMatch(value -> value.contains("knowledge_import stage=failed")
+                    && value.contains("errorCode=AI_EMBEDDING_UNAVAILABLE"));
+            assertThat(messages).noneMatch(value -> value.contains("provider body") || value.contains("pack.md"));
+        } finally {
+            detachImportAppender(appender);
+        }
+    }
+
+    @Test
+    void parseFailureEmitsExactlyOneStartedAndFailedLifecycleEvent() {
+        byte[] empty = new byte[0];
+        KnowledgeContentPack pack = new KnowledgeContentPack() {
+            @Override public String packId() { return "parse-failure-pack"; }
+            @Override public String packVersion() { return "v1"; }
+            @Override public String compatibilityVersion() { return KnowledgeContentPackRegistry.COMPATIBILITY_VERSION; }
+            @Override public List<Document> documents() {
+                return List.of(new Document("parse-failure", "v1", "Parse failure", "ACTIVE", 1,
+                        new ByteArrayResource(empty), sha256(empty)));
+            }
+        };
+        KnowledgeService service = service(mock(KnowledgeMapper.class), mock(KnowledgeRetrievalEmbeddingClient.class),
+                new KnowledgeContentPackRegistry(List.of(pack)));
+        ListAppender<ILoggingEvent> appender = attachImportAppender();
+        try {
+            assertThatThrownBy(service::importSyntheticSamples).hasMessageContaining("KNOWLEDGE_DRAFT_EMPTY");
+            List<String> messages = appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+            assertThat(messages.stream().filter(value -> value.contains("knowledge_import stage=started")).count())
+                    .isEqualTo(1);
+            assertThat(messages.stream().filter(value -> value.contains("knowledge_import stage=completed")).count())
+                    .isZero();
+            assertThat(messages.stream().filter(value -> value.contains("knowledge_import stage=failed")).count())
+                    .isEqualTo(1);
+            assertThat(messages).anyMatch(value -> value.contains("errorCode=KNOWLEDGE_DRAFT_EMPTY"));
+        } finally {
+            detachImportAppender(appender);
+        }
+    }
+
+    private static ListAppender<ILoggingEvent> attachImportAppender() {
+        Logger logger = (Logger) LoggerFactory.getLogger(KnowledgeService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        return appender;
+    }
+
+    private static void detachImportAppender(ListAppender<ILoggingEvent> appender) {
+        ((Logger) LoggerFactory.getLogger(KnowledgeService.class)).detachAppender(appender);
+        appender.stop();
+    }
 
     @Test
     void fixedCatalogIsLargeEnoughToExerciseMultipleProviderBatches() {
@@ -171,10 +269,29 @@ class KnowledgeServiceImportTest {
 
     private static KnowledgeService service(KnowledgeMapper mapper,
                                              KnowledgeRetrievalEmbeddingClient embedding) {
+        return service(mapper, embedding,
+                new KnowledgeContentPackRegistry(List.of(SyntheticKnowledgeCatalog.pack())));
+    }
+
+    private static KnowledgeService service(KnowledgeMapper mapper,
+                                             KnowledgeRetrievalEmbeddingClient embedding,
+                                             KnowledgeContentPackRegistry registry) {
         AiProperties properties = new AiProperties();
         properties.getEmbedding().getQwen().setDimensions(1024);
         return new KnowledgeService(properties, embedding, mapper,
-                new NoopTransactionManager());
+                new NoopTransactionManager(),
+                registry);
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value);
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte current : digest) result.append(String.format("%02x", current));
+            return result.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new AssertionError(exception);
+        }
     }
 
     private static RetrievalEmbedding embedding() {
