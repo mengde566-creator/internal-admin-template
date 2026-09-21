@@ -9,6 +9,11 @@ DATABASE_TEMP_DIR=""
 DATABASE_PID=""
 DATABASE_PORT=18080
 DATABASE_STARTUP_VALIDATED=0
+# surefire 报告会跨运行保留。这个标记记录本次门禁的开始时间，交给 assert-surefire-ran.sh
+# 判断报告是不是本次运行产生的——否则测试类被改名后，旧报告会让门禁静默通过。
+QUALITY_RUN_MARKER="${TMPDIR:-/tmp}/internal-admin-quality-run.marker"
+: >"$QUALITY_RUN_MARKER"
+export QUALITY_RUN_MARKER
 
 usage() {
   echo "用法：$0 --no-database|--database" >&2
@@ -84,15 +89,20 @@ run_no_database() {
   (cd backend && ./mvnw -Djava.version=25 -pl apps/app-server -am \
     -Dtest=NoDatabaseSessionSecurityTest,NoDatabaseSessionSecurityProductionTest \
     -Dsurefire.failIfNoSpecifiedTests=false test)
+  # 选择器零匹配时 Maven 不报错（-am 所必需），因此再核验产物：没有报告就不算跑过。
+  bash "$ROOT/scripts/assert-surefire-ran.sh" NoDatabaseSessionSecurityTest NoDatabaseSessionSecurityProductionTest
   echo "==> [3/9] 后端：无数据库文件存储门禁"
   (cd backend && ./mvnw -Djava.version=25 -pl modules/module-file -am \
     -Dtest=FileStorageServiceTest \
     -Dsurefire.failIfNoSpecifiedTests=false test)
+  bash "$ROOT/scripts/assert-surefire-ran.sh" FileStorageServiceTest
   echo "==> [4/9] 后端：AI 模块单元测试"
   (cd backend && ./mvnw -Djava.version=25 \
     -pl modules/module-agent,modules/module-knowledge,modules/module-ai-observability,modules/module-agent-warehouse-adapter \
     -am test)
+  bash "$ROOT/scripts/assert-surefire-ran.sh" AgentConversationServiceTest KnowledgeServiceSearchTest KnowledgeToolProviderTest WarehouseInventoryToolProviderTest
   echo "    未执行：8 个 *IT（需要 Docker、隔离 PostgreSQL 或真实 Provider）不在本层内，必须显式调用。"
+  echo "    其中用户场景真跑层请用固定入口 ./scripts/scenario-gate.sh（需要应用在跑）。"
   echo "    真实链、未执行项与已知缺陷见 docs/planning/KNOWN_DEFECTS.md、docs/planning/USER_SCENARIO_TEST_SYSTEM.md §8.0。"
   echo "==> [5/9] 后端：OpenAPI 无数据库漂移检查"
   "$ROOT/scripts/openapi-contract.sh" check
@@ -260,12 +270,15 @@ run_database() {
   echo "==> [1/4] 后端：IAM 隔离 SQLite 集成测试"
   (cd backend && ./mvnw -Djava.version=25 -pl apps/app-server -am \
     -Dtest=IamFlowTest -Dsurefire.failIfNoSpecifiedTests=false test)
+  bash "$ROOT/scripts/assert-surefire-ran.sh" IamFlowTest
   echo "==> [2/4] 后端：主页隔离 SQLite 集成测试"
   (cd backend && ./mvnw -Djava.version=25 -pl apps/app-server -am \
     -Dtest=SiteFlowTest -Dsurefire.failIfNoSpecifiedTests=false test)
+  bash "$ROOT/scripts/assert-surefire-ran.sh" SiteFlowTest
   echo "==> [3/4] 后端：运行时 OpenAPI 隔离 SQLite 集成测试"
   (cd backend && ./mvnw -Djava.version=25 -pl apps/app-server -am \
     -Dtest=OpenApiContractTest -Dsurefire.failIfNoSpecifiedTests=false test)
+  bash "$ROOT/scripts/assert-surefire-ran.sh" OpenApiContractTest
   run_database_startup_check
   echo "==> 隔离数据库质量层全部通过"
 }

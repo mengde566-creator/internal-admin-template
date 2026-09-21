@@ -68,5 +68,6 @@
 ## 6. 与质量门禁的关系
 
 - `scripts/quality.sh --no-database` 负责不启动应用、不连接数据库的静态与回归验证；`scripts/quality.sh --database` 在其基础上负责隔离 SQLite 集成、空库迁移启动与构建验证。两种模式均使用 Maven Wrapper，前端与 OpenAPI 工具依赖须预先以 `npm ci` 安装；
+- `scripts/scenario-gate.sh` 负责**真跑层**（用户场景层）：它驱动正在运行的应用，走正式 HTTP 接口并真实调用模型 Provider，因此只在完成一个功能块之后整层跑一次。前置：应用在跑（`scripts/dev.sh start`）+ 提供 `SCENARIO_ADMIN_PASSWORD`（可写在被 `.gitignore` 忽略的 `.env.local` 中）。它按 `*ScenarioIT` 约定选择测试类，跑前健康检查、跑后核验**本次运行产生的**报告，选择器零匹配或被测类被跳过都判失败；
 - `scripts/dev.sh` 负责"运行时验证"（依赖/启动/健康）；
 - **两者一起构成落地验证**：quality 绿 + dev status 绿，才能声明"可交付"。
