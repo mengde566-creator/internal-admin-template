@@ -1,13 +1,13 @@
 {
   "datasetVersion": "warehouse-agent-evaluation-v1",
-  "datasetSha256": "895bedc86817c98d4cdd9243f12d3a2ea7211cda2b1236dac2aad2c624c90a51",
+  "datasetSha256": "0bff9ea55e6abd38b136c977190161362ba43ff0a94cbb62d7f48151fb67714a",
   "manifestVersion": "1",
   "resources": [
-    {"path":"evaluation/warehouse/warehouse-recall-evaluation-v1.json","sha256":"d0ea13cad475e18878636a410702f3dba2af6c9280f60d4c90c08e4d7715d918","responsibility":"warehouse recall"},
-    {"path":"evaluation/warehouse/warehouse-embedding-recall-baseline-v1.json","sha256":"95a20b109713db2cb0e68f6ab1d0ed93d81853c3d42d17dac2895750e507f149","responsibility":"warehouse embedding baseline"},
-    {"path":"evaluation/warehouse/knowledge-query-evaluation-v1.json","sha256":"eee5fda41a540db38bf254af185987049d79cb7fda18c7449e33b0c8870084e9","responsibility":"knowledge recall"},
-    {"path":"evaluation/warehouse/knowledge-dashscope-densesparse-baseline-v1.json","sha256":"a5f72f72201e913cdc2dee0ac983720eb36fdfa9e8b37dfadcda9a835b5d9b57","responsibility":"knowledge embedding baseline"},
-    {"path":"evaluation/warehouse/agent-behavior-exception-evaluation-v1.json","sha256":"895bedc86817c98d4cdd9243f12d3a2ea7211cda2b1236dac2aad2c624c90a51","responsibility":"agent behavior and exception fixtures"}
+    {"path":"evaluation/warehouse/warehouse-recall-evaluation-v1.json","sha256":"f9ada0a004b47d0e480665833188e47779340bfea6eb66a53ba7d149637c18df","responsibility":"warehouse recall"},
+    {"path":"evaluation/warehouse/warehouse-embedding-recall-baseline-v1.json","sha256":"7457fde126d089781b582b1cd6efcb511b4a4235a48d891ace47a8a5980aab8c","responsibility":"warehouse embedding baseline"},
+    {"path":"evaluation/warehouse/knowledge-query-evaluation-v1.json","sha256":"70295274478d59198c606f9820707ea8bbdb2f9b26a507b8baa2f26c33d007ef","responsibility":"knowledge recall"},
+    {"path":"evaluation/warehouse/knowledge-dashscope-densesparse-baseline-v1.json","sha256":"543c22012cf7159644a0babdb9b42b1600c2221e41ce91205bc964311d5ee903","responsibility":"knowledge embedding baseline"},
+    {"path":"evaluation/warehouse/agent-behavior-exception-evaluation-v1.json","sha256":"0bff9ea55e6abd38b136c977190161362ba43ff0a94cbb62d7f48151fb67714a","responsibility":"agent behavior and exception fixtures"}
   ],
   "categories":["OUTER_LANGUAGE","MULTI_TURN_REPAIR","BUSINESS_KNOWLEDGE","USER_ANOMALY","AUTH_ATTACK","INFRA_MODEL"],
   "caseCount":24,
