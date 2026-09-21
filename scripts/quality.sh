@@ -78,25 +78,32 @@ check_prerequisites() {
 
 run_no_database() {
   check_prerequisites
-  echo "==> [1/8] 模块边界：生产源码依赖与权限命名空间"
+  echo "==> [1/9] 模块边界：生产源码依赖与权限命名空间"
   bash "$ROOT/scripts/check-module-boundaries.sh"
-  echo "==> [2/8] 后端：无数据库会话安全门禁"
+  echo "==> [2/9] 后端：无数据库会话安全门禁"
   (cd backend && ./mvnw -Djava.version=25 -pl apps/app-server -am \
     -Dtest=NoDatabaseSessionSecurityTest,NoDatabaseSessionSecurityProductionTest \
     -Dsurefire.failIfNoSpecifiedTests=false test)
-  echo "==> [3/8] 后端：无数据库文件存储门禁"
+  echo "==> [3/9] 后端：无数据库文件存储门禁"
   (cd backend && ./mvnw -Djava.version=25 -pl modules/module-file -am \
     -Dtest=FileStorageServiceTest \
     -Dsurefire.failIfNoSpecifiedTests=false test)
-  echo "==> [4/8] 后端：OpenAPI 无数据库漂移检查"
+  echo "==> [4/9] 后端：AI 模块单元测试"
+  (cd backend && ./mvnw -Djava.version=25 \
+    -pl modules/module-agent,modules/module-knowledge,modules/module-ai-observability,modules/module-agent-warehouse-adapter \
+    -am test)
+  echo "    未执行：8 个 *IT（需要 Docker、隔离 PostgreSQL 或真实 Provider）不在本层内，必须显式调用。"
+  echo "    真实链、未执行项与已知缺陷见 docs/planning/KNOWN_DEFECTS.md、docs/planning/USER_SCENARIO_TEST_SYSTEM.md §8.0。"
+  echo "==> [5/9] 后端：OpenAPI 无数据库漂移检查"
   "$ROOT/scripts/openapi-contract.sh" check
-  echo "==> [5/8] 前端：Vitest"
+  echo "==> [6/9] 前端：Vitest"
   (cd frontend && npm run test:unit)
-  echo "==> [6/8] 前端：Playwright 用例清单"
+  echo "==> [7/9] 前端：Playwright 用例清单"
   (cd frontend && npm run test:e2e -- --list)
-  echo "==> [7/8] 前端：TypeScript"
+  echo "    未执行：真实浏览器链不在本层执行，需显式提供 E2E_FRONTEND_URL 后单独运行。"
+  echo "==> [8/9] 前端：TypeScript"
   (cd frontend && npm run typecheck)
-  echo "==> [8/8] 前端：构建"
+  echo "==> [9/9] 前端：构建"
   (cd frontend && npm run build)
   echo "==> 无数据库质量层全部通过"
 }

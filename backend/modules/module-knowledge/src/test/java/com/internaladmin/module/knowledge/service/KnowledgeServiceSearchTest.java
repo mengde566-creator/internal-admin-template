@@ -2,6 +2,7 @@ package com.internaladmin.module.knowledge.service;
 
 import com.internaladmin.module.knowledge.api.AiProperties;
 import com.internaladmin.module.knowledge.api.KnowledgeQueryApi;
+import com.internaladmin.module.knowledge.api.KnowledgeContentPack;
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient;
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.RetrievalEmbedding;
 import com.internaladmin.module.knowledge.api.KnowledgeRetrievalEmbeddingClient.SparseEntry;
@@ -10,6 +11,9 @@ import com.pgvector.PGvector;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import org.springframework.core.io.ByteArrayResource;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.List;
 
@@ -31,7 +35,7 @@ class KnowledgeServiceSearchTest {
     void queryUsesOneQueryEmbeddingAndBoundedActiveJoin() {
         KnowledgeMapper mapper = mock(KnowledgeMapper.class);
         KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
-        when(client.embedQuery("出库前要检查什么")).thenReturn(embedding(1));
+        when(client.embedQuery(eq("出库前要检查什么"), anyString())).thenReturn(embedding(1));
         when(mapper.findActiveSparseChunks(any(), eq(KnowledgeService.SPARSE_SIMILARITY_THRESHOLD),
                 eq(KnowledgeService.SEARCH_TOP_K + 1),
                 eq(KnowledgeService.EMBEDDING_PROFILE), eq(1024))).thenReturn(List.of(
@@ -48,7 +52,7 @@ class KnowledgeServiceSearchTest {
             assertThat(citation.versionCode()).isEqualTo("v2");
             assertThat(citation.section()).isEqualTo("出库校验");
         });
-        verify(client).embedQuery("出库前要检查什么");
+        verify(client).embedQuery(eq("出库前要检查什么"), anyString());
         verify(mapper).findActiveSparseChunks(any(), eq(KnowledgeService.SPARSE_SIMILARITY_THRESHOLD),
                 eq(KnowledgeService.SEARCH_TOP_K + 1),
                 eq(KnowledgeService.EMBEDDING_PROFILE), eq(1024));
@@ -60,7 +64,7 @@ class KnowledgeServiceSearchTest {
     void emptyBoundedRowsAreSuccessfulNoEvidence() {
         KnowledgeMapper mapper = mock(KnowledgeMapper.class);
         KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
-        when(client.embedQuery(anyString())).thenReturn(embedding(1));
+        when(client.embedQuery(anyString(), anyString())).thenReturn(embedding(1));
         when(mapper.findActiveSparseChunks(any(), anyDouble(), anyInt(), anyString(), anyInt()))
                 .thenReturn(List.of());
         when(mapper.findActiveDenseChunks(any(PGvector.class), anyDouble(), anyInt(), anyString(), anyInt()))
@@ -74,7 +78,7 @@ class KnowledgeServiceSearchTest {
     void sparseMissFallsBackToDenseExactlyOnce() {
         KnowledgeMapper mapper = mock(KnowledgeMapper.class);
         KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
-        when(client.embedQuery(anyString())).thenReturn(embedding(1));
+        when(client.embedQuery(anyString(), anyString())).thenReturn(embedding(1));
         when(mapper.findActiveSparseChunks(any(), anyDouble(), anyInt(), anyString(), anyInt()))
                 .thenReturn(List.of());
         when(mapper.findActiveDenseChunks(any(PGvector.class), eq(KnowledgeService.SIMILARITY_THRESHOLD),
@@ -94,7 +98,7 @@ class KnowledgeServiceSearchTest {
     void sparseFailureIsUnavailableAndNeverMasqueradesAsDense() {
         KnowledgeMapper mapper = mock(KnowledgeMapper.class);
         KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
-        when(client.embedQuery(anyString())).thenReturn(embedding(1));
+        when(client.embedQuery(anyString(), anyString())).thenReturn(embedding(1));
         when(mapper.findActiveSparseChunks(any(), anyDouble(), anyInt(), anyString(), anyInt()))
                 .thenThrow(new IllegalStateException("sparse database unavailable"));
 
@@ -108,7 +112,7 @@ class KnowledgeServiceSearchTest {
     void apiLimitOnlyControlsReturnedCitationsAndReportsRealHasMore() {
         KnowledgeMapper mapper = mock(KnowledgeMapper.class);
         KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
-        when(client.embedQuery(anyString())).thenReturn(embedding(1));
+        when(client.embedQuery(anyString(), anyString())).thenReturn(embedding(1));
         List<KnowledgeMapper.SearchRow> rows = List.of(
                 new KnowledgeMapper.SearchRow("rules", "规则", "v2", null, null, "# 一\n\n甲", .9d, 1),
                 new KnowledgeMapper.SearchRow("codes", "编码", "v2", null, null, "# 二\n\n乙", .8d, 1),
@@ -127,7 +131,7 @@ class KnowledgeServiceSearchTest {
     void embeddingOrDatabaseFailureIsUnavailable() {
         KnowledgeMapper mapper = mock(KnowledgeMapper.class);
         KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
-        when(client.embedQuery(anyString())).thenThrow(new IllegalStateException("AI_EMBEDDING_UNAVAILABLE"));
+        when(client.embedQuery(anyString(), anyString())).thenThrow(new IllegalStateException("AI_EMBEDDING_UNAVAILABLE"));
 
         KnowledgeQueryApi.Result result = service(mapper, client).query("仓储", 5);
 
@@ -140,7 +144,7 @@ class KnowledgeServiceSearchTest {
     void invalidSearchRowIsDroppedWithoutLeakingCitation() {
         KnowledgeMapper mapper = mock(KnowledgeMapper.class);
         KnowledgeRetrievalEmbeddingClient client = mock(KnowledgeRetrievalEmbeddingClient.class);
-        when(client.embedQuery(anyString())).thenReturn(embedding(1));
+        when(client.embedQuery(anyString(), anyString())).thenReturn(embedding(1));
         when(mapper.findActiveSparseChunks(any(), anyDouble(), anyInt(), anyString(), anyInt()))
                 .thenReturn(List.of());
         when(mapper.findActiveDenseChunks(any(PGvector.class), anyDouble(), anyInt(), anyString(), anyInt()))
@@ -191,7 +195,15 @@ class KnowledgeServiceSearchTest {
                 new KnowledgeMapper.ActiveDocumentRow("item-codes", "物品编码", "v2", now, now, true),
                 new KnowledgeMapper.ActiveDocumentRow("warehouse-rules", "仓储操作规则", "v2", now, now, true)));
 
-        assertThat(service(mapper, client).listActiveDocuments().documents())
+        // 目录顺序由内容包注册序（文档 order）决定，因此必须提供注册表；
+        // 空注册表只能落到"按文档编码"的兜底顺序，测不到这条不变量。
+        KnowledgeContentPackRegistry registry = new KnowledgeContentPackRegistry(List.of(
+                pack("pack-rules", "warehouse-rules", 1),
+                pack("pack-items", "item-codes", 2),
+                pack("pack-codes", "warehouse-codes", 3),
+                pack("pack-policy", "low-stock-policy", 4)));
+
+        assertThat(service(mapper, client, registry).listActiveDocuments().documents())
                 .extracting(KnowledgeQueryApi.ActiveDocument::documentCode)
                 .containsExactly("warehouse-rules", "item-codes", "warehouse-codes", "low-stock-policy");
         verifyNoInteractions(client);
@@ -261,6 +273,36 @@ class KnowledgeServiceSearchTest {
 
     private static KnowledgeService service(KnowledgeMapper mapper, KnowledgeRetrievalEmbeddingClient client) {
         return new KnowledgeService(new AiProperties(), client, mapper, mock(PlatformTransactionManager.class));
+    }
+
+
+    private static KnowledgeService service(KnowledgeMapper mapper, KnowledgeRetrievalEmbeddingClient client,
+                                            KnowledgeContentPackRegistry registry) {
+        return new KnowledgeService(new AiProperties(), client, mapper, mock(PlatformTransactionManager.class), registry);
+    }
+
+    private static KnowledgeContentPack pack(String id, String documentCode, int order) {
+        byte[] bytes = "# Heading\n\nBody".getBytes(StandardCharsets.UTF_8);
+        return new KnowledgeContentPack() {
+            @Override public String packId() { return id; }
+            @Override public String packVersion() { return id + "-v1"; }
+            @Override public String compatibilityVersion() { return KnowledgeContentPackRegistry.COMPATIBILITY_VERSION; }
+            @Override public List<Document> documents() {
+                return List.of(new Document(documentCode, "v2", documentCode, "ACTIVE", order,
+                        new ByteArrayResource(bytes), sha256(bytes)));
+            }
+        };
+    }
+
+    private static String sha256(byte[] bytes) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes);
+            StringBuilder result = new StringBuilder(64);
+            for (byte current : digest) result.append(String.format("%02x", current));
+            return result.toString();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 
     private static RetrievalEmbedding embedding(int index) {

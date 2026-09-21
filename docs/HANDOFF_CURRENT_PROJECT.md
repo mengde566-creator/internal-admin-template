@@ -132,7 +132,7 @@ E2E_FRONTEND_URL=http://127.0.0.1:5173 npm exec playwright test e2e/warehouse-ag
 
 本轮三件完成后，再回到下面原有的 07D 收口序列。
 
-**测试体系当前阶段（2026-09-21）**：**场景层已完成一个阶段**——话术资源 + 真实 HTTP 执行器可用（4 用例 / 10 条问法，冻结基线整轮通过且每条带 `runId`），`DEF-001`/`DEF-002`/`DEF-004` 闭环，减法完成。**以下阶段未完成，不得视为"测试体系已修好"**：快层接进 `quality.sh`（AI 四模块 48 个测试类仍不在任何门禁）、真跑层固定命令、页面层纳入收尾、覆盖铺开（68 场景中约 46 个待补）、新资源登记 manifest 哈希、RUNBOOK 命令、`DEF-005` 判定。详见 [`planning/USER_SCENARIO_TEST_SYSTEM.md`](planning/USER_SCENARIO_TEST_SYSTEM.md) §8.0。
+**测试体系当前阶段（2026-09-21）**：**场景层已完成一个阶段**——话术资源 + 真实 HTTP 执行器可用（4 用例 / 10 条问法，冻结基线整轮通过且每条带 `runId`），`DEF-001`/`DEF-002`/`DEF-004` 闭环，减法完成。**已完成（2026-09-21 补充）**：快层已接进 `quality.sh` 无数据库层第 4 步（AI 四模块单元测试，首次 51 类 / 418 用例全绿），`DEF-005` 判定为测试过期并关闭。**以下阶段仍未完成**：真跑层固定命令、页面层纳入收尾、覆盖铺开（68 场景中约 46 个待补）、新资源登记 manifest 哈希、RUNBOOK 命令、`DEF-005` 判定。详见 [`planning/USER_SCENARIO_TEST_SYSTEM.md`](planning/USER_SCENARIO_TEST_SYSTEM.md) §8.0。
 
 1. **冻结并审查 07D 差异**：确认所有未提交文件都能对应已确认 07D 目标；识别 `.agent-teams/` 等非产品产物，未经归属确认不得提交或删除。
 2. **真实澄清/恢复链**：用真实候选、一次有效 token、重复或过期 token、`FAILED_RETRYABLE` 空候选和唯一重新查询动作验收。

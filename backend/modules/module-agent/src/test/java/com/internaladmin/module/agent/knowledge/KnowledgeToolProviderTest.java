@@ -355,13 +355,16 @@ class KnowledgeToolProviderTest {
     }
 
     private AgentExecutionContext execution(boolean hasRead, String message) {
+        // 知识读取是独立权限（ai:knowledge:read），不再由 warehouse:read 隐含授予：
+        // 读路径必须显式带上它，拒绝路径（hasRead=false）保持无权限不变。
         AgentRunContext actor = new AgentRunContext(7L, 3L, false,
-                hasRead ? List.of(PermissionCodes.WAREHOUSE_READ) : List.of());
+                hasRead ? List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ) : List.of());
         return new AgentExecutionContext(actor, "run-knowledge", message, ignored -> { });
     }
 
     private AgentRunContext trueActor() {
-        return new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        return new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ));
     }
 
     private ToolContext context(AgentExecutionContext execution) {
