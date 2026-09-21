@@ -7,6 +7,8 @@
 > 关联后端：待建立
 > 关联材料：无
 
+关联设计：[`docs/planning/CUSTOMER_MANAGEMENT_MODULE_DESIGN.md`](../docs/planning/CUSTOMER_MANAGEMENT_MODULE_DESIGN.md)提供客户管理首版候选模型、场景、AI边界和待确认问题；它同样是草稿，不授权研发。
+
 ## 1. 建设顺序与目标
 
 本模块安排在仓储及仓储 AI 助手完成后启动。当前只记录业务方向，不授权开发，不提前确定页面、接口、表结构、权限点或 AI Tool。

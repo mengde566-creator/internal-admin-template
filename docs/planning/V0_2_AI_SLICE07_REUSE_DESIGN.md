@@ -1,534 +1,293 @@
-# SLICE-07 通用 AI 边界、受信工具组合与学习路径设计
+# SLICE-07 AI 模板边界收口与真实复用演进设计
 
-> 状态：已确认；07A、07B 已提交；07C 实现、公共契约校正、差异复核与当前源码运行冒烟已完成
-> 版本：0.7
-> 确认日期：2026-09-10
-> 07C细化日期：2026-09-14
-> 全计划复核日期：2026-09-15
-> 07D细化日期：2026-09-17
-> 适用范围：`module-agent`、`module-knowledge`、`module-ai-observability`、业务 Agent Adapter、前端 AI 助手及 `docs/learning/`
+> 状态：已确认（2026-09-18 重设计）
+> 版本：0.8
+> 适用范围：`module-agent`、`module-knowledge`、`module-ai-observability`、业务 Agent Adapter、前端 AI 助手与 `docs/learning/`
 > 需求依据：`REQ-V02-AI-009`、`FUN-10`、`SCN-RU-01`
-> 方向输入：`requirements/CUSTOMER_ORDER_SYSTEM.md` 为草稿，只用于检验扩展方向，不授权实现客户或订单功能
+> 当前事实：07A、07B、07C 已提交；07D 工作区已于2026-09-21通过一条当前构建、真实DeepSeek、生产Warehouse Tool、PostgreSQL、浏览器卡片与History贯通的主链，但尚未完成异常链、裁剪、学习文档和提交
+> 当前验收边界：旧绿色证据仍无验收权重；继续按[`AI_TEST_SYSTEM_REPAIR_PLAN.md`](AI_TEST_SYSTEM_REPAIR_PLAN.md)完成真实澄清、Provider失败、Tool失败、取消和重试，再进行临时派生裁剪与最终收口
+> 方向边界：客户模块是后续第二个真实消费者，订单模块用于再验证；两者需求尚未确认，不授权在07实现
 
-## 1. 定位与完成结论
+## 1. 重新设计后的核心结论
 
-SLICE-07 的目标不是建设独立 AI 平台、插件市场或通用工作流，而是把当前仓储 Agent 纵链整理为一套**生产导向、可裁剪、可组合、可学习的全栈示例模板**。
+SLICE-07 不再承担“证明通用多业务 Agent 已完成”的目标，也不再用测试 Adapter、无生产调用的 ToolArtifact 或预设客户/订单流程代替真实复用证据。
 
-07 必须同时证明三件事：
+07 的目标收敛为：
 
-1. **可裁剪**：移除仓储 Adapter 后，通用 Agent、Knowledge、Observability 及通用前端壳不保留仓储领域代码、权限、资源、数据表、卡片或路由依赖，并能构建和明确表达“当前没有业务 AI 能力”。
-2. **可组合**：多个编译期 Adapter 可以注册；一个工具产生的服务端受信结果可以成为后续工具的输入，形成有依赖关系的顺序只读链，而不是把多个互不相关的查询结果简单拼接。
-3. **可学习**：开发者可以从 `docs/learning/` 按真实场景找到架构意图、代码入口、扩展步骤、验证方法和生产边界，不需要先通读全部工程。
+1. **边界清楚**：通用 Agent、Knowledge、Observability 和前端助手壳不包含仓储领域规则；仓储能力由仓储 Adapter 与仓储前端资产拥有。
+2. **可以裁剪**：移除仓储 AI Adapter、仓储 AI 前端资产及其装配后，通用 AI 模块仍可构建，并明确表达“当前没有可用业务助手”。
+3. **可以学习**：开发者能够沿真实代码理解一次请求、一个业务 Adapter、知识与评测资产、前端卡片和裁剪方法。
+4. **仓储不回归**：既有仓储提问、知识引用、澄清、失败恢复、取消、复制和受控跳转继续按真实用户链工作。
 
-07 完成后只能声明：
+07 完成后只允许声明：
 
-> 通用 AI 边界已经通过仓储裁剪、测试 Adapter 注册和受信依赖链验证，项目按可复用边界设计。
+> 项目已将仓储 AI 纵链整理为边界清楚、可裁剪、可学习的模板基础，并保留接入下一真实业务的窄入口。
 
-在客户、订单等第二个真实业务消费者完成前，不得声明“真实跨业务复用已经完成工程证明”。
+在客户模块完成真实接入前，禁止声明：
 
-## 2. 当前事实与根因
+- 多业务复用已经完成工程证明；
+- 跨业务工具组合已经成为生产能力；
+- 当前 Agent 已经是通用工作流、多 Agent 平台或业务中台；
+- Knowledge 已经完成多业务空间与权限隔离。
 
-07A 已在提交 `97e8326` 建立编译期 Adapter 注册并完成第一阶段边界收敛；07B 已建立 Run 内 ToolArtifact 与依赖链。2026-09-15 全计划复核确认两段主体方向保留，但实现仍有必须在07C提交前校正的公共契约偏差：业务输入校验和错误表达被跨 Adapter 聚合、卡片 payload 仍由 Core 按仓储形状解析、受信提示缺少总预算且含仓储人格化表述，以及同批多 Tool 授权分支与“每次迭代最多一个 ToolCall”互相矛盾。当前剩余事实是：
+## 2. 为什么需要降级
 
-- `module-agent` 已拥有通用 Adapter、Tool、Task Policy、Tool级Artifact注册和冲突失败入口，但业务校验、失败文案和卡片payload验证的所有权仍未完全落到实际Tool/Card所有者；
-- `AgentExecutionContext` 已是同一 Run 的服务端可信状态载体，现有 `DeepSeekToolCallingAdvisor` 与 `MixedToolCallingManager` 已使用 Spring AI 扩展点并承载Run内Artifact；后续只校正所有权与不可达分支，不重写模型循环；
-- `module-knowledge` 仍拥有仓储合成资料、目录排序、检索指令和仓储权限语义；
-- `module-ai-observability` 仍内置仓储评测资源；
-- `WarehouseAgentPanel.vue` 同时承担通用会话壳和仓储卡片、路由等业务资产；
-- 现有混合查询主要证明多个独立结果可以共存，尚未建立“A 的受信结果成为 B 的输入”的通用依赖机制。
+当前生产消费者仍只有仓储。07A、07C 解决了真实存在的领域耦合；07B 中权限重校验、失败锁、单次迭代单 ToolCall 和安全恢复也服务于当前仓储链。但 ToolArtifact 的 produce/consume 目前没有生产 Tool 调用，只在测试链中存在，因此不能证明真实跨业务组合。
 
-如果直接开发客户或订单模块，第二套业务条件会继续进入 `AgentConversationService`、`AgentStore`、Knowledge 核心和仓储前端面板，最终得到一个只能增加 `if/else` 的假通用模块。
+当前07D未提交实现还暴露出一个确定的假通过：后端真实 `FAILED_RETRYABLE` 是“已选业务对象、候选列表为空”，前端测试却构造“候选列表非空并允许重新选择”的响应；同时前端归一化丢失 `candidateKind`、`candidateIntent`。这说明继续扩大通用壳之前，必须先让前后端以同一个真实合同完成恢复链。
 
-## 3. 场景与证据边界
+成熟方案也支持这一收敛：项目继续使用 Spring AI 的单一 Tool Calling Loop；固定工作流、多 Agent、动态工具检索只在真实复杂度出现后评估，不为未来场景自建第二运行时。
 
-### 3.1 模板开发者裁剪
+## 3. 最终模块边界
 
-- 已知信息：开发者要移除仓储 AI 能力，但保留通用 Agent、Knowledge 和 Observability。
-- 操作：在临时派生副本中移除仓储 Adapter 的 reactor、app 装配、前端业务资产和专属测试/资源入口。
-- 结果：通用模块构建成功；能力发现返回空业务 Adapter；页面不显示伪造的可用助手。
-- 异常：Adapter、Tool、Artifact 类型、卡片、routeKey 或访问契约冲突时，装配失败并指出冲突标识。
+### 3.1 通用 Agent 核心
 
-### 3.2 受信依赖链
+拥有：
 
-07 使用仅存在于测试源码的两个最小 Adapter 验证：
+- Conversation、Message、Run、Task、History、Memory、取消和唯一终态；
+- 编译期 Adapter 注册、当前 Actor 能力过滤、Tool 所有权和冲突失败；
+- Spring AI Tool Calling Loop 的项目级安全约束、调用预算、失败锁与诊断事件；
+- 通用 SSE 信封、通用卡片包络和 History 恢复合同；
+- 服务端可信 Actor 传递，执行与恢复时重新解析当前身份和范围。
 
-```text
-测试 Adapter A 的 Tool
-    → 产生 TestReference/v1 ToolArtifact
-    → 模型在同一 Run 内把不透明 artifactId 交给测试 Adapter B
-    → Core 校验 Run、类型、范围、有效期和消费者声明
-    → Adapter B 解码私有载荷并产生结果
-```
+禁止包含：
 
-该链只证明注册、隔离、类型和传递机制，不模拟完整客户或订单业务，不作为第二真实业务的验收证据。
+- 仓储、客户、订单等业务字段、权限码、提示人格、错误文案和 routeKey；
+- 第二套模型循环、DAG、多 Agent Runtime 或运行时插件加载器；
+- 业务 Service、Mapper、DO 或表结构知识。
 
-### 3.3 下一真实业务的方向检验
+### 3.2 业务 Adapter
 
-以下问法只用于检验设计是否有能力承载未来场景，不进入07生产实现：
+拥有：
 
-> “李总上星期发过来的货有多少？”
+- 唯一 `adapterId`、可用性判断、受信能力说明和 Tool；
+- 业务参数校验、业务失败表达、Task Policy、候选语义和安全恢复；
+- 对业务公开 API 的调用，以及每次调用时的最终权限校验；
+- 业务卡片类型、payload 校验、复制格式和受控 routeKey；
+- 对应业务的知识内容包和评测数据集。
 
-未来合理的依赖链可能是：客户识别 → 相关订单/发货事实 → 仓储收货事实 → 综合回答。07不定义其中的“李总”“发过来”“上星期”或数量口径，也不创建客户、订单、画像、标签或对应Tool；这些语义必须由下一真实业务需求确认。
+业务 Adapter 只能依赖业务模块公开 API，不得访问业务内部 Mapper、DO 或表。
 
-## 4. 模块责任边界
+### 3.3 Knowledge 与 Observability
 
-### 4.1 通用 Agent 核心拥有
+Knowledge 核心继续拥有文档、版本、发布、切片、向量、检索和引用合同；业务内容由业务内容包静态提供。07不增加 `knowledgeSpace`、业务归属列或第二权限模型。
 
-- Conversation、Message、Run、Task 生命周期；
-- History、Memory Segment、幂等、取消和唯一终态；
-- 编译期 Adapter 注册、能力发现、当前用户可用 Tool 集合及冲突检查；
-- Spring AI Tool Calling Loop 的项目级约束、调用预算和稳定失败；
-- Run 内 ToolArtifact 注册、校验、销毁和安全结果账本；
-- 通用 SSE 信封、观测步骤生命周期及跨 Adapter 结果顺序；
-- 身份由服务端提供、模型不得提交身份/权限、业务内容不可信、首版只读等通用安全规则。
+Observability 核心继续拥有 Run、Step、Attempt、反馈、评测和保留期；业务评测数据集由业务 Provider 提供。两者都不得重新内置仓储唯一资源或源码目录回退。
 
-通用核心不得包含业务名称、业务权限码、业务 DTO、业务候选字段、业务 routeKey、业务表名、业务专用提示或错误文案。
+### 3.4 前端通用助手壳
 
-### 4.2 业务 Adapter 拥有
+通用前端拥有：
 
-- 稳定且全局唯一的 `adapterId`；
-- 当前 Actor 下的可用性判断和面向模型的受信能力说明；说明不得把整个通用助手定义成单一业务人格；
-- Tool 名称、描述、严格参数 Schema、`produces/consumes` 类型声明和执行回调；
-- 只在本 Adapter 所有的 Tool 被选中执行时，对原始用户请求及Tool参数做业务语义校验；一个Adapter不得否决其他Adapter的请求；
-- 调用业务模块公开 API，并由业务 Service 在每次调用时完成最终权限与范围校验；
-- Artifact 私有载荷的创建、类型解释和消费；
-- 业务 Task、候选、修订和安全恢复描述；
-- 业务卡片、强类型 payload、payload校验/规范化、copy 格式和 routeKey 白名单；`cardType`全局唯一，Core只校验通用卡片包络并按所有者委托业务payload；
-- 业务知识内容包及业务离线评测数据集；内容包只拥有内容、版本、确定顺序和哈希，不携带或竞争Knowledge核心的查询检索指令；
-- 本Adapter所拥有Tool的业务错误用户表达和敏感字段过滤；错误必须按实际失败Tool定位所有者，不得从全部Adapter中取第一个文案。
+- API、SSE、History、取消、消息重试、通用错误和唯一助手实例；
+- `knowledge-answer`、`clarification-choice`及未知卡片的通用展示；
+- 静态 `adapterId/cardType` 注册与装配冲突失败；
+- 脱敏的生命周期和分派诊断。
 
-Adapter 只能依赖对应业务模块公开 `api/`，不得访问业务 Mapper、DO 或表。
+业务前端资产拥有业务卡片、复制和受控页面跳转。应用组合根静态装配通用壳与业务资产；通用前端不得反向导入仓储模块。
 
-### 4.3 Knowledge 核心拥有
+07只承诺宽屏停靠、窄屏抽屉和折叠入口三项用户语义。现有 `DOCKED/OVERLAY/COMPACT/DRAWER` 可以作为内部实现状态保留，但不作为对外复用契约继续扩张。
 
-- 文档、版本、草稿、解析、发布和 ACTIVE 切换；
-- Dense/Sparse 向量、通用检索、目录、全文读取和引用契约；
-- Provider 配置与失败语义；
-- 面向短问题检索长文档的全局通用查询指令；
-- 内容包登记、文档编码、顺序、哈希和版本冲突检查。
+## 4. 07A—07C 的最终处置
 
-仓储资料、仓储排序、仓储提示、仓储权限和仓储评测语料不属于 Knowledge 核心。
+### 4.1 07A：保留并关闭
 
-### 4.4 Observability 核心拥有
+保留提交 `97e8326` 已建立的：
 
-- Run、Step、Model Iteration、Attempt、反馈、清理及结果存储；
-- 数据集注册、版本、哈希校验和执行器契约；
-- 不记录完整 Tool 参数、Tool 结果、Artifact 私有载荷、知识正文或秘密。
+- 编译期 `AgentAdapterRegistry`；
+- Adapter、Tool、Task Policy、cardType、routeKey 所有权；
+- 冲突与非法装配失败；
+- 当前 Actor 能力过滤和执行时权限重校验；
+- 仓储规则由仓储 Adapter 所有。
 
-业务评测数据集由对应 Adapter 注册；核心不得内置唯一仓储数据集。
+07A 不再扩展为动态插件、远程注册、优先级覆盖或配置驱动工作流。
 
-### 4.5 前端通用助手壳拥有
+### 4.2 07B：安全基础保留，ToolArtifact 冻结
 
-- 对话容器、SSE、History、取消、重试、加载和通用错误状态；
-- `DOCKED`、`OVERLAY`、`COMPACT`、`DRAWER` 四种现有呈现；
-- `knowledge-answer`、`clarification-choice`及未知卡片的通用展示语义；
-- 按全局唯一的 `cardType` 分派业务卡片；当前SSE卡片契约不新增`adapterId`；
-- 未注册卡片或 routeKey 的稳定版本不匹配错误。
+保留提交 `5d90a40` 中已经服务生产链的：
 
-07D将通用助手入口提升到应用级外壳；仓储页面保留快捷入口，但不再成为通用助手唯一宿主。业务前端资产仍随对应Adapter由应用组合根编译期装配，通用助手壳不反向导入业务模块，也不建立运行时插件加载器。
+- 每次模型迭代最多一个 ToolCall；
+- 首个失败后闭锁后续业务回调；
+- 相同成功调用不重复访问业务 Service；
+- `retryOfRunId`、业务 Task Policy、ResumeRef 与恢复时重新鉴权；
+- Artifact 不进入 History、Memory、SSE、日志和 Observability 的安全边界。
 
-业务前端资产拥有自己业务卡片的解析与展示、字段复制和受控路由；Core卡片不归业务资产重复登记。07不建立第二个前端应用、Node Agent Runtime或运行时前端插件加载器。
+`AgentArtifactRegistry`、`produces/consumes` 与测试双 Adapter 链标记为**实验性冻结能力**：
 
-## 5. 最小公共契约
+- 不继续扩展协议、持久化、编排或学习示例；
+- 不计入07完成价值，不作为“可组合已证明”的证据；
+- 仓储生产 Tool 不为证明框架价值机械接入；
+- 到客户 Agent 接入或 V0.2 发布前（以先到者为准）进行一次去留判断；
+- 届时若仍没有真实 typed producer/consumer，删除 Artifact 注册、声明和专属测试；若出现真实调用，再按该场景最小修正。
 
-### 5.1 Adapter 注册
+### 4.3 07C：保留并关闭
 
-每个 Adapter 至少声明：
+保留提交 `98779fb` 中已有真实消费者的：
 
-- `adapterId`；
-- `isAvailable(actor)`；
-- 单项及聚合后均有长度上限、顺序确定的 `trustedInstructions`；聚合超限必须装配或Run建立失败，不允许截断；
-- Tool 列表及其所有权；每个 Tool 分别声明自己的 `produces/consumes` 版本化 Artifact 类型；
-- Task Policy；
-- cardType 与 routeKey；
-- 可选的知识内容包和评测数据集。
+- `KnowledgeContentPack` 及仓储知识资源归位；
+- `AiEvaluationDatasetProvider` 及仓储评测资源归位；
+- 静态 Bean 装配、资源哈希、版本和打包后加载；
+- `ai:knowledge:read` 与业务事实权限分离；
+- 取消源码目录回退和跨模块测试资源引用。
 
-Adapter ID、Tool 名、Artifact 生产者、cardType、routeKey、知识文档编码或评测数据集发生冲突时必须装配失败，不静默覆盖。一个 `artifactType@version` 只允许一个明确的生产 Tool，但可以被多个明确登记的消费 Tool 使用；重复的同一 Tool 声明仍是冲突。Adapter 级 `produces/consumes` 只能作为汇总展示，不能代替具体 Tool 的授权。Core只执行全局安全、只读、身份和预算规则；业务输入校验、Tool失败文案与卡片payload合同均按已选中的所有者委托，禁止遍历全部Adapter得出业务结论。首版只使用编译期静态注册，不接受脚本、远程地址、类名字符串、任意 Map 执行协议或运行时上传。
+07C 不继续建设知识空间、Retriever 路由、Provider 市场或数据集选择页面。通用 Agent 中残余仓储字段或文案属于07D开工前的边界修正，不重开07C。
 
-### 5.2 Tool 结果顶层契约
+## 5. 07D：唯一剩余研发目标
 
-现有 Tool 四字段结果保持不变：
+07D 只完成“真实合同修正 → 通用壳迁移 → 裁剪与学习证明”三段，同一研发主责连续完成，不建立新的分片审批链。
 
-```text
-success
-code
-message
-data
-```
+### 5.1 第一段：先修正真实恢复合同
 
-ToolArtifact 引用只允许作为窄 `data` 的一部分出现，不增加第二套通用响应信封。模型不得提交用户、部门、权限、scope 指纹、数据库主键或私有业务对象。
+这是继续迁移的前置条件：
 
-### 5.3 ToolArtifact
+1. `activeClarification` 返回其持久化 Task 已有的 `adapterId`，不新增数据库字段；前端不得按文案或候选类型猜业务所有者。
+2. 前端 API 归一化完整保留 `status`、`adapterId`、`candidateKind`、`candidateIntent`、已选对象和 scope。
+3. `READY` 才允许显示候选并提交选择；`FAILED_RETRYABLE` 表示“已选择但查询未完成”，候选列表必须为空，只提供一个由所属业务资产生成的“重新查询”动作。
+4. 通用壳只承载恢复动作、状态和发送；仓储恢复话术与参数重建由仓储前端资产拥有。
+5. 删除当前不可能由生产后端产生的 `FAILED_RETRYABLE + options` fixture。
 
-ToolArtifact 是同一 Run 内、由服务端保管的不可变受信中间结果，不是数据库实体、长期Memory或工作流节点。
+为避免前后端再次各造事实，建立一份最小关键状态合同样本：由后端测试通过真实 DTO 序列化校验该样本，前端组件测试消费同一份样本。样本只覆盖 `FAILED_RETRYABLE` 这一已发生偏差，不建设通用 fixture 平台。
 
-最小元数据：
+第一段未通过时不得继续以组件测试全绿宣称07D可验收。
 
-```text
-artifactId
-runId
-producerAdapterId
-producerToolName
-producerStepId
-artifactType
-artifactTypeVersion
-scopeFingerprint
-createdAt
-expiresAt
-safeSummary
-safeProjection
-privatePayload
-```
+### 5.2 第二段：迁移通用前端壳
 
-约束：
+1. 将通用 Agent API、SSE、History、会话状态和 Core 卡片移出仓储目录。
+2. 将四类仓储卡片、复制格式、routeKey 和恢复话术放入仓储前端资产。
+3. 应用组合根静态登记生产业务资产；重复或非法 `adapterId/cardType` 只使 AI 子系统明确不可用，不使人工页面白屏。
+4. 登录后的 `SystemLayout` 只挂载一个助手实例；仓储页面入口只打开该实例，不创建第二份会话或 SSE。
+5. 登录后切换业务路由、折叠和重新展开时保持会话、卡片和运行中 SSE；退出登录或身份变化时中止连接并清空内存状态。
+6. 后端启用且当前用户存在可用 Adapter，但前端缺少对应资产时，禁止新 Run 并提示部署版本不一致。
+7. 未知或错误卡片必须显示可理解的稳定提示，不静默忽略、不暴露原始 JSON。
+8. 保留必要的脱敏结构化诊断，只记录安全标识、关联 ID、状态、错误码、数量和耗时。
 
-1. `artifactId` 由服务端随机生成，只在当前 Run 的内部 Tool Calling Loop 中作为不透明引用供模型传递；模型不能解析、构造、续期或改变其归属。
-2. `privatePayload` 只存在于服务端内存注册表，不发送给模型、浏览器、SSE、History、Memory或Observability。
-3. Core 在消费前校验同一 Run、生产 Tool、类型与版本、有效期，以及**当前消费 Tool**的显式 `consumes` 声明；不能只校验其所属 Adapter。
-4. 消费 Tool 必须使用服务端 `userId` 重新解析当前 Actor，Core 用新的 `scopeFingerprint` 与 Artifact 比较；Run 启动快照只决定初始 Tool 白名单，不能充当整轮持续权限凭据。随后业务 Service 仍须再次鉴权，Artifact 不是权限凭据。
-5. `privatePayload` 由 Core 作为不透明对象保管，Core 不序列化、不解释业务字段。生产与消费 Tool 共享的 Java 类型只能放在提供方公开 `api/` 或明确的组合 Adapter 中；测试链使用测试源码内的不可变类型，禁止用任意 `Map<String,Object>` 模拟生产契约，也禁止让一个 Adapter 依赖另一个业务模块的内部实现。
-6. Artifact 不跨 Run 复用，不落新表；注册表随 `AgentExecutionContext` 建立，并由 Spring AI Tool Calling Loop 的 finalize 钩子及现有 Run 终态 `finally` 做幂等关闭。Run 结束、取消、失败或超时后，注册表先标记关闭、拒绝新消费，再清除全部私有载荷。
-7. `safeSummary` 和 `safeProjection` 只包含下一次模型决策或用户结果真正需要的有限字段，必须由生产者 Tool 定义字段白名单并受现有 Tool 结果预算约束；`artifactId` 只出现在返回模型的窄 `data` 中，不进入业务卡片。
+### 5.3 第三段：裁剪证明与学习文档
 
-### 5.4 临时模型上下文与长期History
+在临时派生副本中移除仓储 AI Adapter、仓储 AI 前端资产和组合根注册项，证明：
 
-项目继续使用锁定的 Spring AI 2.0.0：`ToolCallingAdvisor` 负责递归 Tool Calling Loop，`ToolCallingManager` 负责 Tool 执行与下一轮消息，`ToolContext` 携带模型不可见的服务端运行状态。现有 `DeepSeekToolCallingAdvisor`、`MixedToolCallingManager` 和 `AgentExecutionContext` 是07B唯一允许扩展的主路径，不引入 LangGraph、OpenAI Agents SDK 或第二套 Agent Runtime，也不自行重写完整模型循环。
+- 通用 Agent、Knowledge、Observability 的生产代码、资源和 POM 不依赖仓储；
+- 通用前端壳不导入仓储；
+- 无业务 Adapter 时能力集合为空、助手入口隐藏、人工页面仍可使用；
+- 通用后端和前端均可构建。
 
-Spring AI 会把当前模型回复、Tool请求和Tool结果加入本轮内部模型上下文。因此 `artifactId` 可以短暂存在于本 Run 的内部工具消息中；`privatePayload` 不得放入 Tool 返回值。
-
-项目必须将其与持久化用户History区分：
-
-- 用户History只保存已验证、允许用户查看的消息和卡片结果；
-- `artifactId`、完整Tool原文和`privatePayload`不得写入长期History；
-- Artifact及失败/修正草稿不得进入后续Memory Segment；
-- 日志和观测只记录 Adapter、Tool、类型、状态、耗时和稳定错误码，不记录Artifact值与私有内容。
-
-如果现有 Spring AI 默认循环无法满足上述分离，研发只能在现有 Tool Calling 扩展点内增加最小控制；一旦需要完整自研模型循环，停止07B并回到设计复核。
-
-本决定不是项目自创协议。Spring AI 2.0 将 Tool Calling Loop 作为 `ChatClient` Advisor 链的一等能力，并明确由 `ToolCallingAdvisor` 驱动循环、`ToolCallingManager` 执行工具；其 Advisor 文档还提供生命周期钩子和单 Tool Advisor 约束。LangChain/LangGraph 与 OpenAI Agents SDK 的官方方案同样把运行期依赖和权限上下文留在本地 Run Context，而不是暴露给模型。它们用于交叉验证设计原则，不作为本项目新增依赖：
-
-- [Spring AI Tool Calling](https://docs.spring.io/spring-ai/reference/api/tools.html)
-- [Spring AI ToolCallingAdvisor](https://docs.spring.io/spring-ai/reference/api/tools/tool-calling-advisor.html)
-- [OpenAI Agents SDK Context Management](https://openai.github.io/openai-agents-python/context/)
-- [LangChain Tools](https://docs.langchain.com/oss/python/langchain/tools)
-
-### 5.5 Task、PARTIAL与恢复
-
-保留现有 `ai_task`，不新增工作流表或Artifact表。通用核心只理解 Adapter归属、意图、状态、修订、scope、有效期和版本化受控payload，不理解物品、客户、订单或库位字段。
-
-当 A 成功、B 发生可重试技术失败时：
-
-- 本 Run 保留已经验证的成功结果并以 `PARTIAL` 结束；
-- 不重新执行已经成功的业务动作；
-- Adapter 可以在现有 Task 受控payload中保存不含私有载荷、可重新鉴权和重建的版本化 ResumeRef；
-- 新 Run 恢复时重新解析当前 Actor、scope 和业务事实，再重建所需Artifact并仅执行失败消费者；
-- 无法安全重建时必须明确不可重试，不得持久化 `privatePayload` 或偷偷重放整条链。
-
-现有 RetryPlan 不能原样持久化含 `artifactId` 的消费 Tool 参数。持久化边界必须拒绝 `artifactId`、`privatePayload` 或未知字段；Artifact 消费失败只能保存 Adapter 生成的字段白名单 ResumeRef。普通且已经过现有严格校验的非 Artifact Tool 参数可继续使用原重试合同，不为07B重写全部重试机制。
-
-权限失败、参数错误、业务拒绝、Artifact伪造/过期/错类型和scope变化均不可自动重试。
-
-### 5.6 能力发现与前端资产
-
-- `/api/ai/capabilities` 从当前实际注册且对Actor可用的 Adapter 生成，不硬编码仓储；
-- 每个 Run 只向模型暴露当前Actor可访问的Tool；最终权限仍由业务Service执行；
-- 无可用Adapter时返回空集合，应用仍可启动，业务助手入口不显示；
-- 前端采用编译期静态资产注册；测试Adapter仅在测试源码存在；
-- 未知cardType或routeKey安全失败，不猜测URL、组件或参数。
-
-## 6. Knowledge 分域决定
-
-07 **不新增 `knowledgeSpace`、Adapter归属列、管理页面或数据迁移**；只新增一个全局通用读取权限 `ai:knowledge:read`，替代Knowledge核心对 `warehouse:read` 的依赖。
-
-理由不是否认知识分域，而是当前只有一个真实业务知识消费者，尚不能可靠确定：一份文档属于一个还是多个空间、`shared`边界、部门/角色关系、编码唯一性、上传归属和跨业务混合检索规则。现在落表会把推测固化为持久化契约。
-
-07 只完成：
-
-- 将仓储合成资料、业务排序和评测资产归还仓储 Adapter；
-- Knowledge 核心通过服务端静态注册白名单接受内容包；查询侧检索指令由Knowledge核心统一拥有，不由内容包提供；
-- Knowledge HTTP检索与Agent知识Tool统一要求`ai:knowledge:read`，不聚合各业务Adapter权限规则；仓储事实Tool仍独立要求`warehouse:read`；
-- 保持现有用户上传资料的产品语义，不用文档编码前缀或 `source_type` 伪装空间权限；
-- `ai:knowledge:read`在07中表示可读取当前全部ACTIVE公共知识；它不授予知识管理、业务事实读取或部门数据范围。系统管理员默认拥有，既有自定义角色不自动迁移；
-- 不宣称已经完成多业务知识隔离。第二个真实业务出现受限知识时，必须先建立`knowledgeSpace`及权限模型，不能继续扩大这个全局权限的含义。
-
-当第二个真实业务知识消费者或明确的共享资料场景出现时，单独确认空间、唯一性、发布、检索、权限、迁移和页面语义后再实施。
-
-## 7. 顺序执行规则
-
-1. Controller只提供可信Run上下文，不接受客户端声明Adapter、身份、权限或scope。
-2. 注册中心按当前Actor过滤Adapter，形成该Run的Tool白名单和受信提示；提示按稳定顺序聚合并受总长度预算约束。Core只做全局安全校验，不在模型选择Tool前依次调用全部Adapter的业务校验。
-3. 模型每次迭代只能选择一个允许的Tool；Core校验预算和所有权后执行。Spring AI 默认会依次执行同一模型响应中的多个 ToolCall，因此 `MixedToolCallingManager` 必须在委托前稳定拒绝多 ToolCall 批次，不能靠提示词或事后账本补救。
-4. Tool可以返回最终安全结果，也可以产生一个版本化ToolArtifact。
-5. 后续Tool只能消费其注册契约声明的Artifact类型；Core完成引用校验后才交给消费者Adapter。是否允许该消费者处理原始用户请求，由该Tool所有者依据原始请求判断；Knowledge正文、模型改写和前序Tool输出均不能扩大授权。
-6. 每个业务Service在执行时重新鉴权；上一步成功和Artifact存在均不能替代权限。
-7. 首版顺序执行，遇首个失败立即闭锁后续业务回调；已有成功结果保留，终态按现有唯一终态契约确定。同一 Run 内相同 Tool 与服务端规范化参数已经成功时，返回已有安全结果或 Artifact 引用，不再次调用业务 Service；不能只按 Tool 名去重。
-8. 不可信Knowledge正文不能决定新业务Tool或Artifact消费；知识只提供受控事实和引用。首版不支持同一模型响应的多Tool批次，因此不得保留或宣称同批Tool授权分支；组合只通过多个模型迭代顺序发生。
-9. 每个Run执行现有Model Iteration、Attempt、Tool次数和总预算；不得依靠提示词限制无限循环。
-10. 不引入跨业务并行、写操作、分布式事务、补偿、DAG或通用流程编排。
-
-## 8. 研发拆分
-
-### 07A：Adapter注册与仓储硬编码解除
-
-**目标**：建立编译期注册、能力发现和失败即停，先证明边界，不建设Artifact链。
-
-**状态**：已提交，提交为 `97e8326`；主体保留，2026-09-15复核发现的跨Adapter业务校验、错误所有权、卡片payload所有权和提示总预算偏差须在07C提交前校正。
-
-范围：
-
-- Adapter描述、当前Actor可用性、Tool所有权和提示组合；
-- `AiCapabilitiesController` 改为从注册事实生成；
-- Adapter、Tool、Artifact类型、卡片和routeKey冲突检查；
-- 将通用Core中的仓储权限、默认Adapter及可直接归属的业务常量移入仓储Adapter；
-- 测试源码中的最小第二Adapter只验证并存、过滤和冲突。
-
-完成门：不同权限用户只获得允许的能力；无Adapter时能力为空且应用可装配；冲突稳定失败；测试Adapter不进入生产包。
-
-### 07B：Run内ToolArtifact与依赖式工具链
-
-**目标**：实现第5节的受信中间结果，并证明A结果能够安全成为B输入。
-
-**状态**：已提交；主体保留，2026-09-15复核要求删除与单Tool迭代冲突的同批授权死分支，并把后续Tool授权收敛为“实际消费者所有者依据原始用户请求判断”。
-
-范围：
-
-- Run内不可变内存注册表和生命周期；
-- Tool级 `produces/consumes`、单一生产者与多显式消费者的类型和版本校验；
-- 模型只传递不透明 `artifactId`；
-- 消费时重新解析当前Actor并校验Run、scope、Tool所有权和有效期；
-- 每个模型迭代最多一个ToolCall，首个失败闭锁后续回调，相同成功调用不重放；
-- 临时Tool Loop与长期History/Memory/Observability分离；
-- 通用结果账本、PARTIAL和不含Artifact引用的安全ResumeRef；
-- 测试Adapter A → B 的真实依赖链；
-- 现有仓储Tool和四字段结果不回归。
-
-完成门：正常链通过；伪造、跨Run、错类型、错版本、过期、消费时scope变化、未声明消费Tool和同次迭代多个ToolCall均被拒绝；一个生产者可被多个显式消费者安全使用；私有载荷不进入模型、页面或持久化，`artifactId`不进入SSE、History、Memory、Observability或RetryPlan；Run所有终态均清空注册表；同一Run及安全恢复均不重放成功Tool。
-
-### 07C：Knowledge与Observability业务资产归位
-
-**目标**：三个通用后端模块不再拥有仓储资料、提示和评测语义。
-
-**当前代码事实**：
-
-- `module-knowledge` 的生产资源仍内置仓储合成资料，`KnowledgeService`、`KnowledgeMapper` 和 Embedding Client 仍持有仓储排序、兼容版本及检索指令；
-- `module-agent` 的 `KnowledgeToolProvider` 仍以内置 Spring Bean 注册，并错误依赖 `warehouse:read`、仓储 Tool 描述和用户文案；
-- `module-ai-observability` 只认识一个仓储数据集，且资源加载失败后会读取仓库源码目录；其 manifest 还引用 `module-warehouse`、`module-knowledge` 的 `src/test/resources`。这条路径不能证明打包后的 JAR 可运行，必须在07C移除；
-- 通用 Agent 中仍有07A遗留的仓储字段和文案。07C直接将通用澄清HTTP DTO的`warehouseCode/warehouseName`、`selectedWarehouseCode/selectedWarehouseName`改为`scopeCode/scopeName`、`selectedScopeCode/selectedScopeName`，同步OpenAPI、生成类型和仓储前端消费者；不保留旧字段兼容层，也不借此提前实施07D前端壳重构。
-
-**框架选择**：继续使用 Spring 的类型集合注入登记编译期 Provider，并由 Provider 显式提供 classpath `Resource`。资源必须能从依赖 JAR 以流读取，不使用 `Resource#getFile()`、仓库相对路径、`src/test/resources` 回退或运行时目录扫描。该方案只使用现有 Spring 能力，不引入插件框架和新运行时依赖：
-
-- [Spring Resource](https://docs.spring.io/spring-framework/reference/core/resources.html)
-- [Spring 集合注入](https://docs.spring.io/spring-framework/reference/core/beans/annotation-config/autowired.html)
-
-**Knowledge内容包**：
-
-1. `module-knowledge` 提供窄的编译期内容包契约和确定性注册表；仓储Adapter实现 `WarehouseKnowledgeContentPack`，拥有仓储 Markdown、索引、固定文档顺序、兼容版本标识和哈希。内容包不声明检索指令。
-2. 所有仓储资源迁入 Adapter 唯一资源命名空间。内容导入、目录顺序、后端测试和运行时读取必须消费同一内容包对象，不保留第二份测试拷贝或核心内置回退。Knowledge核心为所有内容包使用一条通用、与业务无关的查询检索指令；未来出现真实分域检索需求时另行设计Retriever/knowledgeSpace，不把策略塞回内容包。
-3. 注册时校验内容包ID、文档/版本唯一性、ACTIVE版本、资源可读性、哈希及顺序；冲突、缺失或哈希不符时启动失败并给出稳定错误码，不静默跳过。
-4. `KnowledgeService` 保留文档生命周期、解析、发布、搜索和引用；Mapper移除仓储编码排序，固定资料顺序由注册表提供，用户上传资料保持稳定通用排序。
-5. `knowledge_search` 的通用执行桥、描述、安全结果合同和查询检索指令由Agent/Knowledge公共能力拥有，统一要求`ai:knowledge:read`；业务Adapter只登记自己的内容包和业务事实Tool，不提供检索指令或聚合Knowledge访问规则。知识管理接口继续要求`ai:knowledge:manage`，两个权限互不隐含。
-6. IAM注册`ai:knowledge:read`并加入系统管理员默认权限；既有自定义角色不按仓储权限自动补授。直接HTTP搜索与Agent知识Tool使用同一权限语义，避免两条访问链不一致。
-
-**评测数据集**：
-
-1. `module-ai-observability` 提供编译期 `AiEvaluationDatasetProvider` 与确定性注册表；核心负责版本、配置、哈希、类别、数量、执行和结果存储，不认识仓储数据集名称。
-2. 仓储Adapter拥有 manifest、case、config、召回与Embedding基线等全部运行期资源；所有 manifest 引用必须指向 Adapter JAR 内资源，历史Provider Gate结果只作为测试/历史证据，不作为核心运行时数据集。
-3. 数据集版本和配置版本全局唯一；配置与数据集的合法组合由 Provider 明确登记。未知版本、重复版本、错误组合、资源缺失和哈希不符必须稳定失败。
-4. `RunConfiguration`以加法字段明确所属`datasetVersion`，前端按同一登记组合启动，不能分别取两个列表的第一项拼接；07C不顺手建设数据集选择页面。
-5. 未安装任何评测Provider时，数据集和配置列表为空，应用仍可启动；发起未知评测必须明确拒绝。
-
-**可诊断性门槛**：日志不是故障后的补丁，必须随主链首轮实现进入测试。至少覆盖：内容包/数据集注册结果、固定资料导入`started/completed/failed`三类真实阶段、资源校验阶段、评测运行开始与聚合终态。只记录 `runId/evaluationRunId`、Provider或内容包ID、版本、阶段、数量、状态、耗时和稳定错误码；禁止记录查询正文、知识正文、case步骤、预期/实际正文、向量、Provider响应、权限集合或资源内容。测试必须实际触发导入成功与失败并断言日志事件；只扫描源码中是否出现日志字符串不能证明该链可诊断。
-
-**执行顺序（同一研发主责，不拆成多人流水线）**：
-
-1. 边界清单：以生产代码、资源和POM的搜索结果冻结迁移前清单，区分07A遗留、07C资产和07D前端资产；不以文件名或旧报告代替事实。
-2. 先完成内容包与数据集注册契约、`ai:knowledge:read`权限传播、通用澄清DTO改名、冲突/空注册/错误资源测试和安全日志，再迁移仓储资产；迁移过程中禁止同时维护旧、新两条运行路径。
-3. 使用仓储Adapter中的同一资源族验证：注册与哈希异常测试、Knowledge导入/检索测试、评测执行测试、app-server装配测试。正常、异常和空注册场景只改变数据，不另造不同格式或不同来源的fixture。
-4. 构建真实 Adapter JAR，并从打包产物加载全部内容包和评测资源；测试必须在临时工作目录运行，以证明不依赖仓库源码路径。之后再进行一次现有知识与离线评测页面/API轻量走查。
-5. 在临时派生副本移除仓储Adapter，验证三个通用模块生产代码、资源和POM不含仓储语义且能够构建；不修改主工作区伪装裁剪。
-
-**完成门**：无仓储Adapter时通用模块生产代码、资源、POM和HTTP DTO无仓储语义，空注册行为明确且可构建；知识HTTP搜索与Agent知识Tool只认`ai:knowledge:read`，仓储事实Tool仍只认仓储权限；装回后，仓储内容包和评测数据集只能从同一个Adapter JAR资源族加载，既有知识导入/搜索/引用、离线评测API与页面不回归；日志能够按关联ID和阶段定位失败且不泄露内容。
-
-**本段止损**：同一实质路径连续两次失败，或者出现“单测通过但JAR/页面失败”，立即停止加补丁，先对照资源来源、构建产物、运行进程版本和日志关联ID复盘。不得通过恢复源码目录回退、复制fixture、放宽哈希或跳过打包验证让测试表面通过。
-
-### 07D：前端通用壳、学习资产与裁剪证明
-
-**目标**：下一业务可以复用同一助手壳，并让开发者能沿真实代码完成接入与裁剪。
-
-**当前代码事实**：
-
-- `SystemLayout.vue` 仍从仓储目录加载通用能力接口，应用级布局尚未拥有助手实例；
-- `WarehouseManagePage.vue` 直接挂载 `WarehouseAgentPanel.vue`，对话状态、SSE连接和响应式尺寸均随仓储路由生命周期存在；
-- `WarehouseAgentPanel.vue` 同时拥有通用会话壳、`knowledge-answer`、`clarification-choice`、四类仓储卡片、仓储文案、复制和页面跳转；未知或无效卡片当前会被静默忽略；
-- 后端Core已经直接校验`knowledge-answer`与`clarification-choice`，但仓储Adapter描述仍登记`clarification-choice`。该登记会与未来业务共享通用澄清卡冲突，07D须完成最小归位。
-
-**依赖与装配边界**：
-
-1. 前端通用Agent模块只拥有API、SSE、会话壳、Core卡片和注册契约，生产代码不得导入`modules/warehouse`或其他业务模块。
-2. 应用组合根是生产业务前端资产的唯一装配位置，由它同时导入通用Agent壳和各业务前端资产。依赖方向固定为`应用组合根 → 通用Agent前端模块`和`应用组合根 → 业务前端资产`，禁止通用模块反向发现或扫描业务目录。
-3. 每个业务前端资产至少声明非空且全局唯一的`adapterId`及自己的`cardType`渲染器集合；没有业务卡片的Adapter允许集合为空，不得为满足接口机械制造卡片。每个渲染器只声明非空`cardType`、严格解析函数和已静态导入的Vue组件，不加入优先级、覆盖、别名、远程组件、类名字符串或运行时热加载。
-4. 注册表以全局唯一`cardType`分派渲染器，并同时校验`adapterId`唯一性。重复或非法注册使AI前端子系统进入明确的装配失败状态并禁止发起Run，但不得导致用户管理、仓储人工页面等非AI功能白屏。测试资产只由测试组合根登记，不进入生产装配或生产包。
-5. `knowledge-answer`和`clarification-choice`是Core卡片，不虚构后端Adapter身份；四类仓储业务卡片`stock-summary`、`item-location`、`location-contents`、`movement-list`由仓储前端资产拥有。仓储后端Adapter不再把`clarification-choice`登记为业务`cardType`，但其Task Policy仍可按既有合同产生并校验仓储候选内容。
-
-**通用澄清与业务资产边界**：
-
-1. Core澄清渲染器只把后端已校验且有界的`question`作为纯文本展示，通用显示候选`name/code/scope`，选择后只提交`clarificationId + optionToken`。
-2. Core不得按`candidateKind`或`candidateIntent`拼接仓储、客户、订单或知识业务话术；本地选择回显只表达“已选择：候选名称”。`candidateKind`和`candidateIntent`继续用于后端Task校验与恢复，不成为前端扩展业务分支的理由。
-3. 仓储前端资产拥有四类仓储卡片的payload解析、展示、复制格式和受控路由动作。routeKey只映射业务资产内静态登记的项目路由，服务端不得下发任意URL、Vue组件名或可执行跳转内容；07D不为形式统一强行修改现有SSE卡片合同。
-4. 通用助手使用中性标题和空状态，不再自称“仓储助手”；仓储页面可保留“使用AI助手查询仓储”等快捷入口文案，但不得拥有第二份会话或运行状态。
-
-**唯一实例、能力和生命周期**：
-
-1. 助手实例挂载在登录后`SystemLayout`且位于业务`RouterView`之外。`SystemLayout`创建类型化的`open/close/toggle`控制器并提供给后代页面；仓储快捷入口只调用该控制器。
-2. 登录后业务路由切换、收起和重新展开不得销毁对话、卡片或正在执行的SSE；退出登录、身份变化或离开登录后布局时必须中止连接并清空内存状态。07D不新增LocalStorage会话副本，刷新后的恢复仍使用后端History。
-3. AI关闭或当前用户`availableAdapters`为空时隐藏助手入口，不建设未确认的“纯知识助手”。AI启用且能力非空时，`availableAdapters`必须全部存在于生产前端资产的`adapterId`集合；前端存在但当前用户不可用的业务资产不构成错误。
-4. 任一后端可用Adapter缺少前端资产时判定为前后端装配版本不一致，显示明确提示并禁止新Run。当前能力合同不返回业务cardType清单，因此具体漏登记的cardType仍由运行时未知卡片语义兜底，不为07D扩展Capabilities或SSE协议。
-5. DOCKED、OVERLAY、COMPACT和DRAWER模式改为依据应用内容容器测量；必须验证用户、部门、仓储、知识和观测页面，不得只在仓储页面证明布局成立。
-
-**失败语义与可诊断性**：
-
-- 重复或非法前端注册：AI子系统不可用，人工页面保持可用；
-- 无效业务卡片payload：在对应消息位置显示“结果格式无效”，保留同一Run的其他安全结果；
-- 未知`cardType`：显示“当前前端版本不支持此结果类型”，不展示原始JSON、不静默忽略，也不把后端已成功的Run改写为失败；
-- 前后端Adapter装配不一致：禁止新Run并提示部署版本不一致；
-- 首轮实现必须通过一个窄的前端诊断封装记录`agent_ui_registry_initialized`、`agent_ui_capability_match`、`agent_ui_shell_lifecycle`、`agent_ui_stream_lifecycle`、`agent_ui_card_dispatch`等稳定事件。只允许记录阶段、Adapter/cardType安全标识、`conversationId/runId/messageId`、状态、稳定错误码、数量和耗时；禁止记录用户问题、回答、知识内容、卡片payload、Cookie、权限集合或Provider响应。07D不建设远程日志平台。
-
-**执行顺序（同一研发主责端到端完成）**：
-
-1. 先以生产代码、测试和路由事实冻结通用壳、Core卡片、仓储卡片和应用装配边界；不复制旧组件后再长期维护两条路径。
-2. 将通用Agent API、SSE和类型移出仓储目录，建立最小注册契约与应用组合根；保持现有HTTP、SSE、History和唯一终态合同不变。
-3. 提取通用会话壳、`knowledge-answer`和真正通用的`clarification-choice`，同步移除仓储Adapter对Core澄清cardType的业务登记。
-4. 将四类仓储卡片、复制和受控跳转迁入仓储前端资产，再把唯一助手实例提升到`SystemLayout`，仓储页面改为快捷入口。
-5. 加入能力全量匹配、可见失败和脱敏诊断日志；完成组件契约、应用路由集成和真实浏览器用户链验证。
-6. 在临时派生副本只移除仓储后端Adapter装配、仓储AI前端资产及其组合根注册项并执行构建；仓储普通人工页面不是本次删除对象。
-7. 研发提交最终代码入口和实际验证事实后，由总设计师编写并逐条核验`docs/learning/`，不得把未实现构想写成现状。
-
-**完成门**：通用前端模块无仓储导入；应用组合根是唯一生产资产装配点；仓储与应用入口打开同一助手；登录后跨路由时对话、卡片和运行中SSE不丢失；Core知识与澄清链不依赖仓储资产；未知或错误卡片可见失败；能力装配不一致时禁止新Run但人工页面可用；测试资产不进入生产包；桌面、中屏和窄屏不破坏主要业务页面；仓储现有查询、知识引用、澄清、PARTIAL、取消、重试、复制和跳转链不回归；临时派生副本移除仓储AI资产与注册项后通用壳仍可构建；学习文档中的路径和命令均可追溯到最终代码。
-
-## 9. 学习文档结构
-
-`docs/learning/` 是07的产品组成，不是实施报告或代码清单。内容随对应阶段完成后增量编写，07D统一验证。
-
-建议最小结构：
+学习文档收敛为一个入口和四篇正文：
 
 ```text
 docs/learning/
-  README.md                         学习顺序与适用读者
-  01-agent-request-lifecycle.md     Conversation → Run → Iteration → Attempt → Tool → SSE
-  02-build-a-business-adapter.md    Adapter、Tool、权限和后端业务资产
-  03-build-the-frontend-shell.md    唯一助手壳、静态前端资产、卡片与受控路由
-  04-compose-trusted-tools.md       ToolArtifact、依赖链、失败和恢复
-  05-knowledge-and-citations.md     内容包、检索、引用及当前分域边界
-  06-observability-and-evaluation.md Run/Step/Attempt与业务数据集
-  07-cut-or-add-an-adapter.md       裁剪仓储与接入下一业务的可执行路径
+  README.md
+  01-agent-request-lifecycle.md
+  02-build-a-business-adapter.md
+  03-frontend-assets-and-cards.md
+  04-cut-or-add-an-adapter.md
 ```
 
-每篇必须包含：要解决的真实问题、关键设计取舍、主要代码位置、最小阅读路径、验证方式、常见失败和明确非目标。禁止复制大段源码、维护逐类索引、把未实现构想写成现状，或为了文档示例创建新的生产抽象。
+每份只写真实问题、当前代码入口、验证方式、常见失败和非目标。ToolArtifact 只能标记为“实验性冻结、暂无生产调用”，不得作为推荐接入步骤。
 
-## 10. 验收矩阵
+## 6. 真实用户链与验收证据
 
-### 10.1 保留仓储Adapter
+07D 必须沿同一真实仓储用户任务验收，不能以组件存在、Mock 成功或测试数量替代。
 
-- 当前库存、物品位置、库位内容、近期变化、知识引用、澄清、PARTIAL和失败重试不回归；
-- 前端卡片、copy与受控跳转仍使用原有用户契约；
-- 最终只在Tool选择确实受本轮改动影响时进行一次有预算Provider回归。
+### 6.1 主链
 
-### 10.2 测试双Adapter
+具有仓储读取权限的登录用户：
 
-- Adapter并存、权限过滤和冲突失败；
-- 一个Adapter的业务输入校验不得拒绝另一个Adapter的合法请求；实际失败Tool只使用其所有者的错误表达；
-- Core能够接受由测试Adapter注册的非仓储卡片payload形状，并由对应cardType所有者完成强类型验证；未知或错误payload稳定失败；
-- 所有Adapter受信说明聚合后受总预算约束，且任何业务说明不得把通用助手定义为单一业务人格；
-- A产生Artifact，B按声明消费；
-- Artifact声明落在具体Tool；同一类型只允许一个生产Tool并允许多个显式消费Tool；
-- Artifact伪造、跨Run、错类型、错版本、过期、消费时scope变化和未声明消费Tool全部失败；
-- 同一模型迭代返回多个ToolCall时在任何业务回调执行前稳定拒绝；相同Tool与规范化参数的成功调用不重复访问业务Service；
-- 依赖链只通过连续模型迭代发生；后续消费Tool只由其所有者依据原始用户请求授权，Knowledge内容不能开放新Tool；不存在不可达的同批Tool授权分支；
-- A成功、B技术失败形成PARTIAL；安全恢复只执行失败消费者；
-- RetryPlan/ResumeRef、SSE、History、Memory、日志和Observability均不含`artifactId`或私有载荷；成功、失败、取消和超时终态后注册表为空且拒绝继续消费；
-- 测试Adapter仅存在于测试源码，不作为真实业务复用证据。
+1. 从仓储页面打开应用级唯一助手；
+2. 提交真实仓储问题；
+3. 查看运行状态和受信仓储卡片；
+4. 复制字段或整卡；
+5. 通过受控动作打开对应人工页面；
+6. 切换到其他业务页面再返回，助手会话和结果仍在；
+7. 从 History 恢复同一结果。
 
-### 10.3 移除仓储Adapter的临时派生副本
+### 6.2 澄清与失败恢复链
 
-- 移除后端reactor项、app装配、前端仓储AI资产和专属资源；
-- `module-agent`、`module-knowledge`、`module-ai-observability` 的生产代码、资源和POM不含仓储包、类型、权限、表名、Tool名或文案；
-- 三个通用后端模块独立构建；app-server无业务Adapter时可启动并返回空能力；
-- 通用前端壳可构建且不含仓储分支；
-- 只在临时派生副本验证，不修改主工作区伪装裁剪。
+1. 提交一个产生业务候选的仓储问题；
+2. 选择候选并执行；
+3. 对真实 `FAILED_RETRYABLE` 历史状态，看到已选对象、空候选和唯一“重新查询”动作；
+4. 重新查询时创建新的受控 Run，重新解析当前 Actor，并且不伪造重新选择；
+5. 验证取消、PARTIAL、FAILED 和消息重试仍保持各自语义。
 
-### 10.4 数据与隐私
+### 6.3 最小证据阶梯
 
-- 不新增Knowledge或Artifact表；权限变化仅限新增全局`ai:knowledge:read`并与`ai:knowledge:manage`、业务权限分离，不建立Adapter权限聚合或知识空间授权；
-- `privatePayload`、完整Tool参数/结果和Artifact值不进入SSE、长期History、Memory、日志或Observability；
-- 每次Tool和Resume重新解析当前Actor并调用业务Service鉴权；
-- 无权、无数据、业务拒绝、技术失败和安全拒绝保持不同稳定语义。
+1. 当前源码重新打包并由受管`app-server`运行，PostgreSQL和配置目标明确；
+2. 通过真实登录、Session和CSRF，以HTTP创建Conversation并发送Run；完整生产装配实际调用DeepSeek、生产Warehouse Tool和PostgreSQL，经SSE返回与业务事实一致的结果；
+3. 前端请求层连接同一后端，消费真实HTTP/SSE，不Mock AI接口；
+4. 最后在浏览器完成同一仓储问题、History恢复和必要交互；
+5. 主链通过后再验证澄清、Provider失败、Tool失败、取消和重试；
+6. 源冻结后完成一次临时派生副本裁剪构建。
 
-### 10.5 Knowledge内容包与前端壳
+任何一步失败，07D生产验收都未通过。DTO、Service、装配、组件及Mock测试只用于定位，不能形成部分验收或替代上述链路。
 
-- 两个测试内容包可以同时登记不同内容、顺序和哈希，并共享Knowledge核心的同一条通用查询检索指令；内容包不能覆盖查询策略；
-- 固定资料导入成功和失败均产生可关联、脱敏的结构化阶段日志，行为测试实际断言事件而非扫描源码字符串；
-- 通用前端模块不导入仓储模块；应用组合根按全局唯一`adapterId/cardType`静态装配资产，SSE不虚构`adapterId`；
-- `knowledge-answer`和`clarification-choice`由Core渲染，仓储资产只拥有四类仓储卡片、复制与受控路由；通用澄清提交只传递不透明选择令牌，不按业务意图扩展前端分支；
-- 应用级唯一助手壳可由仓储快捷入口打开；登录后跨仓储、用户、知识和观测路由时，同一会话、卡片和运行中SSE保持；
-- 后端可用Adapter与前端资产不一致、未知cardType或错误payload均产生可见、脱敏、可诊断的稳定结果，不静默忽略，也不影响非AI人工页面；
-- 知识降级只使用既有降级卡片与唯一Run终态，不保留未生产、未消费的`knowledge.degraded`事件。
+真实 Provider 只在工具选择或流式协议无法由既有证据证明时调用一次，并有预算和停止条件。不得为了修复 fixture 重复调用 Provider。
 
-## 11. 非目标与止损线
+## 7. 客户与订单阶段如何升级
 
-- 不开发客户、订单、画像、标签或新的真实业务Tool；
-- 不建设动态插件市场、运行时JAR/脚本上传、MCP/A2A或跨语言远程协议；
-- 不建设通用工作流/DAG、多Agent、跨业务并行、写事务、自动补偿或第二套调度器；
-- 不新增第二套错误模型、SSE协议、权限体系、聊天库或前端主题；
-- 不新增 `knowledgeSpace`、Artifact持久化表或长期私有结果存储；
-- 不建立永久“一键卸载”生成器；一次临时派生副本足以证明裁剪；
-- 不用测试Adapter宣称第二真实业务复用完成；
-- 确定性注册、类型、冲突和清理不重复调用真实Provider；07B只在最终工具选择确实受影响时执行一次有预算的真实Provider协议回归。
+### 7.1 客户模块：第二个真实消费者
 
-出现以下任一情况立即停止当前分段并返回总设计师复核：
+客户需求确认后，先实现自己的业务 API、权限和普通页面，再接入 Agent。届时只复用07已经证明的 Adapter注册、Actor重校验、通用壳、卡片注册、知识内容包和评测 Provider。
 
-1. 需要完整自研模型循环、DAG或新的持久化私有payload；
-2. Knowledge资产归位被迫增加已确认的`ai:knowledge:read`之外的数据或权限模型；
-3. 需要修改已确认的四字段Tool结果、SSE、History、Memory或唯一终态语义；
-4. 测试Adapter被迫承载客户、订单等生产业务，或者通用Core开始理解测试业务字段；
-5. 同一实质实现或验证路径连续两次失败且没有产生新证据。
-6. 现有 Spring AI `ToolCallingAdvisor`、`ToolCallingManager`、`ToolContext` 扩展点无法承载Run内状态、单调用约束或最终清理，必须改为完整自研模型循环。
+只有客户场景真实要求“一个 Tool 的结构化结果成为另一个 Tool 的输入”时，才重新启用并评估 ToolArtifact；否则继续保持冻结。若客户知识与仓储知识存在不同可见范围，再单独设计 `knowledgeSpace`，不能扩大当前全局 `ai:knowledge:read` 的含义。
 
-## 12. 复杂度、责任与执行方式
+### 7.2 订单模块：第三个消费者与抽象验证
 
-SLICE-07 属于 L2：它改变公共模块边界、Tool组合方式、业务资产所有权和前端适配责任。复杂度为中高，主要风险不是代码量，而是遗漏仓储语义，或者在没有第二真实消费者时抽象出通用工作流。
+订单模块不负责继续堆抽象，而是检验客户阶段形成的公共边界：
 
-预计有效研发投入为16～23人日，包含07A～07D实现、定向回归、一次派生副本裁剪和学习文档。若实施中要求同时建设Knowledge分域，必须退出当前估算并重新审议，不得直接追加5～8人日继续开发。
+- 两个业务是否真的共享同一契约；
+- 公共接口是否仍然包含客户或仓储字段；
+- 混合问题能否由一个 Agent 通过多个业务 Tool 完成；
+- 是否真正出现固定顺序、长运行、补偿或人工审批需求。
 
-责任划分：
+只有这些事实出现后，才评估 workflow、DAG、持久化中间状态或多 Agent。当前07禁止提前实现。
 
-- 总设计师：是设计文档与学习文档第一责任人，负责本设计、范围、模块边界、阶段完成门、文档落盘、差异复核和最终验收；
-- 生产代码只能路由给现有任务列表中的“个人项目-普通研发甲”或“个人项目-普通研发乙”；“个人项目- agent开发”只提供Agent技术咨询，不承担应用生产代码；
-- 每个分段只指定甲或乙中的一名主责，不允许两人同时修改同一组Agent核心文件；主责研发负责该段应用代码、测试及最近验证，并向总设计师提供准确的代码入口和验证事实；
-- 当前07A指定普通研发乙；07A通过后，07B、07C默认继续由研发乙主责以保持Agent后端纵链连续性；07D必须在07C通过后再按前端文件隔离情况明确指定甲或乙，不提前并行派发；
-- 不建立研发—测试—运维—总设计师固定流水线；只有运行环境工作才路由运维；
-- 每段完成后只做一次目标差异复核和最近验证，不为同一风险重复建立报告；
-- 明确且范围内的问题直接退回同一研发任务最小修正；只有触发第11节止损线才返回设计决策。
+## 8. 明确非目标
 
-## 13. 已确认决定
+- 客户、订单、画像、标签和新的生产 Tool；
+- 多 Agent、通用工作流/DAG、自动补偿和第二调度器；
+- 动态插件、运行时 JAR/脚本上传、MCP/A2A 或远程 SDK；
+- `knowledgeSpace`、Artifact 持久化表和长期私有结果存储；
+- 第二套错误模型、SSE、权限体系、聊天库或前端应用；
+- 为证明复用机械制造业务 Adapter、业务卡片或跨工具调用；
+- 永久卸载生成器和微服务拆分。
 
-截至2026-09-15，项目负责人已确认：
+## 9. 完成门与停止条件
 
-1. 采用本设计的通用AI模板方向，不建设生成器或独立万能AI平台；
-2. `knowledgeSpace`及相关数据库、权限和页面改造推迟到第二个真实知识消费者；
-3. 测试Adapter只证明机制，不作为真实跨业务复用完成的证据；
-4. 采用Run内服务端ToolArtifact，模型只传递不透明 `artifactId`，私有载荷不暴露、不持久化；
-5. 07按四阶段顺序实施，禁止整块开发；
-6. `docs/learning/`是07交付组成，内容必须追随实际代码与验证结果。
-7. 07B优先使用项目锁定的Spring AI Tool Calling框架能力；不引入第二框架，不自研完整模型循环。
-8. Artifact授权落到具体Tool；同一类型允许一个生产Tool和多个显式消费Tool。
-9. Artifact消费与恢复前重新解析当前Actor；`artifactId`和私有载荷不得进入RetryPlan或任何持久化/用户可见通道。
-10. 依赖链每个模型迭代最多一个ToolCall，首个失败闭锁后续回调，相同成功调用不得重放业务Service。
-11. 新增独立全局权限`ai:knowledge:read`；Knowledge读取不复用或聚合仓储及其他业务权限，系统管理员默认拥有，既有自定义角色由管理员明确补选。
-12. 07C直接完成通用澄清DTO的`scopeCode/scopeName`改名及必要前后端合同传播，不留到07D，也不建立旧字段兼容层。
-13. 07A、07B主体不回滚；其跨Adapter校验、错误/卡片所有权、提示总预算与同批授权死分支作为07C提交前公共契约校正，不另立分片。
-14. Knowledge内容包只拥有内容、版本、顺序和哈希；查询检索指令由Knowledge核心统一拥有，当前不新增Retriever路由、`knowledgeSpace`或第二权限模型。
-15. 前端业务卡片按全局唯一`cardType`静态分派；07D采用应用级唯一助手壳，业务页面入口只是快捷入口；不新增没有真实生产者和消费者的`knowledge.degraded`事件。
-16. `knowledge-answer`和`clarification-choice`归通用前端Core；业务Adapter只提供候选事实与服务端Task语义，不在通用澄清UI中增加业务分支。
-17. 无业务Adapter时不提供助手入口，不在07D建设“纯知识助手”。
-18. 07D临时裁剪只移除仓储Adapter装配、仓储AI前端资产和注册项；仓储普通人工页面不属于本次删除范围。
-19. 前端业务资产由应用组合根静态装配，通用Agent前端模块不得反向导入业务模块；当前用户全部可用Adapter均须有对应生产前端资产，否则禁止新Run并明确显示版本不一致。
+07 关闭必须同时满足：
+
+1. 07A、07B、07C 的最终处置与本设计一致；
+2. 07D 关键恢复合同没有假 fixture，前后端消费同一关键状态事实；
+3. 仓储主链与澄清/恢复链通过真实浏览器验收；
+4. 通用前端模块无仓储导入，应用中只有一个助手实例；
+5. 临时派生副本移除仓储 AI 后仍能构建并保持人工页面；
+6. 学习文档只描述当前真实能力和限制；
+7. ToolArtifact 被明确标记为冻结实验，不计入复用证明；
+8. 状态索引、交接和 README 与实际状态一致。
+
+出现以下任一情况停止当前研发路径并回到设计复核：
+
+- 需要自研模型循环、DAG、多 Agent 或新的持久化私有状态；
+- 需要改变权限模型、Knowledge数据模型或当前Tool/SSE/History核心语义；
+- 同一真实浏览器链经过两次范围内修正仍失败；
+- 自动测试只能依赖生产后端不会产生的 fixture 才能通过；
+- 当前工作区无法确认差异归属，或者修复会覆盖其他人的未提交内容。
+
+## 10. 责任与当前执行顺序
+
+SLICE-07 仍是 L2，因为它涉及公共模块边界、HTTP/前端合同和模块裁剪；风险只加强契约与真实链证据，不增加固定角色流水线。
+
+- 总设计师负责本设计、状态同步、总体差异复核和学习文档；
+- 07D生产代码、关键合同样本和直接测试由一名研发工程师端到端完成；
+- 服务启停与运行环境仅在确有需要时交给运维；
+- Agent开发工程师只提供技术咨询，不接管应用生产实现；
+- 当前未提交07D差异先按本设计做归属与差值复核，不回滚、不覆盖、不直接提交；
+- 研发先完成5.1合同修正，再继续5.2与5.3；合同修正失败时不继续扩大通用壳。
+
+## 11. 成熟方案参考与采用边界
+
+- Spring AI Tool Calling：<https://docs.spring.io/spring-ai/reference/api/tools.html>
+- Spring AI ToolCallingAdvisor：<https://docs.spring.io/spring-ai/reference/api/tools/tool-calling-advisor.html>
+- OpenAI Agents Context：<https://openai.github.io/openai-agents-python/context/>
+- Google ADK Agent Evaluation：<https://adk.dev/evaluate/>
+- Google ADK Sequential Agents：<https://adk.dev/agents/workflow-agents/sequential-agents/>
+- LangChain / LangGraph 学习路径：<https://docs.langchain.com/oss/python/learn>
+- Semantic Kernel Agent Orchestration：<https://learn.microsoft.com/en-us/semantic-kernel/frameworks/agent/agent-orchestration/>
+
+采用的是原则，而不是新增依赖：单一框架循环、服务端可信上下文、工具轨迹与最终结果共同评测、真实流程出现后再引入工作流。07不引入上述框架的第二运行时。

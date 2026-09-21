@@ -1,198 +1,190 @@
-# Internal Admin Template 项目交接
+# Internal Admin Template 当前项目进度与交接
 
-> 交接日期：2026-09-02
-> 状态：当前事实快照；新对话必须重新以代码、数据库目标和运行进程验证，不得把本文当成永久事实源
-> 适用对象：接手项目总体设计、研发协调、验收和本地运行的下一位 Codex
+> 快照日期：2026-09-21
+> 状态：当前事实入口；运行状态、数据库目标、Git 差异和测试结果仍须在接手时重新只读核实
+> 当前阶段：0.2 开发中，SLICE-07D 未提交、未整体验收，不是发布候选
 
-## 1. 项目是什么
+## 1. 核心结论
 
-`internal-admin-template` 的已确认愿景是“AI 可装配、人可审计的全栈模板”：人确定架构、数据、权限和产品边界，AI 在既定约束内完成需求、迁移、后端、OpenAPI、前端和测试的最小连贯装配。
+- `main` 与 `origin/main` 当前均为 `e222978`；SLICE-07A、07B、07C 已提交，07D 仍是共享工作区中的大量未提交差异。
+- 2026-09-21 已重新证明一条真实仓储助手主链：当前源码构建、项目本地 PostgreSQL、真实登录/Session/CSRF、真实 HTTP/SSE、真实 DeepSeek、生产 Warehouse Tool、页面库存卡与刷新后 History 恢复全部贯通。
+- 此结果推翻了上一快照中“主链仍未通过”的状态，但不等于 SLICE-07D 或 AI 测试整改整体完成。
+- **该主链证据的时间边界（2026-09-21 当日补记）**：这条证据取自当日 **11:09** 的构建。此后工作区又产生两处生产行为改动（`module-agent` 的入口可理解性门禁、`module-agent-warehouse-adapter` 的“明确编码补齐”语义），并**两次重启应用**（后端进程已换三代）。因此第 5 节结论**不适用于当前构建**：接手前必须按第 4 节重新核实运行归属，并重跑一次同一主链。同日的场景测试基线（见 `planning/USER_SCENARIO_TEST_SYSTEM.md`、`planning/KNOWN_DEFECTS.md`）是在这两处改动之后冻结的。
+- 真实澄清、Provider 失败、Tool 失败、取消和重试仍缺少同等级真实链证据；仓储 AI 临时裁剪构建和 `docs/learning/` 也尚未完成。
+- 客户与订单仍是草稿方向；没有第二个真实业务消费者，因此禁止宣称“多业务复用已经完成工程证明”。
+- 当前研发库已由多轮真实 E2E 通过项目 API 创建多组 `SLICE07D-*` 仓库、库位、物品和入库事实。它们不是独立测试库，也未获授权清理；禁止手工 DML 删除。
 
-取舍优先级是：模板核心 → 派生机制 → 参考实现 → 参考业务扩展。仓储、知识和 Agent 是用于证明模板能力的参考实现，不应反向污染模板核心或发展成无边界产品。
+## 2. 权威关系与最短阅读路径
 
-关键设计哲学：
+发生冲突时按以下顺序判断：
 
-- 用户任务贯穿需求、实现和验收；接口成功不等于用户完成任务。
-- 模块化单体，不拆微服务；依赖方向为 `app-server → 业务模块 → 基础模块`。
-- 跨模块只使用公开 API 或本地事件，不直接访问其他模块 Mapper/DO。
-- 一个主路径，失败必须可见；禁止用空结果或默认值掩盖异常。
-- 只实现已确认需求，保持最低必要复杂度；不为未来能力预建框架。
-- 分片是重要总体目标，分片内拆中型任务是为了消除产品猜测、便于落地和验收，不按文件数机械拆分。
+1. 项目负责人当前明确要求；
+2. 状态为“已确认”的需求；
+3. 生效的 `AGENTS.md`、架构和交付协议；
+4. 当前源码、Git、构建产物、进程、数据库目标和真实消费者；
+5. 设计草稿；
+6. 历史报告、旧截图和陈旧测试产物。
 
-权威愿景：`docs/PROJECT_VISION.md`。
+接手者只需先读：
 
-## 2. 新对话应怎样阅读项目
+- [`PROJECT_MAP.md`](PROJECT_MAP.md)
+- [`PROJECT_VISION.md`](PROJECT_VISION.md)
+- [`../requirements/README.md`](../requirements/README.md)
+- [`planning/V0_2_AI_SLICE07_REUSE_DESIGN.md`](planning/V0_2_AI_SLICE07_REUSE_DESIGN.md)
+- [`planning/AI_TEST_SYSTEM_REPAIR_PLAN.md`](planning/AI_TEST_SYSTEM_REPAIR_PLAN.md)
+- [`development/RUNBOOK.md`](development/RUNBOOK.md)
 
-先使用 `.agents/skills/project-map/SKILL.md`，再完整读取 `docs/PROJECT_MAP.md`。地图只负责导航，不能代替需求和源码证据。
+再按当前问题读取目标模块、代码、测试和消费者；不要把本文件当作源码替代品。
 
-最低阅读顺序：
+## 3. 已提交基线与当前工作区
 
-1. 根 `AGENTS.md`：开发、安全、数据库和交付硬规则。
-2. `docs/PROJECT_VISION.md`：项目定位与取舍顺序。
-3. `requirements/README.md`：需求状态和权威关系。
-4. 当前任务对应的“已确认”需求；草稿不得授权实现。
-5. `docs/team/VERSION_DELIVERY_PROTOCOL.md`：任务分级、角色路由、返工止损。
-6. `docs/development/RUNBOOK.md`：启动、数据库和运行边界。
-7. 目标模块的 `capability/CAPABILITY.md`、相关代码、迁移、测试和真实消费者。
-8. AI/仓储任务再读 `requirements/V0_2_AI_WAREHOUSE.md`、`docs/planning/V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md` 及其场景/功能/模块设计。
-9. 文件导入任务读 `requirements/V0_2_FILE_IMPORT_EXPORT.md` 和 `docs/planning/V0_2_FILE_IMPORT_IMPLEMENTATION_PLAN.md`。
+| 分片 | 提交/状态 | 当前解释 |
+| --- | --- | --- |
+| SLICE-06F | `c43c143` | 文件导入与知识维护分片已关闭并推送 |
+| SLICE-07A | `97e8326` | Adapter 注册和业务边界已提交 |
+| SLICE-07B | `5d90a40` | 安全恢复基础保留；ToolArtifact 冻结为无生产消费者的实验能力 |
+| SLICE-07C | `98779fb` | Knowledge 内容包与评测资产归位已提交 |
+| SLICE-07D | 未提交 | 通用助手壳、恢复合同、生产装配修复、测试整改与运行脚本仍在工作区 |
 
-修改前用 `rg` 核对真实调用者、消费者、Liquibase master、OpenAPI 生成链和测试，不能只信索引。
+2026-09-21 现场检查：
 
-## 3. 模块现状
+- 分支：`main`
+- `HEAD`：`e222978`
+- `origin/main`：`e222978`
+- 工作区：大量已修改、删除和未跟踪文件，覆盖后端 Agent、Warehouse Adapter、app-server、前端通用助手、OpenAPI、测试、文档和 `dev.sh`
+- 特别可疑的未跟踪目录：`.agent-teams/`。该项来源已确认——**由本会话临时组建的多角色审议团队产生，属非项目产物**；两次审议结束后均已删除，当前 `git status` 中不再出现。若后续再次组队，仍按“提交前排除”处理。
 
-- `module-iam`：身份、部门、角色、权限、系统配置；提供可信 Actor。
-- `module-file`：图片旧能力及受控业务文档文件、格式/结构安全、授权读取和生命周期。
-- `module-site`：公开主页参考闭环。
-- `module-audit`：通用操作审计。
-- `module-warehouse`：物品、仓库、库位、库存、流水、物品导入预览和确认。
-- `module-knowledge`：版本化知识、Dense/Sparse Embedding、检索、目录/全文、用户草稿和发布。
-- `module-agent`：Conversation、Task、Run、History、SSE和模型编排。
-- `module-agent-warehouse-adapter`：Warehouse Tool、卡片、语义搜索和混合调用边界。
-- `module-ai-observability`：Run/Step/Attempt、反馈、管理员观测和离线评测。
-- `app-server`：模块装配、应用入口、迁移聚合以及当前未提交的06F维护入口。
-- 前端：Vue SPA，仓储、助手、观测、系统配置和知识资料页面。
+禁止整体回滚、批量清理或直接提交。提交前必须逐项确认差异归属，并把产品代码、测试、运行脚本和文档作为同一 07D 连贯变更审查。
 
-## 4. 已交付功能与提交
+## 4. 当前运行事实
 
-### 4.1 0.2 仓储 Agent
+2026-09-21 现场通过 `scripts/dev.sh status` 核实：
 
-SLICE-00—05已经形成完整纵向资产：
+- Java：25.0.4 LTS
+- Node：24.15.0
+- 数据库：项目本地 PostgreSQL 配置已加载，敏感连接信息未输出
+- 后端：`http://127.0.0.1:8080`，Health 为 `UP`
+- 前端：`http://127.0.0.1:5173`
 
-- Agent启用、DeepSeek Chat、DashScope/Qwen Embedding、SSE和最小观测。
-- Conversation、History、短期Memory、澄清、候选选择和严格Task/revision/scope。
-- 当前库存、位置、库位内容、近期变化等只读Warehouse Tool及受控卡片。
-- 四字段结果、稳定错误码、部分失败、修正、取消、重试及异常边界。
-- 知识检索、受信引用、目录、完整资料、多文档选择、知识与实时仓储混合查询。
-- 运行观测、用户反馈、管理员观测页和分层离线评测。
+运行状态具有时效性。下一位接手者必须重新核对端口归属、JAR 与源码时间、数据库目标和前端工作区，不得直接继承本次结果。
 
-关键提交：
+## 5. 已经真实证明的用户主链
 
-- `3e624b9 feat(ai): 完成知识资料浏览SLICE-04D`
-- `c9c958b feat(ai): 完成观测与反馈SLICE-05A-05B`
-- `1664f7b feat(ai): 完成离线评测SLICE-05C`
-- `72d5760 docs(ai): 收口SLICE-05交付状态`
+当前通过的固定场景是：
 
-05C 的确定性层已通过；历史 Provider Gate 有未通过证据且修复后未重新评价，不能冒报全部自然语言异常能力已经通过。历史脱敏证据位于 module-ai-observability 的版本化 evaluation 资源。
+1. 使用系统管理员从真实登录页登录；
+2. 通过现有 Warehouse API 在当前研发库创建仓库、库位、物品并入库 `7 件`；
+3. 通过 Warehouse 查询接口确认同一库存事实；
+4. 从仓储库存页面打开应用级助手；
+5. 用自然语言按明确物品编码查询当前库存；
+6. 真实 DeepSeek 选择生产 `warehouse_current_stock` Tool；
+7. 页面显示物品、仓库、库位、数量和单位一致的 `stock-summary` 卡片；
+8. 等助手消息进入可观察的 `COMPLETE` 状态后刷新页面；
+9. 从最新 History 重新打开同一会话，恢复相同库存卡片。
 
-### 4.2 SLICE-06 文件导入、影响预览、导出和知识维护
+最终浏览器命令：
 
-已提交：
+```bash
+cd frontend
+E2E_FRONTEND_URL=http://127.0.0.1:5173 npm exec playwright test e2e/warehouse-agent-stock-flow.spec.ts --project=chromium
+```
 
-- `c1098d6`：06A 受控文档文件与导入限制配置。
-- `e1d8192`：06B 物品模板、导出、异步解析和影响预览。
-- `2bd6739`：06C 二次确认、事实复核、单事务批量写入和结果恢复。
-- `98f8ef9`：06D 知识资料上传、确定性解析、草稿差异预览。
-- `70712ba`：06E Qwen Dense/Sparse发布、原子切换ACTIVE和查询一致性。
+结果：`1 passed (4.3s)`。该链证明当前主场景可用；它不证明第 8 节列出的异常链和裁剪门禁。
 
-这些能力的产品边界：
+## 6. 本轮发现并收敛的真实缺陷
 
-- 物品导入只处理物品主数据；不处理仓库、库位、库存或人员映射。
-- 上传不是直接入库；必须先预览影响，再二次确认。
-- 确认全批原子执行，不允许部分成功。
-- 知识上传只支持 `.docx/.md/.txt`；不支持PDF、OCR或病毒扫描。
-- 文件只做格式与结构安全校验，页面必须明确“不提供病毒扫描”。
-- 普通页面入口先完成；助手内上传入口不在本期。
+| 缺陷 | 用户可见影响 | 当前修正 |
+| --- | --- | --- |
+| 全局 `defaultToolCallbacks` 与请求级工具重复装配 | 首问在进入 Provider 前失败 | 移除全局默认回调，仅保留可信 Actor 的请求级工具集合 |
+| 发送按钮未真正调用 `sendMessage()` | 用户点击发送无动作 | 修正事件绑定并补前端回归 |
+| 明确业务编码被模型遗漏后退化为空筛选 | 查询可能扩大为全库存概览 | Warehouse Tool 边界拒绝“正文有明确编码但 mentions 为空” |
+| MyBatis-Plus 雪花 ID 遇到短暂时钟回拨 | 用户入库操作失败 | app-server 增加单个单调时钟 `IdentifierGenerator` Bean；未改业务 Service、数据库或表结构 |
+| 通用工具卡仅在知识分支持久化 | 即时卡可见，刷新后 History 丢卡 | success/partial/failure 终态统一使用现有 cardText 存储路径 |
+| E2E 把 `card.replace` 可见误当作 Run 已完成 | 测试在持久化完成前刷新，制造假失败 | 等待页面已有的 `COMPLETE` 可观察信号“有帮助”按钮；没有固定 sleep、没有减弱业务断言 |
 
-06F已于提交`c43c143`完成并推送；下一节保留其实现范围与关闭事实，不再作为待办。
+## 7. 当前自动化证据
 
-## 5. 已关闭：SLICE-06F
+以下结果来自当前工作区的最新报告，只证明各自边界：
 
-06F目标是对06A—06E做生产恢复、清理、容量和两条用户链集成验收，不新增业务场景或通用任务框架。
+| 验证 | 结果 | 证明范围 |
+| --- | --- | --- |
+| `MonotonicIdentifierGeneratorTest` | 3/3 | `-92ms` 回拨、4097 序列边界、Spring/MyBatis 实际装配 |
+| `WarehouseInventoryToolProviderTest` | 37/37 | Warehouse Tool 参数和明确编码边界 |
+| `AgentConversationServiceTest` | 63/63 | 会话服务终态、通用卡持久化及 History 恢复等局部合同 |
+| `AgentHistoryCardContractTest` | 1/1 | 新旧卡片存储格式的 History 解析合同 |
+| `AgentConversationDefaultToolCallbacksHttpIT` | 1/1 | app-server HTTP 入口不再重复装配默认工具 |
+| `warehouse-agent-stock-flow.spec.ts` | 1/1 | 第 5 节真实浏览器主链 |
+| `git diff --check` | 通过 | 当前差异无空白错误 |
 
-当前实现包含：
+测试类名、数量和构建成功不能替代真实用户链。主链结论以第 5 节为准；异常链仍以“未完成”为准。
 
-- `DocumentImportMaintenance`：应用启动首轮、固定5分钟周期、有界批次50、单轮并发闸门。
-- Warehouse作业：全局恢复`RECEIVED`/陈旧`ANALYZING`，revision CAS领取，后台重新鉴权。
-- 队列拒绝：精确CAS立即退回`RECEIVED`，记录`IMPORT_ANALYSIS_QUEUE_FULL`；实际入队才计入recovered。
-- Knowledge草稿：陈旧`PUBLISHING`只转为可见失败，不自动再次调用Embedding或发布。
-- 到期作业/草稿先处理owner引用和资产释放；存在更多到期项、释放失败或归属竞争不确定时，阻止文件全局清理。
-- Warehouse和Knowledge各有一个服务于维护扫描的后续索引。
+## 8. 尚未完成与下一步
 
-研发报告的验证：相关Warehouse、Knowledge、file、app-server、前端、OpenAPI、模块边界及diff检查通过；Knowledge临时PostgreSQL/pgvector迁移通过。
+> 2026-09-21 优先级调整：经两名成员独立复核（证伪核对 + 代码审计 + 联合结论），当前主线**不是**继续 07D 收口，而是先让测试体系与已知缺陷闭环可信。复核推翻了两处自述（“场景 9/9 通过”“机制已验证”），并确认一处由当日修复引入的 blocker。
 
-唯一一次正式06E/06F Qwen发布Gate已通过：测试自有草稿、临时无卷PostgreSQL/pgvector、真实Qwen document/query Embedding，发布后LIST/READ/SEARCH均看到USER_UPLOAD ACTIVE；未写开发/共享数据库。
+**本轮收口边界（项目负责人已确认，见台账 §1.1）——只做三件，做完即停**：
 
-关闭状态：
+1. ✅ **冻结证据**：当前版本执行器跑出基线并落盘；订正台账与方案的错误数字；执行器补上"资源为空/0 条问法即失败""多步骤用例显式报错"两道假通过防线。
+2. ✅ **修同层缺陷**：`DEF-004`（排除型问法查错物品，blocker）当日发现并关闭；`item_locations` 改为"补齐 + 无线索受控澄清"；`recent_movements` 补上明确编码补齐；入口门禁判据放宽到含数字编码并新增真值表测试；门禁不再完成用户未决的澄清任务（含行为测试）。适配器 **40/40**、`AgentConversationServiceTest` **64/64**；重建重启后场景复核 **10/10**。
+3. ⏳ **减法 + 文档一致性终检**：报告状态收敛为 `PASS`/`REGISTERED`/`FAIL` 三种、两类登记表合并为 `knownIssues`、装饰字段删除、方案逐轮流水压缩；随后逐一对齐台账、方案、交接、README、项目地图与两个能力包。
 
-- 两条真实用户链及其范围内缺陷已完成验收和收口；
-- 当前不扩展MySQL和Oracle；SQLite业务库和PostgreSQL/pgvector Knowledge仍是已确认目标；
-- 06F生产、测试、迁移、前端友好度及必要文档差异已在`c43c143`统一提交并推送；
-- 本节此前关于“未提交工作区”和共享差异隔离的指令已经失效，不得再用于阻止SLICE-07启动。
+**本轮明确不做（全部挂账在台账）**：`DEF-001` 剩余部分（有排除项无正向线索仍会硬失败，动手前必须先读三处调用点）、`DEF-003`、`DEF-005`（知识检索测试 6/14 红，需先判定代码错还是测试过期）、C-04（`PARTIAL`/`CANCELLED` 在 131 个 run 中出现 0 次，属未验证能力）、第 1 批剩余场景、真跑层接进门禁、资源登记 manifest 哈希、RUNBOOK 固定命令、14 组 `SCNPILOT-*` 数据处置、以及**提交与推送**。
 
-## 6. 当前运行环境与数据库：必须重新核实
+本轮三件完成后，再回到下面原有的 07D 收口序列。
 
-最近一次只读进程检查显示：
+**测试体系当前阶段（2026-09-21）**：**场景层已完成一个阶段**——话术资源 + 真实 HTTP 执行器可用（4 用例 / 10 条问法，冻结基线整轮通过且每条带 `runId`），`DEF-001`/`DEF-002`/`DEF-004` 闭环，减法完成。**以下阶段未完成，不得视为"测试体系已修好"**：快层接进 `quality.sh`（AI 四模块 48 个测试类仍不在任何门禁）、真跑层固定命令、页面层纳入收尾、覆盖铺开（68 场景中约 46 个待补）、新资源登记 manifest 哈希、RUNBOOK 命令、`DEF-005` 判定。详见 [`planning/USER_SCENARIO_TEST_SYSTEM.md`](planning/USER_SCENARIO_TEST_SYSTEM.md) §8.0。
 
-- 后端端口8080运行的是2026-08-31启动的旧JAR。
-- 前端5173也从2026-08-31持续运行；Vite可能热加载了前端源码，但不能据此认为后端已更新。
-- 页面已经显示“知识资料”入口，但草稿列表显示“系统内部错误”，说明当前浏览器状态不能作为新版后端通过证据。
+1. **冻结并审查 07D 差异**：确认所有未提交文件都能对应已确认 07D 目标；识别 `.agent-teams/` 等非产品产物，未经归属确认不得提交或删除。
+2. **真实澄清/恢复链**：用真实候选、一次有效 token、重复或过期 token、`FAILED_RETRYABLE` 空候选和唯一重新查询动作验收。
+3. **真实异常链**：分别验证 Provider 失败、Tool 失败、取消和重试；每次只制造一个明确失败点，不复用 Mock 绿色作为完成证据。
+4. **裁剪证明**：在临时派生副本移除仓储 AI Adapter、仓储前端 AI 资产及组合根注册，证明通用后端/前端仍可构建，人工仓储页面仍可用。
+5. **学习文档**：仅在代码和裁剪事实冻结后创建 `docs/learning/README.md` 及四篇正文，严禁把未证明能力写成教程。
+6. **07D 收口**：同步 README、设计索引和交接状态，完成一次最终差异复核，再提交和推送。
+7. **后续产品**：07D 关闭后再确认客户管理草稿；客户成为第二真实消费者前，不升级公共抽象、不开发订单 Agent。
 
-关于数据库的重要更正：上一对话曾错误地把`internal_admin_knowledge`简单判断成“只能存知识、不能承载业务”。用户明确指出本地目标是PostgreSQL加pgvector，业务数据也放PostgreSQL。正确结论必须由当前配置和schema事实验证：
+## 9. 明确禁止的误报
 
-- 同一PostgreSQL实例或数据库可以同时承载业务`public` schema和知识`ai_knowledge` schema。
-- 即使连接同一数据库，业务Mapper/Liquibase/事务管理器与Knowledge Mapper/Liquibase/事务管理器仍应按命名Bean正确绑定。
-- 不得仅凭数据库名称推断用途，也不得在未核实schema、现有表和项目运行配置前声称“不能启动”或“可以启动”。
-- `.env.local`含秘密，不得把值写入文档或回复；只允许在明确运行任务中读取必要键并脱敏报告。
+- 主链通过不等于 SLICE-07D 已完成。
+- 单元测试、Mock、手工构造 Service 或固定模型输出不等于生产链通过。
+- 当前只有仓储一个真实业务 Adapter，不得声称多业务复用已证明。
+- `.agent-teams/` 中的历史审议配置不代表审议已完成，也不能作为当前事实。
+- 当前研发 PostgreSQL 中的 E2E 数据不能被静默称为隔离测试数据，也不能手工删库清理。
+- 客户管理和质量需求仍是草稿，不授权生产实现。
 
-下一位接手后应先只读核对：
+## 10. 交给第二个独立审阅者的提示词
 
-1. 当前8080进程的启动目录、环境和实际数据源。
-2. `AppDataSourceConfig`、`KnowledgeConfiguration`和`AiProperties`的真实绑定规则。
-3. 本地PostgreSQL目标内`public`和`ai_knowledge` schema、Liquibase历史与业务表是否均属于项目。
-4. 当前系统管理员角色是否包含`warehouse:master:manage`和`ai:knowledge:manage`。
-5. 核实无误后再从当前源码构建并重启后端；前端必要时重启。
+将下面整段提示词交给另一个 Codex/审阅者。它的任务是独立核对，不是继续实现：
 
-数据库操作只能通过项目正常启动、Liquibase、测试或E2E入口；禁止手工DDL/DML。启动前报告明确目标、端口和预期迁移，启动后核对健康、日志与页面。
+```text
+你现在作为 internal-admin-template 的独立项目进度核对者工作。项目路径是：
+/Volumes/myProjects/internal-admin-template
 
-## 7. 当前最优下一步
+目标：独立判断当前项目做到了什么、没有做到什么、下一步是否合理，并专门找出当前进度文档中的错误、遗漏、夸大和无证据结论。不要修改任何文件、数据库、进程、任务或外部系统；只进行只读检查并提交核对报告。
 
-1. 以已确认设计[`V0_2_AI_SLICE07_REUSE_DESIGN.md`](planning/V0_2_AI_SLICE07_REUSE_DESIGN.md)为唯一SLICE-07实施方案。
-2. 07A已由“个人项目-普通研发乙”完成、通过差异复核并提交为`97e8326`；当前不得继续修改07A。
-3. 07B已由“个人项目-普通研发乙”完成，Tool级Artifact授权、消费时Actor重解析、ResumeRef隔离、单迭代单ToolCall和重试所有权边界已通过差异复核；下一步先复核07C边界，07D仍不启动。
-4. 总设计师负责设计与学习文档、分段差异复核和最终验收；研发负责生产代码与测试；运行环境工作才交给运维。
+必须遵守：
+1. 完整读取根 AGENTS.md、docs/PROJECT_MAP.md、docs/PROJECT_VISION.md、requirements/README.md、docs/HANDOFF_CURRENT_PROJECT.md、docs/planning/AI_TEST_SYSTEM_REPAIR_PLAN.md、docs/planning/V0_2_AI_SLICE07_REUSE_DESIGN.md、docs/planning/V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md。
+2. 把 HANDOFF_CURRENT_PROJECT.md 当作“待证伪陈述”，不能把它自身当作证据。
+3. 用 git branch/status/log/diff 核对提交基线、未提交范围和可疑产物；不得清理、回滚或提交。
+4. 用当前源码、测试源码、最新测试报告、scripts/dev.sh status 和必要的只读 HTTP 查询核对事实。不得读取或输出 .env.local、密钥、Cookie、密码、完整 Provider 响应或敏感数据库连接信息。
+5. 不运行会写数据库的 E2E，不重复调用真实 Provider，不启动第二套环境，不新建测试库；除非项目负责人另行明确授权。
+6. 区分四类结论：已提交、工作区已实现但未提交、当前运行已验证、仅有设计/计划。不能把其中一类替代另一类。
+7. 重点核对：
+   - main 和 origin/main 是否仍为 e222978；
+   - 07D 未提交差异是否与已确认范围一致；
+   - 真实仓储主链是否确有最新通过证据，证据是否覆盖登录、HTTP/SSE、DeepSeek、生产 Tool、PostgreSQL、页面和 History；
+   - 澄清、Provider 失败、Tool 失败、取消、重试是否仍缺同等级证据；
+   - 裁剪证明和 docs/learning 是否仍未完成；
+   - .agent-teams/ 等未跟踪内容是否属于项目、临时产物或应排除项；
+   - README、设计索引、测试专项和交接文档是否相互一致。
 
-## 8. 后续计划
+输出格式：
+A. 一句话总判断；
+B. 已证实事实（每项附文件/命令/测试报告证据）；
+C. 被推翻或无法证实的陈述；
+D. 未完成项及优先级；
+E. 工作区污染、数据副作用和提交风险；
+F. 对 docs/HANDOFF_CURRENT_PROJECT.md 的逐条修正建议；
+G. 最终给项目负责人的结论：可继续、需先修正文档、或必须暂停，并说明唯一最小理由。
 
-### 8.1 SLICE-07
-
-07设计、复杂度、四阶段边界、ToolArtifact、Knowledge分域延期、测试Adapter证据边界、学习路径和止损线已经完成确认，见[`V0_2_AI_SLICE07_REUSE_DESIGN.md`](planning/V0_2_AI_SLICE07_REUSE_DESIGN.md)。
-
-07按07A注册与解耦、07B受信依赖链、07C业务资产归位、07D前端通用壳/学习文档/裁剪证明顺序实施。当前状态为“07A、07B已关闭，下一步复核07C”；客户与订单生产功能、knowledgeSpace、DAG、动态插件和Artifact持久化均不在07范围内。
-
-### 8.2 客户与订单方向
-
-`requirements/CUSTOMER_ORDER_SYSTEM.md`仍是草稿，不能直接开发。此前讨论中确认OCR不放在06，未来若客户业务材料确需扫描件/OCR，应在客户/订单需求阶段重新完成场景、权限、安全、准确性和人工确认设计。
-
-### 8.3 模板主线
-
-仓储参考实现之后仍要回到项目愿景：模板派生、模块裁剪、从干净模板创建新系统、替换身份信息、移除参考模块后仍能构建运行。这些比继续无限扩展示例业务更优先。
-
-## 9. 协作方式与止损规则
-
-- 当前对话承担总体设计、任务派发和复核；应用生产实现默认发给研发工程师任务，不由总设计师越权亲自修改。
-- 发现明确、范围内、无产品歧义的问题，应直接退回原研发任务继续修复，不等待用户重复确认。
-- 只有改变数据模型、权限模型、模块边界、主要技术或产品语义时才找用户确认。
-- 可恢复的工作目录、命令参数、fixture和测试断言问题由研发在原任务内最小修正，不创建新分片。
-- 同一主链第三次失败、验证轮次超过预计两倍或治理产物明显多于产品变化时，触发成本止损复盘，不继续堆整改。
-- 研发回报不是事实本身；复核者必须读差异、源码和关键测试。
-- 正式Provider调用应有目标、预算和停止条件；不得为了调试fake或追指标反复调用。
-- 新功能和用户交互必须使用`user-scenario-delivery`技能，从用户已知信息、操作、异常和最终收益验收。
-
-## 10. 安全与提交纪律
-
-- 外部、共享、生产和未知数据库默认只读；本地开发/测试写入必须目标明确且走项目入口。
-- 禁止手工DDL/DML、伪造Liquibase状态或直接编辑数据库文件。
-- 不输出或提交API Key、密码、Cookie、完整Provider响应、向量、用户正文或Tool参数结果。
-- 工作区是共享的；先确认差异归属，只提交当前任务文件。
-- 不能使用破坏性git命令清理他人差异。
-- OpenAPI变更通过正式生成链同步`docs/system/api/openapi.json`和`frontend/src/generated/api-schema.ts`，不手写平行类型。
-- 表结构只新增后续Liquibase changeSet，不修改已执行历史变更集。
-
-## 11. 接手时不要继承的错误结论
-
-- 不要因为数据库名含`knowledge`就断言业务数据不能放进去；核实schema和配置。
-- 不要因为前端页面已出现就断言后端是最新版。
-- 不要因为定向测试全绿就跳过已确认的真实用户链。
-- 不要因为缺一项环境证据就否定已经取得的确定性和Provider证据；分层报告状态。
-- 不要把分片数量当复杂度结论；先分析总体目标、独立用户结果、状态/数据耦合和验收边界。
+报告必须简洁、证据化；禁止仅复述进度文档，禁止因为测试名含 Production/E2E 就自动赋予生产验收权重。
+```

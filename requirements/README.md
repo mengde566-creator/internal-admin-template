@@ -44,6 +44,11 @@
 | [QUALITY_REQUIREMENTS.md](QUALITY_REQUIREMENTS.md) | 草稿 | 安全、可靠性、兼容性、性能、可维护性和测试目标 | 全项目 |
 | [iam/IDENTITY_AUTHORIZATION.md](iam/IDENTITY_AUTHORIZATION.md) | 已确认 | 0.1部门、用户、角色、权限点模型及最小管理边界 | `module-iam` |
 
+关联设计：
+
+- 客户管理候选模型、场景和待确认决策见[`docs/planning/CUSTOMER_MANAGEMENT_MODULE_DESIGN.md`](../docs/planning/CUSTOMER_MANAGEMENT_MODULE_DESIGN.md)。该文档同样为草稿，不改变`CUSTOMER_ORDER_SYSTEM.md`的授权状态。
+- AI/Agent测试体系整改见[`docs/planning/AI_TEST_SYSTEM_REPAIR_PLAN.md`](../docs/planning/AI_TEST_SYSTEM_REPAIR_PLAN.md)。它定义证据门禁，不新增产品需求。
+
 随着模块进入分析，再按实际需要新增需求文件，例如：
 
 ```text

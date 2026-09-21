@@ -149,6 +149,8 @@
 
 ## 9. 可测试性
 
+当前AI/Agent链的真实接口门禁和整改顺序见[`docs/planning/AI_TEST_SYSTEM_REPAIR_PLAN.md`](../docs/planning/AI_TEST_SYSTEM_REPAIR_PLAN.md)。该专项要求先以当前`app-server`完成真实HTTP/SSE、Provider、业务Tool和PostgreSQL链，再验证前端请求层与页面；局部测试不参与生产完成判断。
+
 ### NFR-TEST-001：按风险验证
 
 - Bug 修复必须有回归测试；

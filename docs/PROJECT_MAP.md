@@ -22,6 +22,7 @@
 | 事实 | 路径 |
 | --- | --- |
 | 项目愿景 | `docs/PROJECT_VISION.md` |
+| 当前项目事实与下一步 | `docs/HANDOFF_CURRENT_PROJECT.md`；进程和工作区仍须现场复核 |
 | 需求状态与索引 | `requirements/README.md` |
 | 开发规范 | `AGENTS.md` |
 | 交付与角色路由 | `docs/team/VERSION_DELIVERY_PROTOCOL.md`、`docs/team/ROLE_CATALOG.md` |
@@ -30,10 +31,27 @@
 | 后端、前端、认证架构 | `docs/architecture/BACKEND_MODULES.md`、`docs/architecture/FRONTEND_STRUCTURE.md`、`docs/architecture/AUTHENTICATION.md` |
 | 仓储AI已确认需求 | `requirements/V0_2_AI_WAREHOUSE.md` |
 | 仓储AI设计与状态 | `docs/planning/V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md` |
+| SLICE-07当前设计 | `docs/planning/V0_2_AI_SLICE07_REUSE_DESIGN.md` |
+| AI测试体系整改 | `docs/planning/AI_TEST_SYSTEM_REPAIR_PLAN.md` |
+| 用户场景测试体系 | `docs/planning/USER_SCENARIO_TEST_SYSTEM.md`；已确认，定义三层执行、场景资产与话术资源 |
+| 已知缺陷台账 | `docs/planning/KNOWN_DEFECTS.md`；登记已复现缺陷、原因、状态与关闭证据 |
+| 客户管理候选设计 | `docs/planning/CUSTOMER_MANAGEMENT_MODULE_DESIGN.md`；草稿，不授权实现 |
 | OpenAPI唯一合同 | `docs/system/api/OPENAPI_CONTRACT.md` |
 | 运行与数据库目标 | `docs/development/RUNBOOK.md` |
 | 模板派生与裁剪 | `docs/development/TEMPLATE_DERIVATION_GUIDE.md` |
 | 历史发布证据 | `docs/team/tasks/evidence/`；仅在追溯时读取 |
+
+### 2.1 文档状态与使用边界
+
+| 类别 | 主要位置 | 如何使用 |
+| --- | --- | --- |
+| 当前事实 | `HANDOFF_CURRENT_PROJECT.md`、目标源码、Git、进程和数据库只读事实 | 决定现在能否继续、验收或提交；运行事实需现场刷新 |
+| 已确认要求/设计 | `requirements/`中标记“已确认”的文档、已确认架构和分片设计 | 可以授权范围内研发；仍须和当前代码核对差值 |
+| 草稿/待确认设计 | `requirements/`或`docs/planning/`中明确标记草稿/待确认的文档 | 只用于讨论和收敛，不授权生产实现 |
+| 历史实施/验收证据 | `docs/team/tasks/evidence/`及已关闭专项中的历史记录 | 只证明当时、当次命令和当时边界；不能替代当前构建验收 |
+| 学习与派生说明 | `docs/learning/`、`docs/development/TEMPLATE_DERIVATION_GUIDE.md` | 解释真实代码和派生方法；不得描述尚未落地能力 |
+
+文档名、类名或测试名包含“完成”“生产”“验收”不自动提高证据等级。发生冲突时，以当前已确认要求和实际代码/运行事实为准；旧截图、旧测试报告和陈旧构建产物不得用于当前验收。
 
 ## 3. 代码和模块
 
@@ -64,6 +82,7 @@
 | 表、列、索引 | 新Liquibase changeSet、正式/测试master、DO/Mapper、升级测试 |
 | Knowledge资料或Embedding合同 | 目录/版本、导入幂等、冻结语料/基线、引用消费者 |
 | Agent分片新增或状态变化 | Agent设计索引；README仅在阶段描述失真时更新 |
+| 场景、话术资源或缺陷状态变化 | 资源与台账的 `defectId` 双向绑定、资源哈希/manifest 登记、执行器字段说明表、Agent设计索引 |
 | 新模块、裁剪或装配变化 | 根/模块POM、app装配、迁移master、前端路由导航、质量入口 |
 | 依赖版本变化 | manifest、锁文件/BOM、许可、配置和相关质量门禁 |
 | 运行配置或数据库目标 | 示例配置、校验器、运行手册和隔离测试；秘密不得入库 |

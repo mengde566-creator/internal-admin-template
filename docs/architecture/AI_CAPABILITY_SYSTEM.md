@@ -1,13 +1,13 @@
 # 0.2 通用 AI 能力体系架构
 
 > 状态：已确认
-> 版本：0.4
-> 更新日期：2026-09-15
+> 版本：0.5
+> 更新日期：2026-09-18
 > 关联需求：[`requirements/V0_2_AI_WAREHOUSE.md`](../../requirements/V0_2_AI_WAREHOUSE.md)
 > 仓储基础设计：[`DEPARTMENT_WAREHOUSE_DESIGN.md`](DEPARTMENT_WAREHOUSE_DESIGN.md)
 > Agent设计入口：[`V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md`](../planning/V0_2_WAREHOUSE_AGENT_DESIGN_INDEX.md)（第一版场景、功能与模块分片已确认）
 > 当前阶段：架构已确认；IAM与仓储人工业务基础已实现，AI生产实现须先完成剩余PoC Gate并按角色路由
-> 本次变更：同步SLICE-07全计划复核，收敛多Adapter校验与错误所有权、卡片分派、Knowledge内容包策略和降级表达；不代表第二真实业务复用已经完成工程证明
+> 本次变更：同步SLICE-07降级重设计；当前只收口仓储AI模板边界、裁剪、学习路径和真实用户链，ToolArtifact冻结为无生产调用的实验能力，不代表第二真实业务复用已经完成工程证明
 
 ## 1. 架构结论
 
