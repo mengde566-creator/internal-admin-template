@@ -1,0 +1,94 @@
+{
+  "datasetVersion": "warehouse-stock-query-scenario-v1",
+  "cases": [
+    {
+      "caseId": "stock-query-01",
+      "scnRef": ["SCN-N-01"],
+      "executionMode": "END_TO_END_PROVIDER",
+      "steps": [
+        {
+          "texts": [
+            "查询物品 {itemCode} 的当前库存",
+            "{itemCode} 还有多少",
+            "{itemCode}，现在，多少",
+            "{itemName} 现在还有多少库存",
+            "还有多少 {itemName}",
+            "{itemName} 还有几件"
+          ]
+        }
+      ],
+      "expectedToolSequence": ["warehouse_current_stock"],
+      "forbiddenTools": ["warehouse_item_locations", "warehouse_recent_movements"],
+      "expectedRunStatus": "COMPLETE",
+      "expectedCard": {
+        "cardType": "stock-summary",
+        "fieldsEqualBusinessFact": ["itemCode", "warehouseCode", "locationCode", "baseUnit", "quantity"]
+      }
+    },
+    {
+      "caseId": "clarify-typo-01",
+      "scnRef": ["SCN-I-05", "SCN-RP-01"],
+      "executionMode": "END_TO_END_PROVIDER",
+      "steps": [
+        {
+          "texts": ["{itemName} 还有多勺子"]
+        }
+      ],
+      "expectedToolSequence": ["warehouse_current_stock"],
+      "forbiddenTools": [],
+      "expectedRunStatus": "COMPLETE",
+      "expectedCard": {
+        "cardType": "clarification-choice",
+        "optionsMustContain": {
+          "optionField": "code",
+          "equalsBusinessFact": "itemCode"
+        }
+      },
+      "knownIssues": [
+        {
+          "defectId": "DEF-003",
+          "type": "UNSTABLE",
+          "text": "{itemName} 还有多勺子",
+          "registeredAt": "2026-09-21",
+          "reason": "错别字问法下“澄清候选是否包含正确物品”不稳定：同一问法第 1 次候选缺少本次物品，第 2 次包含且 resolved=true。澄清本身是被允许的结果，不稳定的是候选质量。",
+          "observed": "第 8 轮第 1 次失败、第 2 次通过",
+          "expectedAfterFix": "每次澄清都应给出包含正确物品的受信候选"
+        }
+      ]
+    },
+    {
+      "caseId": "duplicate-send-01",
+      "scnRef": ["SCN-C-01"],
+      "executionMode": "END_TO_END_PROVIDER",
+      "steps": [
+        {
+          "texts": ["{itemCode} 还有多少"]
+        }
+      ],
+      "expectedToolSequence": ["warehouse_current_stock"],
+      "forbiddenTools": ["warehouse_item_locations", "warehouse_recent_movements"],
+      "expectedRunStatus": "COMPLETE",
+      "expectedCard": {
+        "cardType": "stock-summary",
+        "fieldsEqualBusinessFact": ["itemCode", "quantity"]
+      },
+      "duplicateSend": true
+    },
+    {
+      "caseId": "garbled-input-01",
+      "scnRef": ["SCN-I-03"],
+      "executionMode": "END_TO_END_PROVIDER",
+      "steps": [
+        {
+          "texts": [
+            "￥%……&*（）——+",
+            "asdkjfhalksdjf ？？？ zxcvbnm"
+          ]
+        }
+      ],
+      "expectedToolSequence": [],
+      "forbiddenTools": ["warehouse_current_stock", "warehouse_item_locations", "warehouse_recent_movements"],
+      "expectedRunStatus": "COMPLETE"
+    }
+  ]
+}
