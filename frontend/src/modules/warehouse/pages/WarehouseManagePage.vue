@@ -1,84 +1,19 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Box, Collection, Document, Location, Search } from '@element-plus/icons-vue'
 import { useAuthStore } from '../../auth/store/auth'
-import WarehouseAgentPanel from '../components/WarehouseAgentPanel.vue'
+import { useAgentShell } from '../../agent/controller'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const agentCollapsed = ref(true)
-const agentWidth = ref(420)
-const agentEnabled = ref(true)
-const workspaceRef = ref<HTMLElement | null>(null)
-const workspaceWidth = ref(0)
-
-let resizeObserver: ResizeObserver | null = null
-let resizeRafId: number | null = null
-let lastCommittedWidth = 0
-
-function commitWorkspaceWidth(rawWidth: number) {
-  const rounded = Math.round(rawWidth)
-  if (rounded <= 0) return
-  if (lastCommittedWidth === 0 || Math.abs(rounded - lastCommittedWidth) >= 4) {
-    lastCommittedWidth = rounded
-    workspaceWidth.value = rounded
-  }
-}
-
-function updateWorkspaceWidth() {
-  if (workspaceRef.value) {
-    commitWorkspaceWidth(workspaceRef.value.clientWidth)
-  }
-}
+const agentShell = useAgentShell()
 
 onMounted(() => {
   if (route.name === 'warehouse' || route.name === 'warehouse-default') {
     void router.replace({ name: 'warehouse-stock' })
   }
-  updateWorkspaceWidth()
-  if (typeof ResizeObserver !== 'undefined' && workspaceRef.value) {
-    resizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const width = entry.contentRect.width
-        if (resizeRafId !== null) cancelAnimationFrame(resizeRafId)
-        resizeRafId = requestAnimationFrame(() => {
-          commitWorkspaceWidth(width)
-        })
-      }
-    })
-    resizeObserver.observe(workspaceRef.value)
-  }
-  window.addEventListener('resize', updateWorkspaceWidth)
-})
-
-onBeforeUnmount(() => {
-  if (resizeRafId !== null) {
-    cancelAnimationFrame(resizeRafId)
-    resizeRafId = null
-  }
-  resizeObserver?.disconnect()
-  resizeObserver = null
-  window.removeEventListener('resize', updateWorkspaceWidth)
-})
-
-const isDrawer = computed(() => {
-  if (workspaceWidth.value > 0) return workspaceWidth.value < 768
-  return typeof window !== 'undefined' ? (window.matchMedia?.('(max-width: 1100px)').matches ?? window.innerWidth <= 1100) : false
-})
-
-const spaceForDocked = computed(() => {
-  if (workspaceWidth.value <= 0) return false
-  return workspaceWidth.value >= 1240 && (workspaceWidth.value - agentWidth.value >= 800)
-})
-
-const agentMode = computed<'DOCKED' | 'COMPACT' | 'OVERLAY' | 'DRAWER'>(() => {
-  if (!agentEnabled.value) return 'COMPACT'
-  if (agentCollapsed.value) return 'COMPACT'
-  if (isDrawer.value) return 'DRAWER'
-  if (!spaceForDocked.value) return 'OVERLAY'
-  return 'DOCKED'
 })
 
 const entries = computed(() => [
@@ -100,38 +35,28 @@ const activeEntry = computed(() => String(route?.name ?? 'warehouse-stock'))
         <span class="heading-copy">库存查询、出入库操作与业务记录追溯</span>
       </header>
 
-      <nav class="warehouse-nav" aria-label="仓储入口" data-testid="warehouse-nav">
-        <RouterLink
-          v-for="entry in entries"
-          :key="entry.name"
-          :to="entry.path"
-          class="warehouse-nav-item"
-          data-testid="warehouse-nav-item"
-          :class="{ active: activeEntry === entry.name }"
-        >
-          <el-icon :size="16" aria-hidden="true"><component :is="entry.icon" /></el-icon>
-          <span>{{ entry.label }}</span>
-        </RouterLink>
-      </nav>
+      <div class="warehouse-top-actions">
+        <nav class="warehouse-nav" aria-label="仓储入口" data-testid="warehouse-nav">
+          <RouterLink
+            v-for="entry in entries"
+            :key="entry.name"
+            :to="entry.path"
+            class="warehouse-nav-item"
+            data-testid="warehouse-nav-item"
+            :class="{ active: activeEntry === entry.name }"
+          >
+            <el-icon :size="16" aria-hidden="true"><component :is="entry.icon" /></el-icon>
+            <span>{{ entry.label }}</span>
+          </RouterLink>
+        </nav>
+        <button v-if="agentShell?.available.value" type="button" class="warehouse-agent-shortcut" @click="agentShell?.open()">打开智能助手查询仓储</button>
+      </div>
     </div>
 
-    <div
-      ref="workspaceRef"
-      class="warehouse-workspace"
-      :class="{ 'warehouse-workspace--agent-overlay': agentMode !== 'DOCKED' }"
-      :style="{ '--agent-width': `${agentWidth}px` }"
-    >
+    <div class="warehouse-workspace">
       <main class="warehouse-content">
         <RouterView />
       </main>
-      <WarehouseAgentPanel
-        :mode="agentMode"
-        :workspace-width="workspaceWidth"
-        :can-operate="auth.hasPermission('warehouse:inventory:operate')"
-        @toggle-collapse="agentCollapsed = !agentCollapsed"
-        @width-change="agentWidth = $event"
-        @capability-change="agentEnabled = $event"
-      />
     </div>
   </section>
 </template>
@@ -161,6 +86,13 @@ const activeEntry = computed(() => String(route?.name ?? 'warehouse-stock'))
   display: flex;
   align-items: baseline;
   gap: 10px;
+}
+.warehouse-top-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .warehouse-title {
   margin: 0;
@@ -208,14 +140,12 @@ const activeEntry = computed(() => String(route?.name ?? 'warehouse-stock'))
   flex: 1 1 0%;
   min-height: 0;
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--agent-width, 420px);
-  gap: 20px;
+  display: block;
   align-items: stretch;
   overflow: hidden;
 }
 .warehouse-workspace--agent-overlay {
-  grid-template-columns: minmax(0, 1fr);
+  display: block;
 }
 .warehouse-content {
   height: 100%;
@@ -225,6 +155,15 @@ const activeEntry = computed(() => String(route?.name ?? 'warehouse-stock'))
   scrollbar-gutter: stable;
   padding-right: 4px;
 }
+.warehouse-agent-shortcut {
+  padding: 9px 13px;
+  color: var(--ui-primary-contrast);
+  background: var(--ui-primary);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: var(--ui-shadow-md);
+  cursor: pointer;
+}
 @media (max-width: 720px) {
   .warehouse-shell {
     padding: 16px 12px 20px;
@@ -233,6 +172,10 @@ const activeEntry = computed(() => String(route?.name ?? 'warehouse-stock'))
     overflow-x: auto;
     flex-wrap: nowrap;
     margin-inline: -4px;
+  }
+  .warehouse-top-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
   .warehouse-nav-item {
     flex: 0 0 auto;

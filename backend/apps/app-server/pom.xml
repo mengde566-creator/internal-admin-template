@@ -106,9 +106,49 @@
 
     <build>
         <plugins>
+            <!-- Always rebuild the executable input JAR so changed reactor modules cannot remain nested stale. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>${maven-jar-plugin.version}</version>
+                <configuration>
+                    <forceCreation>true</forceCreation>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!-- Package-time regression guard: the executable must contain the reactor adapter JAR. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>${maven-antrun-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>assert-reactor-adapter-is-nested</id>
+                        <phase>package</phase>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <mkdir dir="${project.build.directory}/bundle-assert"/>
+                                <unzip src="${project.build.directory}/${project.build.finalName}.jar"
+                                       dest="${project.build.directory}/bundle-assert" overwrite="true"/>
+                                <checksum file="${project.build.directory}/bundle-assert/BOOT-INF/lib/module-agent-warehouse-adapter-${project.version}.jar"
+                                          property="nested.adapter.sha256" algorithm="SHA-256"/>
+                                <checksum file="${project.basedir}/../../modules/module-agent-warehouse-adapter/target/module-agent-warehouse-adapter-${project.version}.jar"
+                                          property="reactor.adapter.sha256" algorithm="SHA-256"/>
+                                <fail message="app-server nested module-agent-warehouse-adapter JAR differs from reactor artifact">
+                                    <condition>
+                                        <not>
+                                            <equals arg1="${nested.adapter.sha256}" arg2="${reactor.adapter.sha256}"/>
+                                        </not>
+                                    </condition>
+                                </fail>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

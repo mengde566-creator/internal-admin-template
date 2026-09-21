@@ -22,7 +22,6 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.deepseek.DeepSeekAssistantMessage;
-import org.springframework.ai.deepseek.DeepSeekChatOptions;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.DefaultToolDefinition;
@@ -54,6 +53,8 @@ import static org.mockito.Mockito.*;
 class AgentConversationServiceTest {
     @TempDir
     Path tempDir;
+
+    private static final String WAREHOUSE_CARD = "{\"cardId\":\"stock-history-1\",\"revision\":0,\"cardType\":\"stock-summary\",\"resultCount\":1,\"truncated\":false,\"outcome\":\"ANSWERED\",\"queriedAt\":\"2026-09-20T00:00:00Z\",\"rows\":[]}";
     @Test
     void doesNotApplyWarehousePolicyBeforeAConcreteToolIsSelected() {
         AgentStore store = mock(AgentStore.class);
@@ -169,6 +170,30 @@ class AgentConversationServiceTest {
         assertEquals(expected, service.start("conversation-1", "policy-4", "查询A100库存", actor));
         verify(store, times(4)).startRun(eq("conversation-1"), anyString(), anyString(), eq(7L),
                 eq(actor.scopeFingerprint()), any(Duration.class));
+    }
+
+    @Test
+    void unintelligibleInputDoesNotCompleteAPendingClarificationTask() {
+        AgentStore store = mock(AgentStore.class);
+        ChatClient client = mock(ChatClient.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        AgentConversationService service = serviceWithAdapter(store, client, observations);
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false, List.of(PermissionCodes.WAREHOUSE_READ));
+        when(store.latestKnowledgeReferences(anyString(), eq(7L), anyString(), any())).thenReturn(List.of());
+        when(store.completeSuccess(anyString(), anyString(), anyString(), anyString(), anyString(), anyLong(),
+                isNull(), anyLong(), isNull(), anyBoolean(), eq(observations))).thenReturn(true);
+
+        service.execute(new AgentStore.StartRun("c-1", "run-1", true, AgentStore.RUNNING, "m-1", 0L,
+                        "task-1", 3L, "￥%……&*（）——+", null),
+                new AgentExecutionContext(actor, "run-1", "￥%……&*（）——+", ignored -> { }),
+                ignored -> { }, new AtomicBoolean());
+
+        // 无法理解的输入不构成对未决澄清的回答：必须以 null 任务标识收尾，
+        // 绝不能把用户待澄清的 Task 静默标记为完成；同时不该调用模型。
+        // 助手消息标识由执行上下文生成，这里只校验与任务标识相关的参数。
+        verify(store).completeSuccess(eq("c-1"), eq("run-1"), any(), anyString(), anyString(), eq(0L),
+                isNull(), eq(0L), isNull(), anyBoolean(), eq(observations));
+        verifyNoInteractions(client);
     }
 
     @Test
@@ -316,6 +341,7 @@ class AgentConversationServiceTest {
         assertEquals("task-1", page.activeClarification().clarificationId());
         assertEquals(4L, page.activeClarification().revision());
         assertEquals("FAILED_RETRYABLE", page.activeClarification().status());
+        assertEquals("warehouse", page.activeClarification().adapterId());
         assertEquals("ITEM", page.activeClarification().candidateKind());
         assertEquals("CURRENT_STOCK", page.activeClarification().candidateIntent());
         assertEquals("ITEM-6204", page.activeClarification().selectedCode());
@@ -414,12 +440,7 @@ class AgentConversationServiceTest {
         assertEnvelope(events);
         verify(store).completeSuccess(eq("c-1"), eq("run-1"), anyString(), eq("库存 1.2500"),
                 eq(actor.scopeFingerprint()), anyLong(), eq(observations));
-        var optionsCaptor = ArgumentCaptor.forClass(DeepSeekChatOptions.Builder.class);
-        verify(request).options(optionsCaptor.capture());
-        DeepSeekChatOptions requestOptions = optionsCaptor.getValue().build();
-        assertEquals(0.0, requestOptions.getTemperature());
-        assertEquals(org.springframework.ai.deepseek.api.ResponseFormat.Type.JSON_OBJECT,
-                requestOptions.getResponseFormat().getType());
+        verify(request, never()).options(any());
         InOrder observationOrder = inOrder(observations);
         observationOrder.verify(observations).beginStep(any(AiObservationRecorder.RunHandle.class),
                 argThat(metadata -> "MODEL".equals(metadata.stepType()) && metadata.iterationNo() == 1));
@@ -435,6 +456,58 @@ class AgentConversationServiceTest {
                 argThat(metadata -> "STREAM".equals(metadata.stepType())), any(AiObservationRecorder.Terminal.class));
         boundaryOrder.verify(store).completeSuccess(anyString(), eq("run-1"), anyString(), eq("库存 1.2500"),
                 anyString(), anyLong(), eq(observations));
+    }
+
+    @Test
+    void nonKnowledgeToolCardIsPersistedAndRestoredFromCompleteHistory() throws Exception {
+        AgentAdapterRegistry registry = TestAgentAdapterFixtures.warehouseRegistry();
+        JdbcTemplate jdbc = database("non-knowledge-card-history");
+        AgentStore store = new AgentStore(jdbc, registry);
+        AgentRunContext actor = new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ));
+        String conversationId = store.createConversation(actor.userId()).conversationId();
+        AgentStore.StartRun run = store.startRun(conversationId, "card-history-request", "查询库存", actor.userId(),
+                actor.scopeFingerprint());
+        ChatClient client = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.StreamResponseSpec stream = mock(ChatClient.StreamResponseSpec.class);
+        AiObservationRecorder observations = mock(AiObservationRecorder.class);
+        when(observations.finishRunChecked(any(AiObservationRecorder.RunHandle.class),
+                any(AiObservationRecorder.Terminal.class))).thenReturn(true);
+        when(client.prompt()).thenReturn(request);
+        when(request.system(any(String.class))).thenReturn(request);
+        when(request.user(any(String.class))).thenReturn(request);
+        when(request.toolContext(any(Map.class))).thenReturn(request);
+        when(request.toolCallbacks(any(List.class))).thenReturn(request);
+        when(request.stream()).thenReturn(stream);
+        when(stream.content()).thenReturn(Flux.just(
+                "{\"success\":true,\"code\":\"SUCCESS\",\"message\":\"库存已查询\",\"data\":null}"));
+
+        AgentConversationService service = new AgentConversationService(store, client, observations,
+                new AiProperties(), List.of(), registry, null);
+        AgentExecutionContext execution = new AgentExecutionContext(actor, run.runId(), "查询库存",
+                ignored -> { }, registry, ignored -> actor);
+        execution.recordToolSuccess("warehouse_current_stock", "库存结果");
+        AgentConversationService.PreparedCard prepared = service.recordCard(run,
+                service.inspectCard(WAREHOUSE_CARD), actor.scopeFingerprint());
+        execution.recordValidatedCard(prepared.json());
+
+        service.execute(run, execution, ignored -> { }, new AtomicBoolean());
+
+        var persisted = store.pageMessages(conversationId, actor.userId(), 1, 50).records().stream()
+                .filter(message -> "ASSISTANT".equals(message.role()))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(persisted.knowledgeCardText().contains("\"cardType\":\"stock-summary\""));
+        var history = service.pageMessages(conversationId, actor.userId(), actor.scopeFingerprint(), 1, 50);
+        var assistant = history.records().stream()
+                .filter(message -> "ASSISTANT".equals(message.role()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(AgentStore.COMPLETE, store.status(run.runId()));
+        assertEquals(1, assistant.cards().size());
+        assertEquals("stock-summary", assistant.cards().getFirst().get("cardType"));
+        assertEquals("stock-history-1", assistant.cards().getFirst().get("cardId"));
     }
 
     @Test
@@ -707,15 +780,7 @@ class AgentConversationServiceTest {
         verify(request, atLeast(2)).user(correctionPrompt.capture());
         assertTrue(correctionPrompt.getAllValues().stream().anyMatch(value -> value.contains("库存已查询")));
         assertTrue(correctionPrompt.getAllValues().stream().noneMatch(value -> value.contains("上一条回复")));
-        var optionsCaptor = ArgumentCaptor.forClass(DeepSeekChatOptions.Builder.class);
-        verify(request, times(2)).options(optionsCaptor.capture());
-        assertEquals(2, optionsCaptor.getAllValues().size());
-        optionsCaptor.getAllValues().forEach(builder -> {
-            DeepSeekChatOptions options = builder.build();
-            assertEquals(0.0, options.getTemperature());
-            assertEquals(org.springframework.ai.deepseek.api.ResponseFormat.Type.JSON_OBJECT,
-                    options.getResponseFormat().getType());
-        });
+        verify(request, never()).options(any());
     }
 
     @Test

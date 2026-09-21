@@ -12,6 +12,7 @@ SLICE-01～03 已完成 Conversation/History、scope隔离短期Memory和四类�
 - 开启时模型固定 `deepseek-v4-flash`，Spring AI 内建 RetryTemplate 最大尝试为 1，请求温度固定为 `0.0`；普通流式探针不把隐藏推理写入任何项目数据。
 - `app.ai.*` 由唯一强类型 `AiProperties` 绑定并由启动校验器一次性校验。
 - `knowledge_search` 只接受规范化后的当前用户原问题，服务端固定检索数量并要求 `ai:knowledge:read`；短查询检索指令由 Knowledge Core 统一附加，模型不能提交阈值、版本、内部编号或自行生成引用。
+- **入口可理解性门禁**：用户消息不含任何可识别线索时（既无汉字，也无"字母数字混合或含分隔符"的类编码词元），本轮**不进入模型与工具链**，直接给出受控的补充提示并正常结束（`COMPLETE`、无业务卡片、不查询业务数据）。判据见 `AgentConversationService#hasServiceableClue`，受控终态见 `#completeUnintelligibleInput`。**已知限制**：纯英文且不含数字与分隔符的问题会被判为无线索；该判据当前没有单元测试；它只处理"完全不可理解"，不替代业务适配器自身的参数校验与澄清。
 
 ## 3. 公开与跨模块契约
 
@@ -33,7 +34,7 @@ module-agent 持有 Conversation、Run、Message、知识卡片 History 字段�
 
 ## 7. 风险与验证入口
 
-`AiConfigurationValidatorTest`、`AgentAdapterRegistryTest`、`AiCapabilitiesControllerTest`、Agent 运行/协议/并发测试和适配器测试覆盖默认关闭、配置校验、Adapter 冲突失败、可信 Actor 能力过滤、SSE、History、终态、重试、观测、仓储只读 Tool 和知识后闭锁；`AgentKnowledgeExternalIT` 显式 Gate 已验证真实 DeepSeek、Qwen、本地 Knowledge PG、三条受信引用与零证据链。
+`AiConfigurationValidatorTest`、`AgentAdapterRegistryTest`、`AiCapabilitiesControllerTest`、Agent运行/协议/并发测试和适配器测试只用于开发定位与局部回归，不参与生产可用结论。生产验收必须由当前`app-server`通过真实登录、HTTP/SSE、DeepSeek、生产业务Tool、PostgreSQL、前端请求层和页面完成同一用户任务；规则见`docs/planning/AI_TEST_SYSTEM_REPAIR_PLAN.md`。陈旧、跳过或非本轮外部Gate只作历史追溯。
 
 ## 8. 素材与许可证
 
@@ -41,6 +42,6 @@ module-agent 持有 Conversation、Run、Message、知识卡片 History 字段�
 
 ## 9. 诊断信号及禁止字段
 
-复杂 Agent 链路使用统一的英文事件名和 `key=value` 字段：`agent_registry_initialized`（INFO，注册快照）、`agent_registry_registration`（WARN，注册冲突）、`agent_capability_filter`/`agent_followup_authorization`（DEBUG，能力与后续授权数量/结果）、`agent_tool_batch_rejected`（WARN，批次拒绝）、`agent_tool_call`（DEBUG/WARN，Tool 调用阶段、稳定结果码和耗时）、`agent_artifact_*`（DEBUG/WARN，Artifact 生产/消费/关闭阶段）、`agent_retry_plan`（INFO/DEBUG，计划生成或拒绝）和 `agent_retry_resume`（INFO/WARN，恢复开始、解包、Tool 完成及终态）。日志只用于定位首个偏差层，不替代业务结果或权限校验。
+复杂 Agent 链路使用统一的英文事件名和 `key=value` 字段：`agent_registry_initialized`（INFO，注册快照）、`agent_registry_registration`（WARN，注册冲突）、`agent_capability_filter`/`agent_followup_authorization`（DEBUG，能力与后续授权数量/结果）、`agent_tool_batch_rejected`（WARN，批次拒绝）、`agent_tool_call`（DEBUG/WARN，Tool 调用阶段、稳定结果码和耗时）、`agent_artifact_*`（DEBUG/WARN，Artifact 生产/消费/关闭阶段）、`agent_retry_plan`（INFO/DEBUG，计划生成或拒绝）、`agent_retry_resume`（INFO/WARN，恢复开始、解包、Tool 完成及终态）和 `agent_input_unintelligible`（INFO，入口门禁拦截：`stage=terminal`、`tool=none`、`code=SUCCESS`）。日志只用于定位首个偏差层，不替代业务结果或权限校验。
 
 上述事件禁止记录 Tool 参数、用户原始问题、卡片或安全结果正文，以及 `arguments`、`safeResult`、`artifactId`、`privatePayload`、`safeSummary`、`safeProjection` 等字段；允许字段仅限 `runId`、Tool/Adapter 安全标识、阶段、结果/稳定错误码、数量、顺序和耗时。

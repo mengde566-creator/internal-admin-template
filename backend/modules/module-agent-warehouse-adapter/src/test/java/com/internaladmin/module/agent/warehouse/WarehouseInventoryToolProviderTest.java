@@ -379,7 +379,11 @@ class WarehouseInventoryToolProviderTest {
         when(warehouse.queryRecentMovementTask(eq(7), isNull(), isNull(), isNull(), eq(20), any()))
                 .thenReturn(new WarehouseMovementTaskResult("RESULT", List.of(
                         new WarehouseMovementTaskRow(11L, "ITEM-01", "测试物品", "件", 21L, "WH-01", "成品仓", 31L, "A-01", "一号位", "INBOUND", "2.0000", java.time.LocalDateTime.now())), java.time.Instant.now()));
-        AgentExecutionContext context = context(new AtomicReference<>());
+        // 本用例测的是"不限物品"的调拨查询：正文必须确实不含物品线索，
+        // 否则"明确编码补齐"会把共享 context 里的编码注入成查询对象，测到的就不是这条路径。
+        AgentExecutionContext context = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ, PermissionCodes.AI_KNOWLEDGE_READ)), "run-1",
+                "最近有哪些调拨", ignored -> { });
         ToolCallback callback = provider(warehouse, iam).getToolCallbacks()[1];
         String output = callback.call(recentInput(7), new ToolContext(Map.of("agent.execution", context)));
         assertTrue(output.contains("ITEM-01"));
@@ -497,6 +501,72 @@ class WarehouseInventoryToolProviderTest {
         assertTrue(output.contains("\"outcome\":\"ANSWERED\""));
         assertTrue(card.get().contains("\"cardType\":\"stock-summary\""));
         verify(warehouse).queryCurrentStock(eq(fullCode), isNull(), isNull(), eq(20), any());
+    }
+
+    @Test
+    void omittedExplicitBusinessCodeIsRecoveredFromTheUserMessageWithoutBroadeningStock() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        String fullCode = "SLICE07D-ITEM-EXPLICIT-001";
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(eq(fullCode), isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("STOCK_RESULT", List.of(
+                        new WarehouseStockTaskRow(11L, fullCode, "测试物品", "件", 21L,
+                                "WH-01", "成品仓", 31L, "A-01", "一号位", "2.0000", 1)),
+                        List.of(), java.time.Instant.now(), false));
+        AtomicReference<String> card = new AtomicReference<>();
+        AgentExecutionContext execution = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-omitted-explicit-code",
+                "请查询物品 " + fullCode + " 的当前库存", card::set);
+
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(
+                itemInput(List.of(), "AUTO_IF_UNIQUE"),
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        assertFalse(output.contains("AI_PARAMETER_INVALID"));
+        assertTrue(card.get().contains("\"cardType\":\"stock-summary\""));
+        // 模型遗漏线索时，必须用正文里的明确编码继续查询，并且绝不能退化为空线索的全库存概览
+        verify(warehouse).queryCurrentStock(eq(fullCode), isNull(), isNull(), eq(20), any());
+        verify(warehouse, never()).queryCurrentStock(isNull(), isNull(), isNull(), eq(20), any());
+    }
+
+    @Test
+    void excludedItemCodeIsNeverInjectedAsAPositiveClue() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        String excludedCode = "SLICE07D-ITEM-EXCLUDED-001";
+        AgentExecutionContext execution = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-excluded-code",
+                "除了 " + excludedCode + " 以外还有哪些库存", ignored -> { });
+
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(
+                itemInputWithExcluded(List.of(), List.of(excludedCode), "AUTO_IF_UNIQUE"),
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        // 只有被排除的编码、没有正向线索时必须受控拒绝：
+        // 绝不能把用户明确要排除的物品当成正向线索去查，也绝不能退化为不限物品的概览。
+        assertTrue(output.contains("AI_PARAMETER_INVALID"), "缺少正向线索时应受控拒绝；实际输出=" + output);
+        verifyNoInteractions(warehouse);
+    }
+
+    @Test
+    void emptyItemMentionsRemainValidForAnUnspecifiedStockOverview() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        when(warehouse.queryCurrentStock(isNull(), isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseStockTaskResult("NO_DATA", List.of(), List.of(), Instant.now()));
+        AgentExecutionContext execution = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-unspecified-overview",
+                "请查看当前库存概览", ignored -> { });
+
+        String output = provider(warehouse, iam).getToolCallbacks()[0].call(
+                itemInput(List.of(), "AUTO_IF_UNIQUE"),
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        assertTrue(output.contains("\"success\":true"));
+        verify(warehouse).queryCurrentStock(isNull(), isNull(), isNull(), eq(20), any());
     }
 
     @Test
@@ -813,6 +883,50 @@ class WarehouseInventoryToolProviderTest {
         verify(warehouse).queryRecentMovementTask(eq(7), eq(List.of("轴承")), eq(List.of()), eq("SHOW_CANDIDATES"),
                 isNull(), isNull(), eq(20), any());
         verifyNoMoreInteractions(warehouse);
+    }
+
+    @Test
+    void omittedExplicitCodeIsRecoveredForRecentMovementsToo() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        String code = "SLICE07D-MOV-001";
+        when(warehouse.queryRecentMovementTask(eq(7), eq(code), isNull(), isNull(), eq(20), any()))
+                .thenReturn(new WarehouseMovementTaskResult("RESULT", List.of(
+                        new WarehouseMovementTaskRow(11L, "ITEM-01", "测试物品", "件", 21L, "WH-01", "成品仓", 31L,
+                                "A-01", "一号位", "INBOUND", "2.0000", java.time.LocalDateTime.now())),
+                        java.time.Instant.now()));
+        AgentExecutionContext execution = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-movements-explicit-code",
+                "最近的调拨，物品 " + code, ignored -> { });
+
+        String output = provider(warehouse, iam).getToolCallbacks()[1].call(recentInput(7),
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        // 模型漏填物品线索时，必须用正文里的明确编码收窄查询，而不是静默返回不限物品的概览
+        verify(warehouse).queryRecentMovementTask(eq(7), eq(code), isNull(), isNull(), eq(20), any());
+        verify(warehouse, never()).queryRecentMovementTask(eq(7), isNull(), isNull(), isNull(), eq(20), any());
+        assertTrue(output.contains("ITEM-01"));
+    }
+
+    @Test
+    void itemLocationWithoutAnyClueReturnsControlledClarificationInsteadOfFailing() {
+        WarehouseQueryApi warehouse = mock(WarehouseQueryApi.class);
+        IamActorApi iam = mock(IamActorApi.class);
+        when(iam.resolve(7L)).thenReturn(actor);
+        // 正文不含任何类编码线索：既不能抛错导致整轮 Run 失败，也不能退化为全量位置概览
+        AgentExecutionContext execution = new AgentExecutionContext(new AgentRunContext(7L, 3L, false,
+                List.of(PermissionCodes.WAREHOUSE_READ)), "run-location-empty-clue",
+                "有哪些库位", ignored -> { });
+
+        String output = provider(warehouse, iam).getToolCallbacks()[2].call(
+                itemInput(List.of(), "AUTO_IF_UNIQUE"),
+                new ToolContext(Map.of("agent.execution", execution)));
+
+        assertFalse(output.contains("AI_PARAMETER_INVALID"), "缺少线索时应受控澄清而不是参数错误；实际输出=" + output);
+        assertTrue(output.contains("\"outcome\":\"CLARIFICATION\""));
+        assertTrue(output.contains("请提供要查询的物品"));
+        verifyNoInteractions(warehouse);
     }
 
     @Test
@@ -1435,6 +1549,14 @@ class WarehouseInventoryToolProviderTest {
         String mentions = values.stream().map(value -> "\"" + value + "\"").collect(java.util.stream.Collectors.joining(","));
         return "{\"itemMentions\":[" + mentions + "],\"excludedItemMentions\":[],\"selectionPreference\":\""
                 + preference + "\",\"limit\":20}";
+    }
+
+    private static String itemInputWithExcluded(List<String> values, List<String> excluded, String preference) {
+        String mentions = values.stream().map(value -> "\"" + value + "\"").collect(java.util.stream.Collectors.joining(","));
+        String excludedValues = excluded.stream().map(value -> "\"" + value + "\"")
+                .collect(java.util.stream.Collectors.joining(","));
+        return "{\"itemMentions\":[" + mentions + "],\"excludedItemMentions\":[" + excludedValues
+                + "],\"selectionPreference\":\"" + preference + "\",\"limit\":20}";
     }
 
     private static String recentInput(int days) {

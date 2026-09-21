@@ -5,7 +5,7 @@ function envelope(type: string, sequence: number, payload: Record<string, unknow
   return JSON.stringify({ version: '1', eventId: `event-${sequence}`, sequence, occurredAt: '2026-08-27T00:00:00Z', memorySegmentId: '1', runId: 'run-1', conversationId: 'conversation-1', messageId: 'message-1', type, payload })
 }
 
-describe('仓储助手 SSE 解析', () => {
+describe('通用助手 SSE 解析', () => {
   it('处理跨 UTF-8 字节和 CRLF 的事件顺序', () => {
     const stream = `event: message.delta\r\ndata: ${envelope('message.delta', 1, { text: '库存已找到' })}\r\n\r\nevent: run.completed\r\ndata: ${envelope('run.completed', 2, { status: 'SUCCESS' })}\r\n\r\n`
     const bytes = new TextEncoder().encode(stream)
@@ -35,9 +35,7 @@ describe('仓储助手 SSE 解析', () => {
 
   it('接受受信 citation.added 事件并保留其消息归属', () => {
     const citation = { documentCode: 'warehouse-rules', title: '仓储规则', versionCode: 'v2' }
-    const events = parseSseChunks([
-      new TextEncoder().encode(`event: citation.added\ndata: ${envelope('citation.added', 1, citation)}\n\n`)
-    ])
+    const events = parseSseChunks([new TextEncoder().encode(`event: citation.added\ndata: ${envelope('citation.added', 1, citation)}\n\n`)] )
     expect(events).toHaveLength(1)
     expect(events[0].type).toBe('citation.added')
     expect(events[0].messageId).toBe('message-1')

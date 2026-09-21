@@ -32,7 +32,7 @@ class WarehouseAdapterContractTest {
                         WarehouseInventoryToolProvider.ITEM_LOCATIONS_TOOL,
                         WarehouseInventoryToolProvider.LOCATION_CONTENTS_TOOL);
         assertThat(descriptor.cardTypes()).containsExactly(
-                "clarification-choice", "stock-summary", "item-location", "location-contents", "movement-list");
+                "stock-summary", "item-location", "location-contents", "movement-list");
         assertThat(descriptor.routeKeys()).containsExactly(
                 "warehouse-stock", "warehouse-records", "warehouse-operations");
         assertThat(provider.getToolCallbacks()).hasSize(4);

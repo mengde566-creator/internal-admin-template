@@ -98,11 +98,9 @@ public class AgentRuntimeConfiguration {
 
     @Bean
     @ConditionalOnBean(AgentToolProvider.class)
-    public ChatClient chatClient(ChatModel model, ToolCallingAdvisor advisor,
-                                 ToolCallback[] callbacks) {
+    public ChatClient chatClient(ChatModel model, ToolCallingAdvisor advisor) {
         return ChatClient.builder(model)
                 .defaultAdvisors(advisor)
-                .defaultToolCallbacks(callbacks)
                 .build();
     }
 }

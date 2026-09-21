@@ -74,6 +74,8 @@ public class WarehouseInventoryToolProvider implements AgentAdapter {
             "(?is)(?:物品(?:所在位置|位置|在哪里|放在哪里)|(?:在哪里|位于)的?物品)");
     private static final Pattern FOLLOWUP_LOCATION_CONTENTS = Pattern.compile(
             "(?is)(?:库位(?:里的?物品|中物品|内容|库存)|仓库和库位)");
+    private static final Pattern EXPLICIT_ITEM_REFERENCE = Pattern.compile(
+            "(?i)(?<![a-z0-9_-])[a-z0-9]+(?:[-_][a-z0-9]+)+(?![a-z0-9_-])");
     private static final List<String> TRUSTED_INSTRUCTIONS = List.of(
             "可按当前用户权限只读查询库存、物品位置、库位内容与库存变化，并提供仓储制度说明；仅调用已登记的仓储工具。"
                     + "用户没有指定具体对象时，先展示一部分库存，方便继续选择；有多个相近对象时只提出一个业务澄清问题。"
@@ -138,7 +140,7 @@ public class WarehouseInventoryToolProvider implements AgentAdapter {
                 List.of(),
                 List.of(),
                 "READ_ONLY",
-                List.of("clarification-choice", "stock-summary", "item-location",
+                List.of("stock-summary", "item-location",
                         "location-contents", "movement-list"),
                 List.of("warehouse-stock", "warehouse-records", "warehouse-operations"),
                 Set.of(PermissionCodes.WAREHOUSE_READ),
@@ -549,6 +551,37 @@ public class WarehouseInventoryToolProvider implements AgentAdapter {
             }
         }
 
+        /**
+         * 补齐模型遗漏的明确物品引用，避免把可回答的问题变成整轮失败。
+         *
+         * 方法：{@code requireExplicitItemMention}
+         *
+         * 执行链路（共 4 步）：
+         * 1. 模型已给出物品线索、或本轮是"重试未完成查询"时原样返回，不做任何推断；
+         * 2. **存在被排除的物品线索时原样返回**：该组合必须交由
+         *    {@link #bindExcludedMentions} 判定——没有正向线索时受控拒绝，绝不能让正文里的编码
+         *    （在排除型问法里往往正是用户要排除的那个）被当成正向线索；
+         * 3. 用与既有守卫一致的判据在归一化正文中确认存在明确编码引用；
+         * 4. 存在时从**原始正文**提取该引用并返回，保留大小写以便按正式编码查询；
+         *    不存在时原样返回空线索，交由后续"无物品线索"分支处理。
+         *
+         * 只取第一个明确引用：本方法仅在模型完全没有返回线索时兜底，不代替模型的完整抽取。
+         *
+         * @param values 模型返回的物品线索
+         * @param excluded 本轮被排除的物品线索；非空时本方法不做任何补齐
+         * @param execution 本轮执行上下文
+         * @return 可直接用于查询的物品线索；无可补齐内容时与传入值相同
+         */
+        List<String> requireExplicitItemMention(List<String> values, List<String> excluded,
+                                                AgentExecutionContext execution) {
+            if (!values.isEmpty() || "重试未完成查询".equals(execution.message())) return values;
+            if (!excluded.isEmpty()) return values;
+            String evidence = normalizeEvidence(execution.message());
+            if (!EXPLICIT_ITEM_REFERENCE.matcher(evidence).find()) return values;
+            java.util.regex.Matcher matcher = EXPLICIT_ITEM_REFERENCE.matcher(execution.message());
+            return matcher.find() ? List.of(matcher.group()) : values;
+        }
+
         String success(AgentExecutionContext execution, String message, Object data) throws Exception {
             String result = json.writeValueAsString(ApiResponse.ok(message, data));
             execution.recordToolSuccess(toolName(), result);
@@ -925,8 +958,9 @@ public class WarehouseInventoryToolProvider implements AgentAdapter {
                 JsonNode root = json.readTree(toolInput);
                 strictObject(root, Set.of("itemMentions", "excludedItemMentions", "selectionPreference", "warehouseKeyword", "locationKeyword", "limit"),
                         Set.of("itemMentions", "excludedItemMentions", "selectionPreference", "limit"));
-                List<String> itemMentions = mentions(root, "itemMentions", 0, 5);
                 List<String> excludedItemMentions = mentions(root, "excludedItemMentions", 0, 5);
+                List<String> itemMentions = requireExplicitItemMention(
+                        mentions(root, "itemMentions", 0, 5), excludedItemMentions, execution);
                 evidence(itemMentions, execution);
                 evidence(excludedItemMentions, execution);
                 String selectionPreference = selectionPreference(root);
@@ -1050,8 +1084,9 @@ public class WarehouseInventoryToolProvider implements AgentAdapter {
                 JsonNode root = json.readTree(toolInput);
                 strictObject(root, Set.of("itemMentions", "excludedItemMentions", "selectionPreference", "limit"),
                         Set.of("itemMentions", "excludedItemMentions", "selectionPreference", "limit"));
-                List<String> itemMentions = mentions(root, "itemMentions", 1, 5);
                 List<String> excludedItemMentions = mentions(root, "excludedItemMentions", 0, 5);
+                List<String> itemMentions = requireExplicitItemMention(
+                        mentions(root, "itemMentions", 0, 5), excludedItemMentions, execution);
                 evidence(itemMentions, execution);
                 evidence(excludedItemMentions, execution);
                 String selectionPreference = selectionPreference(root);
@@ -1062,6 +1097,15 @@ public class WarehouseInventoryToolProvider implements AgentAdapter {
                 args.put("selectionPreference", selectionPreference);
                 args.put("limit", limit);
                 normalized = normalizedArguments(args);
+                if (itemMentions.isEmpty()) {
+                    // 物品所在位置没有"不限物品"语义：缺少线索时给出受控澄清，既不查业务数据、
+                    // 不退化为全量位置概览，也不能像旧实现那样抛错导致整轮 Run 失败。
+                    LocationToolData emptyClue = new LocationToolData("CLARIFICATION", 0, false, Instant.now(),
+                            List.of(), List.of());
+                    execution.markToolOutputProduced();
+                    record(execution, "SUCCEEDED", started, null);
+                    return success(execution, "请提供要查询的物品", emptyClue, normalized);
+                }
                 AgentExecutionContext.InvocationDecision invocation = beginInvocation(execution, normalized);
                 if (invocation.duplicate()) return invocation.safeResult();
                 WarehouseAccessScopeDTO accessScope = scope(actor(execution));
@@ -1218,8 +1262,9 @@ public class WarehouseInventoryToolProvider implements AgentAdapter {
                 strictObject(root, Set.of("recentDays", "itemMentions", "excludedItemMentions", "selectionPreference", "warehouseKeyword", "locationKeyword", "limit"),
                         Set.of("recentDays", "itemMentions", "excludedItemMentions", "selectionPreference", "limit"));
                 int recentDays = integer(root, "recentDays", 0, 1, 30);
-                List<String> itemMentions = mentions(root, "itemMentions", 0, 5);
                 List<String> excludedItemMentions = mentions(root, "excludedItemMentions", 0, 5);
+                List<String> itemMentions = requireExplicitItemMention(
+                        mentions(root, "itemMentions", 0, 5), excludedItemMentions, execution);
                 evidence(itemMentions, execution);
                 evidence(excludedItemMentions, execution);
                 String selectionPreference = selectionPreference(root);

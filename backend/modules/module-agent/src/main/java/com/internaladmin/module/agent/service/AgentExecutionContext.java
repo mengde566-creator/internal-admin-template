@@ -33,6 +33,7 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
                                    KnowledgeState knowledgeState,
                                    AgentArtifactRegistry artifacts) {
     private static final Logger LOG = LoggerFactory.getLogger(AgentExecutionContext.class);
+    private static final int MAX_VALIDATED_CARDS = 20;
     public AgentExecutionContext(AgentRunContext actor, String runId, String message,
                                  Consumer<String> toolCardEmitter) {
         this(actor, runId, message, toolCardEmitter, new AtomicBoolean(), new AtomicLong(),
@@ -307,6 +308,16 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         return knowledgeState.cardJson();
     }
 
+    /** Records only cards that passed the controller's server-side validation. */
+    public void recordValidatedCard(String cardJson) {
+        knowledgeState.recordValidatedCard(cardJson);
+    }
+
+    /** Returns the bounded list of validated cards emitted during this run. */
+    public List<String> validatedCards() {
+        return knowledgeState.validatedCards();
+    }
+
     public KnowledgeQueryApi.Result knowledgeResult() {
         return knowledgeState.result();
     }
@@ -392,6 +403,7 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         private boolean attempted;
         private KnowledgeQueryApi.Result result;
         private String cardJson;
+        private final List<String> validatedCards = new ArrayList<>();
         private final List<String> mixedFollowupAuthorizedTools = new ArrayList<>();
         private String retryQuery;
         private String retryOperation;
@@ -414,6 +426,18 @@ public record AgentExecutionContext(AgentRunContext actor, String runId, String 
         public synchronized void recordCard(String value) { cardJson = value; }
 
         public synchronized String cardJson() { return cardJson; }
+
+        public synchronized void recordValidatedCard(String value) {
+            if (value == null || value.isBlank()) return;
+            if (validatedCards.size() >= MAX_VALIDATED_CARDS) {
+                throw new IllegalStateException("本次运行的已验证卡片数量超限");
+            }
+            validatedCards.add(value);
+        }
+
+        public synchronized List<String> validatedCards() {
+            return List.copyOf(validatedCards);
+        }
 
         private synchronized boolean openMixedFollowupAuthorization(List<String> toolNames) {
             if (attempted || !mixedFollowupAuthorizedTools.isEmpty() || toolNames == null

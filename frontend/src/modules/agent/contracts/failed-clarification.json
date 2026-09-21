@@ -1,0 +1,13 @@
+{
+  "clarificationId": "task-1",
+  "revision": 4,
+  "status": "FAILED_RETRYABLE",
+  "adapterId": "warehouse",
+  "candidateKind": "ITEM",
+  "candidateIntent": "CURRENT_STOCK",
+  "selectedCode": "ITEM-6204",
+  "selectedName": "深沟球轴承",
+  "selectedScopeCode": "WH-01",
+  "selectedScopeName": "一号仓",
+  "options": []
+}

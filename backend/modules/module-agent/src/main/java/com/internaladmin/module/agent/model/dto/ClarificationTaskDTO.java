@@ -4,6 +4,7 @@ import java.util.List;
 
 /** 当前 Conversation 中仍有效或可恢复的澄清任务快照。 */
 public record ClarificationTaskDTO(String clarificationId, long revision, String status,
+                                   String adapterId,
                                    String candidateKind, String candidateIntent,
                                    String selectedCode, String selectedName,
                                    String selectedScopeCode, String selectedScopeName,
@@ -13,6 +14,6 @@ public record ClarificationTaskDTO(String clarificationId, long revision, String
     }
 
     public ClarificationTaskDTO(String clarificationId, long revision, List<ClarificationOptionDTO> options) {
-        this(clarificationId, revision, "READY", null, null, null, null, null, null, options);
+        this(clarificationId, revision, "READY", null, null, null, null, null, null, null, options);
     }
 }

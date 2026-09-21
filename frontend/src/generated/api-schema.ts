@@ -1400,6 +1400,7 @@ export interface components {
             optionToken: string;
         };
         ClarificationTaskDTO: {
+            adapterId?: string;
             candidateIntent?: string;
             candidateKind?: string;
             clarificationId?: string;
@@ -1762,6 +1763,9 @@ export interface components {
             username?: string;
         };
         MessageDTO: {
+            cards?: {
+                [key: string]: unknown;
+            }[];
             content?: string;
             /** Format: date-time */
             createdAt?: string;

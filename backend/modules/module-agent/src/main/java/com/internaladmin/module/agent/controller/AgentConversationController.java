@@ -32,6 +32,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.Set;
 
 /** Session + CSRF protected Gate B conversation and SSE entry; no SecurityContext access in async code. */
@@ -139,6 +140,7 @@ public class AgentConversationController {
         AtomicLong eventSequence = new AtomicLong();
         Set<String> emittedCards = java.util.concurrent.ConcurrentHashMap.newKeySet();
         AtomicBoolean clarificationProduced = new AtomicBoolean();
+        AtomicReference<AgentExecutionContext> executionRef = new AtomicReference<>();
         String messageId = run.assistantMessageId();
         String effectiveMessage = run.effectiveUserMessage() == null ? request.text() : run.effectiveUserMessage();
         AgentExecutionContext execution = new AgentExecutionContext(actor, run.runId(), effectiveMessage,
@@ -163,10 +165,16 @@ public class AgentConversationController {
                                 "card.replace", run, eventSequence, messageId, prepared.json()))) {
                             throw new IllegalStateException("SSE卡片发送失败");
                         }
+                        AgentExecutionContext currentExecution = executionRef.get();
+                        if (currentExecution == null) {
+                            throw new IllegalStateException("助手执行上下文尚未建立");
+                        }
+                        currentExecution.recordValidatedCard(prepared.json());
                     }
                 },
                 new AtomicBoolean(), eventSequence, messageId, run.taskId(), run.taskRevision(), clarificationProduced,
                 adapterRegistry, actors::resolve);
+        executionRef.set(execution);
         CompletableFuture.runAsync(() -> service.execute(run, execution,
                 event -> send(emitter, event), cancelled));
         return emitter;

@@ -10,6 +10,16 @@ SLICE-07A 后，本模块通过编译期 `AgentAdapter` 契约向 Core 注册仓
 
 SLICE-07C 后，本适配器同时登记 `WarehouseKnowledgeContentPack` 与 `WarehouseEvaluationDatasetProvider`：仓储 Markdown/索引及评测 manifest、cases、config、召回/Embedding 基线全部位于本适配器的 classpath 资源族；短查询指令由 Knowledge Core 统一持有。`module-knowledge` 与 `module-ai-observability` 只消费公开契约和 Provider 流，不拥有仓储资源；注册时按版本、顺序、资源可读性和 SHA-256 失败即停。
 
+**明确编码的补齐与边界（2026-09-21 更新）**：当模型未返回 `itemMentions`、但用户正文含明确编码引用时，三个只读物品工具会从**原始正文**提取该引用（保留大小写）继续查询，**不再拒绝整轮**——守卫的意图是"防止退化为不限物品的全库存概览"，而不是把可回答的问题变成失败。
+
+- **补齐只在没有排除项时生效**：`excludedItemMentions` 非空时不做补齐，交由 `bindExcludedMentions` 判定（同日修复的 `DEF-004`：否则排除型问法会把被排除的物品当成正向线索去查）；
+- **三个工具的语义已统一**：`warehouse_current_stock` 与 `warehouse_recent_movements` 补齐后继续查询；`warehouse_item_locations` 补齐后若仍无线索，返回**受控澄清**（`CLARIFICATION`，不查业务数据、不退化为全量位置概览、也不再抛错导致整轮失败）。
+- **仍未修复的两处限制（不得视为已收敛）**：
+  1. 判据要求编码含分隔符，**无分隔符编码既不被拦截也不被补齐**，会退化为空线索概览；
+  2. **有排除项但无正向线索时**，`bindExcludedMentions` 仍抛错 → `AI_PARAMETER_INVALID` → **整轮 Run 失败**（属 `DEF-001` 的未闭合部分）。
+
+缺陷状态、复现方式与关闭条件见 [`docs/planning/KNOWN_DEFECTS.md`](../../../../docs/planning/KNOWN_DEFECTS.md)。
+
 ## 诊断信号及禁止字段
 
 仓储 Tool 调用、失败闭锁、重复命中和重试恢复沿用 module-agent 的 `agent_tool_call`、`agent_retry_plan`、`agent_retry_resume` 事件；仓储适配器只提供稳定 Tool 名、阶段、结果/错误码和耗时所需的安全标识，不重复建设日志框架。后续 Tool 授权使用 `agent_followup_authorization`，结果只记录数量、Tool 安全标识和原因码。
