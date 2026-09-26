@@ -302,7 +302,6 @@ onBeforeUnmount(() => {
       <header class="view-heading">
         <div class="view-heading-main">
           <h2>物品档案</h2>
-          <span class="view-subtitle">物品编码创建后不可修改；停用后不能用于新的库存操作，历史记录仍会保留。</span>
         </div>
         <div class="view-actions">
           <el-button :icon="Refresh" :loading="loading" @click="load">重新加载</el-button>

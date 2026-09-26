@@ -329,10 +329,12 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
 </script>
 
 <template>
-  <section class="site-manage">
-    <header class="page-header">
-      <h1>主页内容管理</h1>
-      <div class="actions">
+  <section class="site-manage ui-page-shell">
+    <header class="ui-page-header-compact page-header">
+      <div class="header-left">
+        <h1>主页内容管理</h1>
+      </div>
+      <div class="header-actions">
         <el-button @click="showPreview = true">预览</el-button>
         <el-button type="primary" :loading="saveMutation.isPending.value" @click="handleSave">
           保存草稿
@@ -476,20 +478,6 @@ const canPublish = computed(() => form.siteName && form.introduction && form.her
 </template>
 
 <style scoped>
-.site-manage {
-  padding: 1.5rem 2rem;
-}
-.page-header {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-}
-.page-header h1 {
-  flex: 1;
-  margin: 0;
-  font-size: 1.25rem;
-}
 .layout {
   display: grid;
   grid-template-columns: 1fr 420px;

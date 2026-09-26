@@ -238,7 +238,6 @@ onMounted(() => { void load() })
     <header class="view-heading">
       <div class="view-heading-main">
         <h2>库存操作</h2>
-        <span class="view-subtitle">入库、出库、移库调拨与盘点调整</span>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="load">重新加载</el-button>
     </header>

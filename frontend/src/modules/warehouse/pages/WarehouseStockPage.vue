@@ -204,7 +204,6 @@ watch(() => [route?.query?.item, route?.query?.keyword, route?.query?.warehouse,
     <header class="view-heading">
       <div class="view-heading-main">
         <h2>库存查询</h2>
-        <span class="view-subtitle">按物品、仓库和库位查看当前可用数量</span>
       </div>
       <div class="view-actions">
         <el-button class="mobile-filter-trigger" :icon="Search" @click="filtersOpen = true">筛选</el-button>
@@ -506,8 +505,25 @@ watch(() => [route?.query?.item, route?.query?.keyword, route?.query?.warehouse,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.cell-entity-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cell-entity-title {
+  color: var(--ui-text-strong);
+  font-size: 0.875rem;
+  line-height: 1.3;
+}
+.cell-entity-sub {
+  color: var(--ui-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
 .stock-pagination {
   margin-top: 18px;
+  padding-bottom: 24px;
+  padding-right: 140px;
   justify-content: flex-end;
 }
 .empty-state {

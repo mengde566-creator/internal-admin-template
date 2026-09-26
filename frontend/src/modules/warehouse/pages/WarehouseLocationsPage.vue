@@ -253,7 +253,6 @@ onBeforeUnmount(() => {
     <header class="view-heading">
       <div class="view-heading-main">
         <h2>仓库与库位</h2>
-        <span class="view-subtitle">选择仓库并维护库位编码与可用状态</span>
       </div>
       <div class="view-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">重新加载</el-button>

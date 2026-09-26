@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ChatDotRound, CopyDocument, Minus, Plus, TopRight } from '@element-plus/icons-vue'
+import { ArrowDown, ChatDotRound, Close, CopyDocument, EditPen, FullScreen, Minus, TopRight } from '@element-plus/icons-vue'
 import { AgentHttpError, createConversation, fetchAgentCapabilities, fetchConversationMessages, fetchConversations, runAgent, type AgentSseEvent, type AiCapabilities, type ClarificationSelection, type Conversation, type KnowledgeAnswer, type Message } from '../api/agentApi'
 import { deleteMessageFeedback, putMessageFeedback, type FeedbackRating, type FeedbackReason, type MessageFeedback } from '../api/feedbackApi'
 import { createAgentRegistry, type AgentCard, type AgentFrontendAsset, type AgentFrontendRegistry } from '../registry'
@@ -41,6 +41,8 @@ const panelHeight = ref<number | null>(null)
 const widthResizing = ref(false)
 const heightResizing = ref(false)
 const historyPickerOpen = ref(false)
+const isMinimized = ref(false)
+function toggleMinimize() { isMinimized.value = !isMinimized.value }
 const feedbackDrafts = ref<Record<string, { rating: FeedbackRating; reason: FeedbackReason }>>({})
 const feedbackNotices = ref<Record<string, string>>({})
 const queuedAcceptedMessage = ref<string | null>(null)
@@ -60,7 +62,6 @@ const panelStyle = computed(() => ({ '--agent-panel-width': `${clampedWidth.valu
 const cardsList = computed<CardEntry[]>(() => Object.entries(cards.value).map(([key, card]) => ({ key, card })))
 const hasFailedClarification = computed(() => cardsList.value.some((entry) => entry.card.cardType === 'clarification-choice' && String(entry.card.payload.taskStatus ?? '').toUpperCase() === 'FAILED_RETRYABLE'))
 const sendDisabled = computed(() => isRunning.value || !draft.value.trim() || assemblyFailure.value)
-const modeText = computed(() => panelMode.value === 'DRAWER' ? '抽屉' : panelMode.value === 'OVERLAY' ? '浮层' : panelMode.value === 'DOCKED' ? '停靠' : '收起')
 
 let widthResizeStartX = 0
 let widthResizeStart = 420
@@ -176,7 +177,7 @@ async function loadHistory(conversationId: string) {
     rebuildHistoryTimeline()
   } catch { conversationNotice.value = '这段对话暂时无法打开，请稍后再试。' } finally { loadingHistory.value = false }
 }
-function newConversation() { if (isRunning.value) return; selectedConversationId.value = ''; messages.value = []; cards.value = {}; timeline.value = []; invalidCards.value = {}; invalidTerminalRuns.value = new Set(); pendingCitations.value = {}; feedbackDrafts.value = {}; feedbackNotices.value = {}; draft.value = ''; runNotice.value = ''; conversationNotice.value = '' }
+function newConversation() { if (isRunning.value) return; isMinimized.value = false; selectedConversationId.value = ''; messages.value = []; cards.value = {}; timeline.value = []; invalidCards.value = {}; invalidTerminalRuns.value = new Set(); pendingCitations.value = {}; feedbackDrafts.value = {}; feedbackNotices.value = {}; draft.value = ''; runNotice.value = ''; conversationNotice.value = '' }
 function newRequestId() { return globalThis.crypto?.randomUUID?.() ?? `agent-${Date.now()}-${Math.random().toString(36).slice(2)}` }
 function streamFailure(code: string) { return ({ AI_TOOL_FORBIDDEN: '当前没有权限完成此操作。', AI_BUSINESS_REJECTED: '助手只支持只读查询，不能执行写入或外部操作。', AI_TOOL_TIMEOUT: '助手处理超时，请稍后重试。', AI_TOOL_DATABASE_UNAVAILABLE: '数据暂时不可用，请稍后重试。', AI_KNOWLEDGE_UNAVAILABLE: '知识库暂时不可用，请稍后重试。', AI_MODEL_UNAVAILABLE: '助手暂时不可用，请稍后重试。', AI_MODEL_OUTPUT_INVALID: '助手返回格式暂时不可用，请稍后重试。', AI_STREAM_DELIVERY_FAILED: '连接已中断，结果可能已经保存，请刷新当前对话查看。' } as Record<string, string>)[code] ?? '这次查询没有完成，请重新查询。' }
 function onEvent(event: AgentSseEvent) {
@@ -335,7 +336,7 @@ async function retryFailedRun(message: UiMessage) {
   await executeRun('', undefined, message.runId, '重试未完成查询')
 }
 function cancelRun() { abortController.value?.abort() }
-function togglePanel() { if (panelMode.value === 'DRAWER') panelOpen.value = !panelOpen.value; else emit('toggle-collapse') }
+function togglePanel() { isMinimized.value = false; if (panelMode.value === 'DRAWER') panelOpen.value = !panelOpen.value; else emit('toggle-collapse') }
 function copyText(card: AgentCard) {
   const text = rendererFor(card)?.copy?.(card)
   if (!text || !navigator.clipboard) { runNotice.value = '当前内容暂不支持复制。'; return }
@@ -344,7 +345,7 @@ function copyText(card: AgentCard) {
 function chooseFeedback(message: UiMessage, rating: FeedbackRating) { if (!message.messageId) return; feedbackDrafts.value[message.messageId] = { rating, reason: rating === 'HELPFUL' ? 'ACCURATE' : 'INCORRECT' } }
 async function submitFeedback(message: UiMessage) { const draftValue = message.messageId ? feedbackDrafts.value[message.messageId] : undefined; if (!message.messageId || message.state !== 'COMPLETE' || !draftValue) return; try { message.feedback = await putMessageFeedback(message.messageId, draftValue.rating, draftValue.reason); feedbackNotices.value[message.messageId] = '反馈已保存' } catch { feedbackNotices.value[message.messageId] = '反馈保存失败，请稍后重试' } }
 async function revokeFeedback(message: UiMessage) { if (!message.messageId) return; try { await deleteMessageFeedback(message.messageId); message.feedback = null; delete feedbackDrafts.value[message.messageId]; feedbackNotices.value[message.messageId] = '已撤销反馈' } catch { feedbackNotices.value[message.messageId] = '撤销失败，请稍后重试' } }
-function reset() { abortController.value?.abort(); queuedAcceptedMessage.value = null; selectedConversationId.value = ''; conversations.value = []; conversationsTotal.value = 0; conversationsPage.value = 1; messages.value = []; cards.value = {}; timeline.value = []; invalidCards.value = {}; invalidTerminalRuns.value = new Set(); pendingCitations.value = {}; feedbackDrafts.value = {}; feedbackNotices.value = {}; draft.value = ''; isRunning.value = false; runState.value = 'idle'; runNotice.value = ''; conversationNotice.value = '' }
+function reset() { abortController.value?.abort(); isMinimized.value = false; queuedAcceptedMessage.value = null; selectedConversationId.value = ''; conversations.value = []; conversationsTotal.value = 0; conversationsPage.value = 1; messages.value = []; cards.value = {}; timeline.value = []; invalidCards.value = {}; invalidTerminalRuns.value = new Set(); pendingCitations.value = {}; feedbackDrafts.value = {}; feedbackNotices.value = {}; draft.value = ''; isRunning.value = false; runState.value = 'idle'; runNotice.value = ''; conversationNotice.value = '' }
 defineExpose({ reset })
 
 async function initialise() { try { if (!capabilities.value && props.fetchCapabilities) capabilities.value = await fetchAgentCapabilities(); capabilityChecked.value = true; const enabled = capabilities.value?.enabled === true && availableBusinessAdapters.value.length > 0; emit('capability-change', enabled); emitAgentUiDiagnostic('agent_ui_capability_match', { available: enabled, count: availableBusinessAdapters.value.length }); if (enabled) await loadConversations() } catch { capabilityChecked.value = true; capabilities.value = null; emit('capability-change', false) } }
@@ -355,7 +356,7 @@ watch(() => props.capabilities, (value) => {
   emit('capability-change', enabled)
   if (value && enabled) void loadConversations()
 })
-watch(() => props.open, (open) => { if (open) panelOpen.value = true })
+watch(() => props.open, (open) => { if (open) { panelOpen.value = true; isMinimized.value = false } })
 onMounted(() => { emitAgentUiDiagnostic('agent_ui_shell_lifecycle', { phase: 'mounted', mode: panelMode.value }); void initialise() })
 onBeforeUnmount(() => { endWidthResize(); endHeightResize(); reset(); emitAgentUiDiagnostic('agent_ui_shell_lifecycle', { phase: 'unmounted', mode: panelMode.value }) })
 </script>
@@ -364,20 +365,58 @@ onBeforeUnmount(() => { endWidthResize(); endHeightResize(); reset(); emitAgentU
   <div v-if="visible" class="agent-assistant" :data-mode="panelMode" data-testid="agent-assistant-shell">
     <button v-if="!panelVisible" class="agent-launcher" type="button" data-testid="agent-launcher" @click="togglePanel"><el-icon><ChatDotRound /></el-icon><span>打开助手</span></button>
     <div v-if="panelMode === 'DRAWER' && panelVisible" class="agent-backdrop" aria-hidden="true" @click.self="togglePanel" />
-    <aside v-if="panelVisible" class="agent-panel" :class="{ 'is-width-resizing': widthResizing, 'is-height-resizing': heightResizing }" :style="panelStyle" aria-label="智能助手" data-testid="agent-panel">
+    <aside v-if="panelVisible" class="agent-panel" :class="{ 'is-width-resizing': widthResizing, 'is-height-resizing': heightResizing, 'is-minimized': isMinimized }" :style="panelStyle" aria-label="智能助手" data-testid="agent-panel">
       <div v-if="panelMode === 'DOCKED' || panelMode === 'OVERLAY'" class="agent-resize-handle" role="separator" aria-orientation="vertical" aria-label="调整助手宽度" tabindex="0" :aria-valuenow="clampedWidth" :aria-valuemin="420" :aria-valuemax="widthLimit" @pointerdown="startWidthResize" @keydown="onWidthResizeKeydown"><span aria-hidden="true" /></div>
       <div v-if="panelMode === 'OVERLAY'" class="agent-height-handle" role="separator" aria-orientation="horizontal" aria-label="调整助手高度" tabindex="0" :aria-valuenow="panelHeight ?? 520" :aria-valuemin="360" :aria-valuemax="maxPanelHeight" @pointerdown="startHeightResize" @keydown="onHeightResizeKeydown"><span aria-hidden="true" /></div>
-      <header class="agent-header"><div><strong>智能助手</strong><small>{{ modeText }}</small></div><div class="agent-header-actions"><button type="button" title="新建对话" @click="newConversation"><Plus /></button><button type="button" title="收起" @click="togglePanel"><Minus /></button></div></header>
+      <header class="agent-header">
+        <div><strong>智能助手</strong></div>
+        <div class="agent-header-actions">
+          <button type="button" class="header-action-btn" title="新建对话" aria-label="新建对话" @click="newConversation">
+            <el-icon :size="14"><EditPen /></el-icon>
+          </button>
+          <span class="action-divider" aria-hidden="true" />
+          <button
+            type="button"
+            class="header-action-btn"
+            :title="isMinimized ? '还原' : '最小化'"
+            :aria-label="isMinimized ? '还原' : '最小化'"
+            @click="toggleMinimize"
+          >
+            <el-icon :size="14"><component :is="isMinimized ? FullScreen : Minus" /></el-icon>
+          </button>
+          <button type="button" class="header-action-btn" title="收起" aria-label="收起" @click="togglePanel">
+            <el-icon :size="14"><Close /></el-icon>
+          </button>
+        </div>
+      </header>
       <div v-if="registry.errors.length" class="agent-version-warning" role="alert">助手界面装配失败，暂时不能发起新查询。</div>
       <div v-else-if="versionMismatch" class="agent-version-warning" role="alert">当前助手版本与服务端能力不匹配，暂时不能发起新查询。</div>
-      <div class="agent-toolbar"><button type="button" :disabled="isRunning || !conversations.length" @click="historyPickerOpen = !historyPickerOpen">历史对话</button><button v-if="isRunning" type="button" @click="cancelRun">取消运行</button><span v-if="loadingConversations">加载中…</span></div>
-      <div v-if="historyPickerOpen" class="agent-history" role="listbox"><p v-if="!conversations.length" class="agent-history-empty">暂无历史对话。</p><button v-for="item in conversations" :key="item.conversationId" type="button" @click="selectedConversationId = item.conversationId; historyPickerOpen = false; void loadHistory(item.conversationId)">{{ conversationLabel(item) }}</button><div v-if="conversationPageCount > 1" class="agent-history-pager"><button type="button" :disabled="conversationsPage <= 1" aria-label="上一页历史对话" @click="changeConversationPage(conversationsPage - 1)">上一页</button><span>{{ conversationsPage }} / {{ conversationPageCount }}</span><button type="button" :disabled="conversationsPage >= conversationPageCount" aria-label="下一页历史对话" @click="changeConversationPage(conversationsPage + 1)">下一页</button></div></div>
+      <div class="agent-toolbar"><button type="button" class="history-trigger" :class="{ 'is-open': historyPickerOpen }" :disabled="isRunning || !conversations.length" @click="historyPickerOpen = !historyPickerOpen"><span>历史对话</span><el-icon class="history-arrow"><ArrowDown /></el-icon></button><button v-if="isRunning" type="button" @click="cancelRun">取消运行</button><span v-if="loadingConversations">加载中…</span></div>
+      <div v-if="historyPickerOpen" class="agent-history" role="listbox"><p v-if="!conversations.length" class="agent-history-empty">暂无历史对话。</p><button v-for="item in conversations" :key="item.conversationId" type="button" :class="{ 'is-active': selectedConversationId === item.conversationId }" @click="selectedConversationId = item.conversationId; historyPickerOpen = false; void loadHistory(item.conversationId)">{{ conversationLabel(item) }}</button><div v-if="conversationPageCount > 1" class="agent-history-pager"><button type="button" :disabled="conversationsPage <= 1" aria-label="上一页历史对话" @click="changeConversationPage(conversationsPage - 1)">上一页</button><span>{{ conversationsPage }} / {{ conversationPageCount }}</span><button type="button" :disabled="conversationsPage >= conversationPageCount" aria-label="下一页历史对话" @click="changeConversationPage(conversationsPage + 1)">下一页</button></div></div>
       <div class="agent-messages" aria-live="polite">
         <div v-if="!messages.length && !cardsList.length" class="agent-empty"><strong>需要查找什么？</strong><span>输入问题，助手会在当前权限范围内处理。</span></div>
         <template v-for="entry in timeline" :key="`${entry.kind}:${entry.key}`">
           <article v-if="entry.kind === 'message' && messageForTimeline(entry.key)" class="agent-message" :class="`agent-message--${messageForTimeline(entry.key)!.role.toLowerCase()}`">
             <div class="agent-message-role">{{ messageForTimeline(entry.key)!.role === 'USER' ? '我' : '助手' }}</div><AgentMarkdownContent v-if="messageForTimeline(entry.key)!.role === 'ASSISTANT' && messageForTimeline(entry.key)!.content" :content="messageForTimeline(entry.key)!.content" /><p v-else>{{ messageForTimeline(entry.key)!.content || (messageForTimeline(entry.key)!.pending ? '正在处理…' : '') }}</p><button v-if="messageForTimeline(entry.key)!.role === 'ASSISTANT' && messageForTimeline(entry.key)!.retryAvailable && !hasFailedClarification" type="button" class="agent-retry" @click="void retryFailedRun(messageForTimeline(entry.key)!)">重试未完成查询</button>
-            <div v-if="messageForTimeline(entry.key)!.role === 'ASSISTANT' && messageForTimeline(entry.key)!.state === 'COMPLETE'" class="agent-feedback"><button type="button" @click="chooseFeedback(messageForTimeline(entry.key)!, 'HELPFUL')">有帮助</button><button type="button" @click="chooseFeedback(messageForTimeline(entry.key)!, 'NOT_HELPFUL')">需改进</button><button v-if="feedbackDrafts[messageForTimeline(entry.key)!.messageId]" type="button" @click="void submitFeedback(messageForTimeline(entry.key)!)">提交</button><button v-if="messageForTimeline(entry.key)!.feedback" type="button" @click="void revokeFeedback(messageForTimeline(entry.key)!)">撤销</button><span>{{ feedbackNotices[messageForTimeline(entry.key)!.messageId] }}</span></div>
+            <div v-if="messageForTimeline(entry.key)!.role === 'ASSISTANT' && messageForTimeline(entry.key)!.state === 'COMPLETE'" class="agent-feedback">
+              <button
+                type="button"
+                :class="{ 'is-active': feedbackDrafts[messageForTimeline(entry.key)!.messageId]?.rating === 'HELPFUL' || messageForTimeline(entry.key)!.feedback?.rating === 'HELPFUL' }"
+                @click="chooseFeedback(messageForTimeline(entry.key)!, 'HELPFUL')"
+              >
+                有帮助
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': feedbackDrafts[messageForTimeline(entry.key)!.messageId]?.rating === 'NOT_HELPFUL' || messageForTimeline(entry.key)!.feedback?.rating === 'NOT_HELPFUL' }"
+                @click="chooseFeedback(messageForTimeline(entry.key)!, 'NOT_HELPFUL')"
+              >
+                需改进
+              </button>
+              <button v-if="feedbackDrafts[messageForTimeline(entry.key)!.messageId]" type="button" class="btn-submit" @click="void submitFeedback(messageForTimeline(entry.key)!)">提交</button>
+              <button v-if="messageForTimeline(entry.key)!.feedback" type="button" class="btn-revoke" @click="void revokeFeedback(messageForTimeline(entry.key)!)">撤销</button>
+              <span v-if="feedbackNotices[messageForTimeline(entry.key)!.messageId]" class="feedback-notice">{{ feedbackNotices[messageForTimeline(entry.key)!.messageId] }}</span>
+            </div>
           </article>
           <div v-else-if="entry.kind === 'card' && cardForTimeline(entry.key)" class="agent-card-slot">
             <component :is="rendererFor(cardForTimeline(entry.key)!)?.component" :card="cardForTimeline(entry.key)!" :busy="isRunning" @select="(token: string) => selectCard(cardForTimeline(entry.key)!, token)" @retry="() => void retryClarification(cardForTimeline(entry.key)!)" />
@@ -403,13 +442,45 @@ onBeforeUnmount(() => { endWidthResize(); endHeightResize(); reset(); emitAgentU
 .agent-height-handle { position: absolute; top: 0; left: 14px; right: 0; height: 14px; z-index: 4; display: flex; align-items: center; justify-content: center; cursor: row-resize; user-select: none; touch-action: none; }
 .agent-height-handle span { width: 42px; height: 3px; border-radius: 3px; background: var(--ui-border-strong); transition: width var(--ui-enter) var(--ui-ease-out), background var(--ui-enter) var(--ui-ease-out); }
 .agent-height-handle:hover span, .agent-panel.is-height-resizing .agent-height-handle span { width: 64px; background: var(--ui-primary); }
-.agent-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--ui-border); } .agent-header strong { display: block; color: var(--ui-text-strong); } .agent-header small { color: var(--ui-text-muted); }
-.agent-header-actions { display: flex; gap: 4px; } .agent-header-actions button, .agent-toolbar button, .agent-feedback button, .agent-card-copy { border: 0; background: transparent; color: var(--ui-text-muted); cursor: pointer; }
+.agent-header { display: flex; justify-content: space-between; align-items: center; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--ui-border); background: var(--ui-surface); box-sizing: border-box; flex-shrink: 0; } .agent-header strong { display: block; color: var(--ui-text-strong); font-size: .875rem; }
+.agent-header-actions { display: flex; align-items: center; gap: 4px; }
+.action-divider { width: 1px; height: 14px; background: var(--ui-border); margin: 0 2px; }
+.header-action-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: var(--ui-radius-sm, 6px); background: transparent; color: var(--ui-text-muted); cursor: pointer; transition: all var(--ui-enter) var(--ui-ease-out); }
+.header-action-btn:hover { background: var(--ui-surface-hover); color: var(--ui-text); border-color: var(--ui-border); }
+.agent-card-copy { border: 0; background: transparent; color: var(--ui-text-muted); cursor: pointer; }
+.agent-panel.is-minimized { height: 48px !important; min-height: 48px !important; overflow: hidden; }
+.agent-panel.is-minimized .agent-messages,
+.agent-panel.is-minimized .agent-composer,
+.agent-panel.is-minimized .agent-toolbar,
+.agent-panel.is-minimized .agent-history,
+.agent-panel.is-minimized .agent-version-warning,
+.agent-panel.is-minimized .agent-notice,
+.agent-panel.is-minimized .agent-resize-handle,
+.agent-panel.is-minimized .agent-height-handle { display: none !important; }
 .agent-version-warning, .agent-notice { margin: 10px 12px 0; padding: 8px 10px; color: var(--ui-danger); background: color-mix(in srgb, var(--ui-danger) 10%, transparent); border-radius: 8px; font-size: .8125rem; }
-.agent-toolbar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; color: var(--ui-text-muted); font-size: .75rem; } .agent-history { display: grid; gap: 4px; max-height: 160px; overflow-y: auto; padding: 0 12px 8px; } .agent-history button { padding: 6px 8px; text-align: left; border: 0; border-radius: 6px; background: var(--ui-surface-hover); cursor: pointer; } .agent-history-empty { margin: 0; padding: 8px; color: var(--ui-text-muted); font-size: .75rem; } .agent-history-pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-text-muted); font-size: .7rem; } .agent-history-pager button { padding: 3px 6px; }
+.agent-toolbar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; color: var(--ui-text-muted); font-size: .75rem; }
+.history-trigger { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); background: var(--ui-surface); color: var(--ui-text); cursor: pointer; transition: all var(--ui-enter) var(--ui-ease-out); font-size: .75rem; }
+.history-trigger:hover { border-color: var(--ui-primary); color: var(--ui-primary); background: var(--ui-surface-hover); }
+.history-trigger.is-open { border-color: var(--ui-primary); background: var(--ui-surface-hover); }
+.history-arrow { font-size: .7rem; transition: transform var(--ui-enter) var(--ui-ease-out); }
+.history-trigger.is-open .history-arrow { transform: rotate(180deg); }
+.agent-toolbar button:not(.history-trigger) { border: 0; background: transparent; color: var(--ui-text-muted); cursor: pointer; }
+.agent-history { display: grid; gap: 4px; max-height: 180px; overflow-y: auto; padding: 8px 12px; margin: 0 12px 8px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); background: var(--ui-surface); box-shadow: var(--ui-shadow-soft); }
+.agent-history button { padding: 7px 10px; text-align: left; border: 1px solid transparent; border-radius: 6px; background: var(--ui-surface-hover); cursor: pointer; color: var(--ui-text); font-size: .8125rem; transition: all var(--ui-enter) var(--ui-ease-out); }
+.agent-history button:hover { border-color: var(--ui-primary); background: var(--ui-surface); color: var(--ui-primary); }
+.agent-history button.is-active { border-color: var(--ui-primary); background: var(--ui-surface); color: var(--ui-primary); font-weight: 600; }
+.agent-history-empty { margin: 0; padding: 8px; color: var(--ui-text-muted); font-size: .75rem; }
+.agent-history-pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-text-muted); font-size: .7rem; }
+.agent-history-pager button { padding: 3px 6px; border: 0; background: transparent; color: var(--ui-text-muted); cursor: pointer; }
 .agent-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: grid; align-content: start; gap: 10px; } .agent-empty { display: grid; gap: 6px; padding: 28px 10px; color: var(--ui-text-muted); text-align: center; } .agent-empty strong { color: var(--ui-text-strong); }
 .agent-message { max-width: 92%; padding: 9px 11px; border-radius: 10px; background: var(--ui-surface-hover); } .agent-message--user { justify-self: end; color: var(--ui-primary-contrast); background: var(--ui-primary); } .agent-message-role { font-size: .7rem; opacity: .72; } .agent-message p { margin: 4px 0 0; white-space: pre-wrap; line-height: 1.5; } .agent-retry { margin-top: 6px; padding: 0; color: var(--ui-primary); background: transparent; border: 0; cursor: pointer; font-size: .75rem; }
-.agent-feedback { display: flex; gap: 6px; align-items: center; margin-top: 8px; font-size: .7rem; } .agent-feedback span { color: var(--ui-text-muted); }
+.agent-feedback { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; padding-top: 6px; font-size: .75rem; }
+.agent-feedback button { display: inline-flex; align-items: center; padding: 3px 8px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm, 6px); background: var(--ui-surface); color: var(--ui-text-muted); cursor: pointer; font-size: .75rem; transition: all var(--ui-enter) var(--ui-ease-out); }
+.agent-feedback button:hover { border-color: var(--ui-primary); color: var(--ui-primary); background: var(--ui-surface-hover); }
+.agent-feedback button.is-active { border-color: var(--ui-primary); background: var(--ui-surface-hover); color: var(--ui-primary); font-weight: 500; }
+.agent-feedback button.btn-submit { background: var(--ui-primary); color: var(--ui-primary-contrast); border-color: var(--ui-primary); }
+.agent-feedback button.btn-revoke { border-color: var(--ui-border); color: var(--ui-text-muted); }
+.feedback-notice { color: var(--ui-success, #16a34a); font-size: .75rem; }
 .agent-card-slot { position: relative; } .agent-card-copy { position: absolute; top: 8px; right: 8px; } .agent-invalid-card { display: flex; gap: 6px; align-items: center; padding: 10px; color: var(--ui-danger); background: color-mix(in srgb, var(--ui-danger) 8%, transparent); border-radius: 8px; font-size: .8125rem; }
 .agent-composer { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--ui-border); } .agent-composer textarea { flex: 1; min-width: 0; resize: vertical; padding: 8px; color: var(--ui-text); background: var(--ui-surface-hover); border: 1px solid var(--ui-border); border-radius: 8px; } .agent-composer button { align-self: end; padding: 8px 14px; color: var(--ui-primary-contrast); background: var(--ui-primary); border: 0; border-radius: 8px; cursor: pointer; } .agent-composer button:disabled { opacity: .45; cursor: not-allowed; }
 .agent-backdrop { position: fixed; inset: 0; z-index: 80; background: rgba(12, 18, 32, .36); } .agent-assistant[data-mode='DRAWER'] .agent-panel { position: fixed; right: 16px; bottom: 16px; z-index: 81; } .agent-assistant[data-mode='OVERLAY'] .agent-panel { position: fixed; right: 22px; bottom: 22px; z-index: 70; }

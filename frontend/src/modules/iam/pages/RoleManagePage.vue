@@ -159,7 +159,6 @@ async function onSubmit() {
     <header class="ui-page-header-compact">
       <div class="header-left">
         <h1>角色管理</h1>
-        <p class="header-hint">系统权限集合定义与分配控制</p>
       </div>
       <div class="header-actions">
         <el-button type="primary" @click="openCreate">新建角色</el-button>

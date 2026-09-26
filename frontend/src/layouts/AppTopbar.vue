@@ -70,19 +70,26 @@ const emit = defineEmits<{
 }
 
 .ui-topbar-title {
-  gap: 8px;
+  gap: 6px;
   font-size: 13px;
+  user-select: none;
 }
 
-.ui-topbar-title span,
-.ui-topbar-title b {
+.ui-topbar-title span {
   color: var(--ui-text-muted);
   font-weight: 400;
 }
 
+.ui-topbar-title b {
+  color: var(--ui-text-muted);
+  opacity: 0.5;
+  font-weight: 400;
+  margin: 0 1px;
+}
+
 .ui-topbar-title strong {
-  color: var(--ui-text-strong);
-  font-weight: 600;
+  color: var(--ui-text);
+  font-weight: 500;
 }
 
 .ui-topbar-menu {

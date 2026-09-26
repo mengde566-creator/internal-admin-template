@@ -185,7 +185,6 @@ onBeforeUnmount(() => {
     <header class="view-heading">
       <div class="view-heading-main">
         <h2>库存记录</h2>
-        <span class="view-subtitle">追溯每一次入库、出库、调拨与盘点历史</span>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="load">刷新记录</el-button>
     </header>

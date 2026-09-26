@@ -89,7 +89,6 @@ function saveImportLimits() {
     <header class="ui-page-header-compact">
       <div class="header-left">
         <h1>系统配置</h1>
-        <p class="header-hint">系统全局参数设置与受控文件导入限制快照</p>
       </div>
     </header>
 
@@ -178,9 +177,6 @@ function saveImportLimits() {
   color: var(--ui-text-muted);
   font-size: 0.875rem;
 }
-.import-limits {
-  max-width: 62rem;
-}
 .section-header h2 {
   margin: 0;
   font-size: 1.1rem;
@@ -192,8 +188,13 @@ function saveImportLimits() {
 }
 .limit-form {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: 0.25rem 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem 1.25rem;
+}
+@media (max-width: 900px) {
+  .limit-form {
+    grid-template-columns: 1fr;
+  }
 }
 .unit {
   margin-left: 0.5rem;

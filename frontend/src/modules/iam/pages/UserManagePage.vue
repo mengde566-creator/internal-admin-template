@@ -198,7 +198,6 @@ function onSearch() {
     <header class="ui-page-header-compact">
       <div class="header-left">
         <h1>用户管理</h1>
-        <p class="header-hint">系统账号分配、部门归属与角色权限管理</p>
       </div>
       <div class="header-actions">
         <el-button type="primary" @click="openCreate">新建用户</el-button>

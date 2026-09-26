@@ -111,8 +111,15 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="knowledge-draft-page" data-testid="knowledge-draft-page">
-    <header class="page-header"><div><p class="eyebrow">资料维护</p><h1>知识资料</h1><p class="heading-copy">上传后先进行格式与结构安全校验，保存为草稿预览；不会自动发布或调用模型。</p></div><el-button @click="load" :loading="loading">刷新</el-button></header>
+  <section class="knowledge-draft-page ui-page-shell" data-testid="knowledge-draft-page">
+    <header class="ui-page-header-compact page-header">
+      <div class="header-left">
+        <h1>知识资料</h1>
+      </div>
+      <div class="header-actions">
+        <el-button @click="load" :loading="loading">刷新</el-button>
+      </div>
+    </header>
     <el-alert title="系统只进行格式与结构安全校验，不提供病毒扫描。" type="warning" :closable="false" show-icon />
     <el-alert
       v-if="error"
@@ -170,9 +177,8 @@ onMounted(load)
 </template>
 
 <style scoped>
-.knowledge-draft-page { padding: 24px; display: grid; gap: 16px; }
-.page-header, .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.page-header h1 { margin: 4px 0; color: var(--ui-text-strong); }.heading-copy { color: var(--ui-text-muted); margin: 0; }
+.section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.heading-copy { color: var(--ui-text-muted); margin: 0; }
 .draft-layout { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(420px, 1.2fr); gap: 16px; }
 .panel-section { background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: 12px; padding: 18px; }.panel-section h2 { margin-top: 0; color: var(--ui-text-strong); }
 .draft-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }.draft-list li { display: grid; gap: 4px; padding: 10px; border: 1px solid var(--ui-border); border-radius: 8px; cursor: pointer; }.draft-list li.selected { border-color: var(--ui-primary); background: var(--ui-surface-muted); }

@@ -40,13 +40,13 @@
 | [V0_1_SCOPE.md](V0_1_SCOPE.md) | 已确认 | 0.1 唯一业务闭环、AI 产出流水线、验收和非目标 | 全项目 |
 | [V0_2_AI_WAREHOUSE.md](V0_2_AI_WAREHOUSE.md) | 已确认 | 0.2 通用 AI 能力体系、仓储首个业务适配、交互与验收 | 全项目、AI 能力模块、仓储模块 |
 | [V0_2_FILE_IMPORT_EXPORT.md](V0_2_FILE_IMPORT_EXPORT.md) | 已确认 | 0.2 物品主数据与知识资料的安全上传、影响预览、确认、发布和导出 | 文件、知识、仓储物品、IAM、审计、系统配置 |
-| [CUSTOMER_ORDER_SYSTEM.md](CUSTOMER_ORDER_SYSTEM.md) | 草稿 | 仓储及仓储 AI 完成后的客户、订单与业务助手扩展方向 | 客户系统、订单系统、AI 业务助手 |
+| [CUSTOMER_ORDER_SYSTEM.md](CUSTOMER_ORDER_SYSTEM.md) | 已确认 | 客户、销售订单到仓储实际履约的首版用户任务与验收；AI 暂缓 | 客户、销售订单、仓储 |
 | [QUALITY_REQUIREMENTS.md](QUALITY_REQUIREMENTS.md) | 草稿 | 安全、可靠性、兼容性、性能、可维护性和测试目标 | 全项目 |
 | [iam/IDENTITY_AUTHORIZATION.md](iam/IDENTITY_AUTHORIZATION.md) | 已确认 | 0.1部门、用户、角色、权限点模型及最小管理边界 | `module-iam` |
 
 关联设计：
 
-- 客户管理候选模型、场景和待确认决策见[`docs/planning/CUSTOMER_MANAGEMENT_MODULE_DESIGN.md`](../docs/planning/CUSTOMER_MANAGEMENT_MODULE_DESIGN.md)。该文档同样为草稿，不改变`CUSTOMER_ORDER_SYSTEM.md`的授权状态。
+- 客户管理旧候选设计见[`docs/planning/CUSTOMER_MANAGEMENT_MODULE_DESIGN.md`](../docs/planning/CUSTOMER_MANAGEMENT_MODULE_DESIGN.md)。该文档仍为草稿，若与已确认的`CUSTOMER_ORDER_SYSTEM.md`冲突，以已确认需求为准。
 - AI/Agent测试体系整改见[`docs/planning/AI_TEST_SYSTEM_REPAIR_PLAN.md`](../docs/planning/AI_TEST_SYSTEM_REPAIR_PLAN.md)。它定义证据门禁，不新增产品需求。
 
 随着模块进入分析，再按实际需要新增需求文件，例如：

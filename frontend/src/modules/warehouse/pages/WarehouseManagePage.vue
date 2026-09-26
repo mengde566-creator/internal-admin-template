@@ -32,7 +32,6 @@ const activeEntry = computed(() => String(route?.name ?? 'warehouse-stock'))
     <div class="warehouse-top-bar">
       <header class="warehouse-heading">
         <h1 class="warehouse-title">仓储</h1>
-        <span class="heading-copy">库存查询、出入库操作与业务记录追溯</span>
       </header>
 
       <div class="warehouse-top-actions">
@@ -80,7 +79,9 @@ const activeEntry = computed(() => String(route?.name ?? 'warehouse-stock'))
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
-  margin-bottom: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ui-border);
+  margin-bottom: 16px;
 }
 .warehouse-heading {
   display: flex;

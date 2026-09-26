@@ -47,4 +47,10 @@ describe('仓储四类事实卡', () => {
     const wrapper = mount(WarehouseAgentCard, { props: { card: card('stock-summary', [row]) } })
     expect(wrapper.text()).not.toContain('办理库存操作')
   })
+
+  it('点击卡片行直接跳转对应库存记录', async () => {
+    const wrapper = mount(WarehouseAgentCard, { props: { card: card('stock-summary', [row]) } })
+    await wrapper.find('.row').trigger('click')
+    expect(router.push).toHaveBeenCalledWith(expect.objectContaining({ name: 'warehouse-stock', query: { keyword: 'A100' } }))
+  })
 })

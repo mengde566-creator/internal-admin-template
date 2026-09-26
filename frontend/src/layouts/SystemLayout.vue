@@ -91,6 +91,15 @@ const activeKey = computed(() => {
   return name
 })
 
+/** 顶栏位置导向面包屑，避免顶栏与页内大标题视觉冲突 */
+const topbarBreadcrumb = computed(() => {
+  const name = String(route.name ?? '')
+  if (name.startsWith('warehouse')) {
+    return '仓储'
+  }
+  return '管理后台'
+})
+
 function onNavigate(key: string) {
   if (key === 'warehouse') {
     void router.push({ name: 'warehouse-stock' })
@@ -119,7 +128,11 @@ async function onLogout() {
     @navigate="onNavigate"
   >
     <template #header="{ openMobileNav }">
-      <AppTopbar :title="String(route.meta.title ?? '')" @open-menu="openMobileNav()">
+      <AppTopbar
+        :breadcrumb="topbarBreadcrumb"
+        :title="String(route.meta.title ?? '')"
+        @open-menu="openMobileNav()"
+      >
         <template #actions>
           <span class="topbar-user">{{ auth.currentUser?.displayName ?? '' }}</span>
           <el-button text :icon="SwitchButton" aria-label="退出登录" @click="onLogout">

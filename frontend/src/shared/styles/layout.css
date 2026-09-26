@@ -5,26 +5,37 @@
 
 /* 统一页面容器与首屏留白 */
 .ui-page-shell {
-  padding: 1.25rem;
+  padding: 14px clamp(16px, 2vw, 24px) 16px;
   display: flex;
   flex-direction: column;
   gap: 1rem;
   min-height: 100%;
+  background: var(--ui-page-bg);
+  box-sizing: border-box;
 }
 
-/* 紧凑页头：标题与右侧主操作同行 */
+/* 紧凑页头：标题与右侧主操作同行，与主内容有统一底部分割线 */
 .ui-page-header-compact {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   min-height: 2.25rem;
-  gap: 1rem;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ui-border);
+  margin-bottom: 16px;
+}
+
+.ui-page-shell > .ui-page-header-compact {
+  margin-bottom: 0;
 }
 
 .ui-page-header-compact .header-left {
   display: flex;
   align-items: baseline;
-  gap: 0.75rem;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
@@ -33,19 +44,22 @@
   font-size: 1.25rem;
   font-weight: 600;
   color: var(--ui-text-strong);
-  line-height: 1.4;
+  line-height: 1.2;
 }
 
 .ui-page-header-compact .header-hint {
   margin: 0;
   font-size: 0.8125rem;
   color: var(--ui-text-muted);
+  line-height: 1.4;
 }
 
 .ui-page-header-compact .header-actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* 业务数据卡片：包裹表格、树形结构，形成清晰边界 */

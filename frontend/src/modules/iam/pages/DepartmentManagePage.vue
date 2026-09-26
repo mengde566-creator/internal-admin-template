@@ -224,7 +224,6 @@ async function onSubmit() {
     <header class="ui-page-header-compact">
       <div class="header-left">
         <h1>部门管理</h1>
-        <p class="header-hint">部门写入按整棵树修订号保护，冲突时请刷新后重试</p>
       </div>
       <div class="header-actions">
         <el-button type="primary" @click="openCreate()">新建下级部门</el-button>

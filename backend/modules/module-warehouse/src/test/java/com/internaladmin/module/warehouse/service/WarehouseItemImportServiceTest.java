@@ -101,12 +101,42 @@ class WarehouseItemImportServiceTest {
 
     @Test
     void fixedBrowserFixturePassesControlledFileValidationAndWarehouseParsing() throws Exception {
+        verifyFixedBrowserFixture("06F-ITEM-0908-POI.xlsx",
+                "2db6b5051fcb4fb48f42ca89dc6195e361ddac751ebee3c000146b005c762b6f",
+                "06F-ITEM-0908-090715", "06F验证物品");
+    }
+
+    @Test
+    void currentTemplateFixturePassesControlledFileValidationAndWarehouseParsing() throws Exception {
+        verifyFixedBrowserFixture("06F-ITEM-0925-POI.xlsx",
+                "05ac5c015fc3479ff5619da6d5abae1d0dc4d89fd7f39b7d25a53fb36d8e0abe",
+                "06F-ITEM-0925-POI", "06F固定验证物品");
+    }
+
+    /**
+     * 验证固定样本字节经受控文件存取与物品解析后生成可见的两类影响。
+     *
+     * 方法：{@code verifyFixedBrowserFixture}
+     *
+     * 执行链路（共 3 步）：
+     * 1. 从测试资源读取指定样本并核对指纹，防止跨端测试使用不同字节；
+     * 2. 通过真实 {@link ControlledDocumentFileService} 保存和读取样本，驱动导入分析；
+     * 3. 核对作业分类、原行错误以及阶段日志不泄露样本业务值。
+     *
+     * @param fileName 固定样本文件名
+     * @param expectedSha256 固定样本的 SHA-256
+     * @param validCode 预期新增行的物品编码
+     * @param validName 预期新增行的物品名称
+     * @throws Exception 样本读取或分析失败时由测试直接失败
+     */
+    private void verifyFixedBrowserFixture(String fileName, String expectedSha256,
+                                           String validCode, String validName) throws Exception {
         byte[] fixture;
-        try (var input = getClass().getResourceAsStream("/fixtures/06F-ITEM-0908-POI.xlsx")) {
+        try (var input = getClass().getResourceAsStream("/fixtures/" + fileName)) {
             assertNotNull(input, "固定浏览器 fixture 必须存在");
             fixture = input.readAllBytes();
         }
-        assertEquals("2db6b5051fcb4fb48f42ca89dc6195e361ddac751ebee3c000146b005c762b6f", sha256(fixture));
+        assertEquals(expectedSha256, sha256(fixture));
 
         ControlledDocumentAssetMapper assetMapper = mock(ControlledDocumentAssetMapper.class);
         var persisted = new com.internaladmin.module.file.model.entity.ControlledDocumentAssetDO[1];
@@ -135,7 +165,7 @@ class WarehouseItemImportServiceTest {
             when(warehouse.inspectItemImportFacts(anySet()))
                     .thenReturn(new WarehouseService.ItemImportFacts(Set.of(), Set.of()));
 
-            var view = awaitTerminal(service.submit(7L, "fixed-browser-fixture", "06F-ITEM-0908-POI.xlsx",
+            var view = awaitTerminal(service.submit(7L, "fixed-browser-fixture", fileName,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     new java.io.ByteArrayInputStream(fixture)).jobId());
 
@@ -143,15 +173,15 @@ class WarehouseItemImportServiceTest {
             assertEquals(2, view.totalRows());
             assertEquals(1, view.createCount());
             assertEquals(1, view.invalidCount());
-            assertEquals("2db6b5051fcb4fb48f42ca89dc6195e361ddac751ebee3c000146b005c762b6f", persisted[0].getSha256());
+            assertEquals(expectedSha256, persisted[0].getSha256());
             assertEquals("AVAILABLE", persisted[0].getStatus());
             verify(files).read(eq(persisted[0].getAssetId()), eq(7L), eq(DocumentFilePurpose.WAREHOUSE_ITEM_IMPORT));
             @SuppressWarnings("rawtypes") ArgumentCaptor<List> capture = ArgumentCaptor.forClass(List.class);
             verify(rows).insertBatch(capture.capture());
             List<?> analyzed = capture.getValue();
             WarehouseItemImportRowDO valid = analyzed.stream().map(WarehouseItemImportRowDO.class::cast)
-                    .filter(row -> "06F-ITEM-0908-090715".equals(row.getCode())).findFirst().orElseThrow();
-            assertEquals("06F验证物品", valid.getName());
+                    .filter(row -> validCode.equals(row.getCode())).findFirst().orElseThrow();
+            assertEquals(validName, valid.getName());
             assertEquals("件", valid.getBaseUnit());
             assertEquals(1, valid.getEnabled());
             assertEquals("CREATE", valid.getCategory());
@@ -176,11 +206,11 @@ class WarehouseItemImportServiceTest {
             assertTrue(logs.contains("format=XLSX"));
             assertTrue(logs.contains("createCount=1"));
             assertTrue(logs.contains("invalidCount=1"));
-            assertFalse(logs.contains("06F-ITEM-0908-090715"));
-            assertFalse(logs.contains("06F验证物品"));
+            assertFalse(logs.contains(validCode));
+            assertFalse(logs.contains(validName));
             assertFalse(logs.contains("BAD!"));
-            assertFalse(logs.contains("06F-ITEM-0908-POI.xlsx"));
-            assertFalse(logs.contains("2db6b5051fcb4fb48f42ca89dc6195e361ddac751ebee3c000146b005c762b6f"));
+            assertFalse(logs.contains(fileName));
+            assertFalse(logs.contains(expectedSha256));
             assertFalse(logs.contains(fileStorageRoot.toAbsolutePath().toString()));
         } finally {
             logger.detachAppender(logAppender);
